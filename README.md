@@ -54,6 +54,19 @@ And weather: rain that leans with your heading and brightens in front of lit
 windows, a moon that stays put as you turn, stars fixed to the world, and
 haze that eats distance.
 
+## Downloads
+
+Right-click → Save Link As. Either works on a real Plus/4; the `.prg` starts
+faster, the `.d64` is what an SD2IEC or an emulator wants.
+
+| File | Bytes | |
+|---|---:|---|
+| [ascitty.prg](https://github.com/vonglurt/ascitty/raw/main/build/ascitty.prg) | 19 524 | `DLOAD"ASCITTY"` then `RUN` |
+| [ascitty.d64](https://github.com/vonglurt/ascitty/raw/main/build/ascitty.d64) | 174 848 | attach as drive 8, then the same |
+
+Both are built by `make disk` from the sources here, and both have been
+booted in VICE — the screenshot further down is one of them running.
+
 ## Run it
 
 ```sh
