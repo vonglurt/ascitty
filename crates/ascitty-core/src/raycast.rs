@@ -39,7 +39,7 @@ use crate::frame::{Cel, Frame};
 use crate::palette;
 use crate::rng::hash3;
 use crate::trig::Ang;
-use crate::world::{City, Kind, Plan, RoadCell};
+use crate::world::{City, Crossing, Kind, Plan, RoadCell};
 
 /// How much taller a character cell is than it is wide.  Every terminal and
 /// the Plus/4 alike are close enough to 2:1 that one constant covers both;
@@ -133,10 +133,17 @@ pub fn render_to(
     let (px, py) = cam.plane();
 
     // Ground distance per row, computed once for the whole frame.
+    //
+    // Measured from how high the camera is above *its own* footing.  Where
+    // the ground the ray lands on is at a different level, the sample is in
+    // slightly the wrong place - which is exactly why the terrain generator
+    // is held to a gentle grade.  See `elevation.rs`.
+    let eye_above_ground = (cam.z - city.ground(fixed::floor(cam.x), fixed::floor(cam.y))).max(1);
     let mut row_dist = vec![HUGE; f.h];
     for y in (horizon.max(0) + 1)..h {
         let below = y - horizon;
-        row_dist[y as usize] = fixed::div(fixed::mul(cam.z, proj), fixed::from_int(below));
+        row_dist[y as usize] =
+            fixed::div(fixed::mul(eye_above_ground, proj), fixed::from_int(below));
     }
 
     // Pass one: sky above the horizon, ground below it.
@@ -251,19 +258,25 @@ fn column(
             return (steps, 0, nearest);
         }
 
-        let cell = city.at(map_x, map_y);
-        if cell.height == 0 {
+        let bh = city.height(map_x, map_y);
+        if bh == 0 {
             continue;
         }
         if nearest == f32::MAX {
             nearest = fixed::to_f32(dist);
         }
 
-        let ch = fixed::from_int(cell.height as i32);
+        // The building stands *on* the ground rather than at sea level, so
+        // both its footing and its roofline move with the terrain.  Gentle
+        // as the terrain is, getting this wrong is immediately visible: a
+        // row of buildings on a slight rise would have their feet buried at
+        // one end of the street and floating at the other.
+        let ground = city.ground(map_x, map_y);
+        let ch = ground + fixed::from_int(bh as i32);
         // Screen rows of the top of this cell and of its footing.
         let per = fixed::div(proj, dist);
         let top = horizon - fixed::floor(fixed::mul(ch - cam.z, per));
-        let bot = horizon + fixed::floor(fixed::mul(cam.z, per));
+        let bot = horizon + fixed::floor(fixed::mul(cam.z - ground, per));
 
         let y0 = top.max(0);
         let y1 = bot.min(ceiling - 1).min(h - 1);
@@ -298,8 +311,11 @@ fn column(
             }
             let first = if cam.z > ch { y0 + 1 } else { y0 };
             z -= fixed::mul(fixed::from_int(first - y0), dz);
+            let bhf = fixed::from_int(bh as i32);
             for y in first..=y1 {
-                let s = arch::facade(lot, face, along, z.max(0), ch, lod);
+                // The facade is asked about height *above its own footing*,
+                // not above sea level.
+                let s = arch::facade(lot, face, along, (z - ground).max(0), bhf, lod);
                 f.put(x, y, Cel { glyph: s.glyph, color: atmos.shade(s.hue, s.luma, dist) });
                 z -= dz;
             }
@@ -384,10 +400,26 @@ fn road(plan: &Plan, gx: i32, gy: i32, fx: Fx, fy: Fx) -> (catalog::GlyphId, u8,
     let col = plan.cols.at(gx);
     let row = plan.rows.at(gy);
 
-    if col.class.is_street() && row.class.is_street() {
-        if let Some(m) = crossing(col, row, fx, fy, gx, gy) {
-            return m;
+    // A crossing, wherever the plan says one is painted - which is outside
+    // the junction box, at the stop line.
+    match plan.crossing_at(gx, gy) {
+        Some(Crossing::OverCols) => {
+            if let Some(m) = zebra(fixed::from_int(gx) + fx) {
+                return m;
+            }
         }
+        Some(Crossing::OverRows) => {
+            if let Some(m) = zebra(fixed::from_int(gy) + fy) {
+                return m;
+            }
+        }
+        None => {}
+    }
+
+    if col.class.is_street() && row.class.is_street() {
+        // Inside a junction: bare tarmac.  A real one has no markings in the
+        // middle, and painting through it is the quickest way to make a
+        // street grid look like a diagram of a street grid.
     } else if col.class.is_street() {
         // A road running north-south: you measure across it in x and along
         // it in y.
@@ -439,8 +471,6 @@ const LANE_MIN_W: Fx = fixed::from_int(3);
 const ZEBRA_PITCH: Fx = fixed::ratio(1, 2);
 /// How much of that pitch is painted.
 const ZEBRA_DUTY: Fx = fixed::ratio(11, 20);
-/// How far into the junction the crosswalk band reaches from each edge.
-const ZEBRA_BAND: Fx = fixed::ratio(2, 5);
 
 /// The lines along an ordinary stretch of road.
 ///
@@ -472,40 +502,6 @@ fn lines(across: Fx, width: Fx, along: Fx) -> Option<(catalog::GlyphId, u8, u8)>
 
     if !(EDGE_W..=width - EDGE_W).contains(&across) {
         return Some((catalog::ROAD_DASH, palette::H_WHITE, 3));
-    }
-    None
-}
-
-/// The markings inside a junction.
-///
-/// No centre line and no lane dividers - a real junction has bare tarmac in
-/// the middle, and painting through it is the single quickest way to make a
-/// street grid look like a diagram of a street grid.  What it does have is a
-/// crosswalk across each of the four approaches, laid just inside the edge
-/// of the box.
-///
-/// The stripes run *with* the traffic and repeat *across* it, which is the
-/// way round they are painted: a pedestrian walking north over an avenue
-/// crosses a ladder of north-south bars.
-fn crossing(
-    col: RoadCell,
-    row: RoadCell,
-    fx: Fx,
-    fy: Fx,
-    gx: i32,
-    gy: i32,
-) -> Option<(catalog::GlyphId, u8, u8)> {
-    let (ax, aw) = (across(col, fx), width(col));
-    let (sy, sw) = (across(row, fy), width(row));
-
-    // The two crosswalks over the north-south road, at its top and bottom
-    // edges within the junction box.
-    if !(ZEBRA_BAND..=sw - ZEBRA_BAND).contains(&sy) {
-        return zebra(fixed::from_int(gx) + fx);
-    }
-    // ...and the two over the east-west road.
-    if !(ZEBRA_BAND..=aw - ZEBRA_BAND).contains(&ax) {
-        return zebra(fixed::from_int(gy) + fy);
     }
     None
 }
@@ -694,56 +690,72 @@ mod tests {
     }
 
     #[test]
-    fn junctions_have_crosswalks_and_no_centre_line() {
+    fn a_junction_has_crosswalks_on_its_approaches_and_bare_tarmac_inside() {
         let city = City::generate(2024);
+        let p = &city.plan;
         let (jx, jy) = (0..SIZE as i32)
             .flat_map(|y| (0..SIZE as i32).map(move |x| (x, y)))
-            .find(|&(x, y)| city.plan.is_junction(x, y))
+            .find(|&(x, y)| p.is_junction(x, y))
             .expect("no junction on this plan");
-        let (cw, rw) = (city.plan.cols.at(jx).width, city.plan.rows.at(jy).width);
 
-        let mut stripes = 0;
-        let mut centre = 0;
-        for i in 0..24 {
-            for j in 0..24 {
-                let fx = fixed::div(fixed::from_int(i), fixed::from_int(24));
-                let fy = fixed::div(fixed::from_int(j), fixed::from_int(24));
-                for dx in 0..cw as i32 {
-                    for dy in 0..rw as i32 {
-                        match road(&city.plan, jx + dx, jy + dy, fx, fy).0 {
-                            g if g == catalog::ROAD_CROSSING => stripes += 1,
-                            g if g == catalog::ROAD_CENTRE => centre += 1,
-                            _ => {}
-                        }
+        // Inside the box: no paint of any kind.
+        let (cw, rw) = (p.cols.at(jx).width as i32, p.rows.at(jy).width as i32);
+        for i in 0..12 {
+            for j in 0..12 {
+                let fx = fixed::div(fixed::from_int(i), fixed::from_int(12));
+                let fy = fixed::div(fixed::from_int(j), fixed::from_int(12));
+                for dx in 0..cw {
+                    for dy in 0..rw {
+                        let g = road(p, jx + dx, jy + dy, fx, fy).0;
+                        assert_ne!(g, catalog::ROAD_CENTRE, "a centre line runs through the junction");
+                        assert_ne!(g, catalog::ROAD_CROSSING, "a crossing is painted inside the junction");
                     }
                 }
             }
         }
-        assert!(stripes > 100, "only {stripes} crosswalk samples inside the junction");
-        assert_eq!(centre, 0, "the centre line was painted straight through the junction");
+
+        // On the approaches: stripes.  One cell back along each road, which
+        // is where the plan says the crossing is and where the pavement can
+        // actually reach it.
+        let mut stripes = 0;
+        for (x, y) in [(jx, jy - 1), (jx, jy + rw), (jx - 1, jy), (jx + cw, jy)] {
+            if p.crossing_at(x, y).is_none() {
+                continue;
+            }
+            for i in 0..24 {
+                let f = fixed::div(fixed::from_int(i), fixed::from_int(24));
+                if road(p, x, y, f, f).0 == catalog::ROAD_CROSSING {
+                    stripes += 1;
+                }
+            }
+        }
+        assert!(stripes > 20, "only {stripes} crosswalk samples on the approaches");
     }
 
     #[test]
     fn crosswalks_are_striped_rather_than_solid() {
         let city = City::generate(2024);
-        let (jx, jy) = (0..SIZE as i32)
+        let p = &city.plan;
+        // Walk across a crossing over a north-south road and count the bars.
+        let (cx, cy) = (0..SIZE as i32)
             .flat_map(|y| (0..SIZE as i32).map(move |x| (x, y)))
-            .find(|&(x, y)| city.plan.is_junction(x, y))
-            .unwrap();
-        let cw = city.plan.cols.at(jx).width as i32;
+            .find(|&(x, y)| {
+                p.crossing_at(x, y) == Some(Crossing::OverCols) && p.cols.at(x).across == 0
+            })
+            .expect("no crossing over a north-south road");
+        let w = p.cols.at(cx).width as i32;
         let mut runs = 0;
         let mut was_paint = false;
-        for i in 0..(cw * 24) {
+        for i in 0..(w * 24) {
             let a = fixed::div(fixed::from_int(i), fixed::from_int(24));
-            let cell = jx + fixed::floor(a);
-            let paint = road(&city.plan, cell, jy, fixed::frac(a), fixed::ratio(1, 8)).0
-                == catalog::ROAD_CROSSING;
+            let cell = cx + fixed::floor(a);
+            let paint = road(p, cell, cy, fixed::frac(a), fixed::HALF).0 == catalog::ROAD_CROSSING;
             if paint && !was_paint {
                 runs += 1;
             }
             was_paint = paint;
         }
-        assert!(runs >= 3, "the crosswalk has only {runs} bars - it is a solid block");
+        assert!(runs >= 2, "the crossing has only {runs} bars - it is a solid block");
     }
 
     #[test]

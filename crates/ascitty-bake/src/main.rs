@@ -287,7 +287,7 @@ fn city(seed: u32) -> String {
         for x in 0..DISTRICT {
             let (gx, gy) = ((x + off) as i32, (y + off) as i32);
             let cell = c.at(gx, gy);
-            heights.push(cell.height);
+            heights.push(c.height(gx, gy));
             match c.lot_at(gx, gy) {
                 Some(lot) => {
                     // The building's own brightness, not a constant: the

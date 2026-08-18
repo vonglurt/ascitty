@@ -1,6 +1,31 @@
 # The city
 
-`crates/ascitty-core/src/world.rs` and `arch.rs`.
+Four layers over one grid, each its own structure:
+
+| Layer | Module | Answers |
+|---|---|---|
+| Roads | `world::Plan` | where the streets are, how wide, what class |
+| Mapping | `zone` | what this ground is *for* |
+| Elevation | `elevation` | how high the ground is, and what stands on it |
+| Walking | `walk` | where a person on foot may be, and how they get about |
+
+They are separate because the questions are separate, and conflating them
+produced real bugs: treating "not built on" as one walkable space put
+pedestrians in the middle of the avenue, and deriving the district ring from
+a cell distance rather than a block index made the zoning change half way
+along a street.
+
+## 0. The numbers
+
+```text
+cell             ~6 m
+map              18 blocks square, 234 cells
+built city       16 blocks square       zone::CITY_BLOCKS
+downtown core     8 blocks square       zone::CORE_BLOCKS
+block             at least 8 cells      zone::MIN_BLOCK
+nominal pitch    13 cells               zone::BLOCK_PITCH
+arterial         12-16 cells - 72-96 m, kerb to kerb
+```
 
 ## 1. It is a height field
 
@@ -30,10 +55,16 @@ Each is a list of roads with a class, a width and a gap after it:
 
 | Class | Width | What it is |
 |---|---:|---|
-| `Alley` | 1 | service access between buildings — no pavement, no paint |
+| `Alley` | 1 | service access — no pavement, no paint, but you can walk down it |
 | `Street` | 2 | one lane each way |
 | `Avenue` | 3 | |
-| `Boulevard` | 4–5 | the arterials, and the long views |
+| `Boulevard` | 4–5 | |
+| `Arterial` | 12–16 | the better part of a hundred metres of carriageway |
+
+There are one or two arterials in a city and they run its whole length.
+They are placed *first*, before the rest of the axis is laid out, so they
+land through the middle of the city rather than wherever the accumulated
+sequence of gaps happened to arrive.
 
 The grid is still a grid — this is Manhattan, not Boston — but no two blocks
 are the same size and the roads have a **hierarchy**, which is what a street
@@ -75,11 +106,108 @@ A block is a maximal run of buildable cells in both directions, found by
 scanning rather than by stepping at a fixed period — which is what lets the
 roads be irregular in the first place.
 
+**No block is smaller than eight cells.** Every gap the generator produces is
+clamped to `MIN_BLOCK + 2` — the block itself plus a cell of pavement on each
+side. Clamped rather than merely chosen from a suitable range, so the
+guarantee survives the figures being retuned; below eight there is no room
+for a building with a front and a back, and a subdivision that tried would
+produce lots one cell deep.
+
 Each block is reached exactly once, at its **top row**: a run is only filled
 when the cell above its left end is not buildable. Without that test a block
 is refilled once per row it spans, and the symptom is subtle — buildings
 quietly reroll their height and colour, and plazas turn into towers on the
 second pass.
+
+## 2a. Zoning, and the rings
+
+`zone.rs`. Three questions that keep getting confused, kept apart:
+
+- **Zone** — what this ground is for. A property of the *place*: downtown,
+  commercial, residential, civic, park, outskirts.
+- **Use** — what a particular building is. An office or a home. Follows from
+  the zone but not slavishly: there are flats downtown and shops in the
+  suburbs.
+- **Archetype** — how it is built. Curtain wall, brick walk-up, setback
+  tower. Follows from the use *and then* the height.
+
+Keeping them apart is what stops the generator collapsing into "tall things
+are blue glass and short things are brown brick". A twelve-storey residential
+slab and a twelve-storey office slab are different buildings and look it.
+
+The city is laid out as rings of blocks measured from the middle:
+
+```text
+   ring 0-3     the downtown core - towers, the arterials, full intensity
+   ring 4-7     the rest of the city, intensity falling to a fifth
+   ring 8+      outskirts; nothing is raised
+```
+
+Measured in **blocks**, not cells. Dividing a cell distance by the block
+pitch looks equivalent and is not: the middle of the map is rarely on a
+block boundary, so the ring steps somewhere in the middle of a block and the
+zone changes half way along a street.
+
+The ring is the "decreasing height outwards" the whole layout is arranged
+around. It multiplies with the zone's own ceiling and with the lot's
+footprint, so an office tower on a big downtown lot may be ninety cells and
+the same use on a small lot at the edge may be six.
+
+## 2b. Elevation
+
+`elevation.rs`. Two byte arrays over the grid — ground level and what stands
+on it — kept together because they are the two the inner loop touches most.
+
+Ground is stored in **eighths of a cell**. A whole-unit ground level would
+step the streets in six-metre cliffs; an eighth is 75 cm, which is a kerb.
+
+The terrain is deliberately almost flat: two units of relief across the whole
+map, and slow. Not because hills would be hard to generate but because of
+what the renderer does with them. The floor pass works out how far away a row
+of ground is from the camera's height *above its own footing*, then samples
+whatever cell that lands on. Over a gentle grade the error is far less than a
+character cell. Over a hill it would not be, and the floor would visibly
+swim. So this is a city on a river plain with a rise in it, which is most
+cities, and it says so rather than pretending to be San Francisco.
+
+A building does not follow the contour: `Elevation::level` cuts its whole
+footprint to one pad before anything stands on it. Without that, a lot
+spanning a grade has its corners at different heights, and the roofline —
+which is one number per lot — ends up a different distance above the ground
+on each side.
+
+## 2c. The walking system
+
+`walk.rs`. The driving network and the walking network are not the same
+network and never were. A car belongs on the carriageway and nowhere else; a
+person belongs on the pavement, in the parks and plazas, down the alleys, and
+on the carriageway only where it is painted for them to cross.
+
+| `Foot` | Where |
+|---|---|
+| `Path` | pavement, park, plaza, alley |
+| `Crossing` | carriageway where a crossing is painted |
+| `Blocked` | buildings, and the open road |
+
+**Crossings sit outside the junction box**, one cell back along the road, at
+the stop line. Putting them inside — which is the obvious thing, and was
+wrong here for a while — produces a crossing that no pavement touches: every
+orthogonal neighbour of a junction cell is either more junction or plain
+carriageway. The symptom was that each block's pavement was an isolated ring
+of about forty cells and the network had no connected component larger than
+one block. They come from `Plan::crossing_at`, which is also what the
+renderer paints the zebra bars from, so the two cannot drift apart.
+
+Two ways to ask for a route, and the distinction matters:
+
+- `step_toward` is a greedy step: prefer the long axis, accept a crossing,
+  turn along the kerb when blocked. Four lookups, no memory, and **explicitly
+  not guaranteed to arrive** — a U-shaped dead end holds it forever. That is
+  the right trade for a crowd of pedestrians who have somewhere to be and no
+  opinion about the shortest way there.
+- `route` is a breadth-first search. Shortest path, costs a visited set the
+  size of the map, and is what the tests use to assert the network is
+  actually connected.
 
 ## 3. Blocks, and what goes in them
 

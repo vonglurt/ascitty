@@ -35,6 +35,7 @@ use crate::raycast::Proj;
 use crate::rng::{hash3, Rng};
 use crate::sprite::{Billboard, Stamp};
 use crate::trig::{self, Ang};
+use crate::walk::Foot;
 use crate::world::{City, Kind, SIZE};
 
 /// How many other vehicles are in the pool.
@@ -76,6 +77,8 @@ pub struct Ped {
     pub y: Fx,
     /// Which way they are walking.
     pub dir: Ang,
+    /// Where they are going, in cells.  Reached, they pick somewhere else.
+    pub goal: (i32, i32),
     /// Stride phase.
     pub phase: u8,
     /// Hue.
@@ -272,7 +275,14 @@ impl Sim {
             palette::H_ORANGE,
             palette::H_PURPLE,
         ];
-        let (x, y) = self.road_near(city, 8, RECYCLE).unwrap_or((2, 2));
+        // If no road turned up, put the car on top of the taxi rather than
+        // at the origin: it will be recycled on the next tick, whereas a
+        // fallback in the corner of the map is a car that is instantly and
+        // permanently a straggler.
+        let (x, y) = self.road_near(city, 8, RECYCLE).unwrap_or((
+            fixed::floor(self.taxi.x),
+            fixed::floor(self.taxi.y),
+        ));
         let hue = HUES[self.rng.below(6) as usize];
         let kind = if self.rng.chance(1, 8) { CarKind::Bus } else { CarKind::Traffic };
         // Traffic drives along whichever axis its road runs on.
@@ -297,26 +307,101 @@ impl Sim {
         c
     }
 
+    /// Somewhere a person could plausibly be walking to, near the taxi.
+    fn walk_goal(&mut self, city: &City, from: (i32, i32)) -> (i32, i32) {
+        for _ in 0..40 {
+            let x = from.0 + self.rng.range(-18, 18);
+            let y = from.1 + self.rng.range(-18, 18);
+            if city.walk.passable(x, y) {
+                return (x, y);
+            }
+        }
+        from
+    }
+
     fn spawn_ped(&mut self, city: &City) -> Ped {
         let (tx, ty) = (fixed::floor(self.taxi.x), fixed::floor(self.taxi.y));
         for _ in 0..200 {
             let x = tx + self.rng.range(-RECYCLE, RECYCLE);
             let y = ty + self.rng.range(-RECYCLE, RECYCLE);
-            if x < 1 || y < 1 || x >= SIZE as i32 - 1 || y >= SIZE as i32 - 1 {
+            // Placed on the *pedestrian* network, not merely on ground that
+            // is not built on.  The two are different maps and conflating
+            // them is what used to put people in the middle of the avenue.
+            if city.walk.at(x, y) != Foot::Path {
                 continue;
             }
-            if city.at(x, y).kind == Kind::Sidewalk {
-                return Ped {
-                    x: fixed::from_int(x) + fixed::HALF,
-                    y: fixed::from_int(y) + fixed::HALF,
-                    dir: (self.rng.below(4) as Ang).wrapping_mul(trig::QUARTER),
-                    phase: self.rng.below(2) as u8,
-                    hue: [palette::H_PINK, palette::H_CYAN, palette::H_WHITE, palette::H_ORANGE]
-                        [self.rng.below(4) as usize],
-                };
+            let goal = self.walk_goal(city, (x, y));
+            return Ped {
+                x: fixed::from_int(x) + fixed::HALF,
+                y: fixed::from_int(y) + fixed::HALF,
+                dir: (self.rng.below(4) as Ang).wrapping_mul(trig::QUARTER),
+                goal,
+                phase: self.rng.below(2) as u8,
+                hue: [palette::H_PINK, palette::H_CYAN, palette::H_WHITE, palette::H_ORANGE]
+                    [self.rng.below(4) as usize],
+            };
+        }
+        let here = city.walk.nearest(tx, ty, 30).unwrap_or((tx, ty));
+        Ped {
+            x: fixed::from_int(here.0) + fixed::HALF,
+            y: fixed::from_int(here.1) + fixed::HALF,
+            dir: 0,
+            goal: here,
+            phase: 0,
+            hue: palette::H_WHITE,
+        }
+    }
+
+    /// Put the taxi on the nearest road to a point, facing along it.
+    ///
+    /// So that a shift starts with the cab where you are rather than
+    /// wherever the middle of the map happened to be - you should be able to
+    /// see it from where you are standing and walk over to it.
+    pub fn park_near(&mut self, city: &City, x: i32, y: i32) {
+        let mut best: Option<(i32, i32, i32)> = None;
+        for r in 0..24i32 {
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    if dx.abs().max(dy.abs()) != r {
+                        continue;
+                    }
+                    let (px, py) = (x + dx, y + dy);
+                    if city.at(px, py).kind != Kind::Road || !city.walkable(px, py) {
+                        continue;
+                    }
+                    // Not in a junction and not on an alley: a cab waits at a
+                    // kerb on an ordinary street.
+                    if city.plan.is_junction(px, py) {
+                        continue;
+                    }
+                    if !city.plan.cols.at(px).class.is_street()
+                        && !city.plan.rows.at(py).class.is_street()
+                    {
+                        continue;
+                    }
+                    best = Some((px, py, r));
+                    break;
+                }
+                if best.is_some() {
+                    break;
+                }
+            }
+            if best.is_some() {
+                break;
             }
         }
-        Ped { x: fixed::from_int(tx), y: fixed::from_int(ty), dir: 0, phase: 0, hue: palette::H_WHITE }
+        let Some((px, py, _)) = best else { return };
+        self.taxi.x = fixed::from_int(px) + fixed::HALF;
+        self.taxi.y = fixed::from_int(py) + fixed::HALF;
+        self.taxi.vx = 0;
+        self.taxi.vy = 0;
+        self.taxi.spin = 0;
+        // Point it down the road it is parked on.
+        self.taxi.yaw = if city.plan.cols.at(px).class.is_street() {
+            trig::QUARTER
+        } else {
+            0
+        };
     }
 
     /// Find a new fare and string coins along the way to it.
@@ -351,7 +436,7 @@ impl Sim {
 
         self.step_traffic(city, hz, out);
         self.step_props(hz, out);
-        self.step_peds(hz);
+        self.step_peds(city, hz);
         self.step_fare(city, out);
 
         self.ticks_left -= 1;
@@ -423,15 +508,49 @@ impl Sim {
         }
     }
 
-    fn step_peds(&mut self, hz: i32) {
+    /// Walk the pedestrians along the pedestrian network.
+    ///
+    /// Each one has somewhere to be and follows the cheap greedy stepper
+    /// towards it, which keeps them on the pavements and sends them over the
+    /// crossings.  When one arrives - or gets stuck, which the greedy
+    /// stepper is explicitly allowed to do - it picks somewhere else.
+    fn step_peds(&mut self, city: &City, hz: i32) {
         let inv = fixed::div(ONE, fixed::from_int(hz.max(1)));
-        let pace = fixed::ratio(1, 4);
+        let pace = fixed::ratio(2, 5);
+        let mut regoal: Vec<usize> = Vec::new();
         for (i, p) in self.peds.iter_mut().enumerate() {
-            p.x += fixed::mul(fixed::mul(trig::cos(p.dir), pace), inv);
-            p.y += fixed::mul(fixed::mul(trig::sin(p.dir), pace), inv);
+            let at = (fixed::floor(p.x), fixed::floor(p.y));
+            match city.walk.step_toward(at, p.goal) {
+                Some(a) => p.dir = a,
+                None => regoal.push(i),
+            }
+            let nx = p.x + fixed::mul(fixed::mul(trig::cos(p.dir), pace), inv);
+            let ny = p.y + fixed::mul(fixed::mul(trig::sin(p.dir), pace), inv);
+            // Never step off the network, whatever the heading says.
+            if city.walk.passable(fixed::floor(nx), fixed::floor(p.y)) {
+                p.x = nx;
+            }
+            if city.walk.passable(fixed::floor(p.x), fixed::floor(ny)) {
+                p.y = ny;
+            }
             if self.tick.wrapping_add(i as u32).is_multiple_of(24) {
                 p.phase ^= 1;
             }
+        }
+        // Anybody who arrived or wedged gets a new errand.  Done after the
+        // loop because picking one needs the generator, which the loop is
+        // borrowing.
+        for i in regoal {
+            let at = (fixed::floor(self.peds[i].x), fixed::floor(self.peds[i].y));
+            let goal = self.walk_goal(city, at);
+            self.peds[i].goal = goal;
+        }
+        // And a slow trickle of new errands, so that a crowd does not settle.
+        if self.tick.is_multiple_of(37) && !self.peds.is_empty() {
+            let i = (self.tick as usize / 37) % self.peds.len();
+            let at = (fixed::floor(self.peds[i].x), fixed::floor(self.peds[i].y));
+            let goal = self.walk_goal(city, at);
+            self.peds[i].goal = goal;
         }
     }
 

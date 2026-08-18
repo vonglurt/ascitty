@@ -40,8 +40,20 @@ where the perspective divide happens, why there is no per-column cosine, and
 the arithmetic that has to be identical on both targets.
 
 ### [`city.md`](city.md)
-What a city is made of: the street grid, blocks, lots, the six building
-archetypes, setbacks, window zippers and fire escapes.
+What a city is made of, in four layers: the generated street system, the
+zoning that says what ground is for, the elevation map, and the pedestrian
+network. Then blocks, lots, the six building archetypes, setbacks, window
+zippers and fire escapes.
+
+The four layers are separate structures on purpose, and the module each
+lives in says why:
+
+| Layer | Module | Answers |
+|---|---|---|
+| Roads | [`world::Plan`](../crates/ascitty-core/src/world.rs) | where the streets are, how wide, and what class |
+| Mapping | [`zone`](../crates/ascitty-core/src/zone.rs) | what this ground is *for* |
+| Elevation | [`elevation`](../crates/ascitty-core/src/elevation.rs) | how high the ground is and what stands on it |
+| Walking | [`walk`](../crates/ascitty-core/src/walk.rs) | where a person on foot may be, and how they get about |
 
 ### [`driving.md`](driving.md)
 The arcade physics: the four properties that are modelled, the three that

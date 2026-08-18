@@ -87,11 +87,17 @@ impl Camera {
                 best = f;
             }
         }
-        Camera {
+        let mut cam = Camera {
             x: fixed::from_int(best.0) + fixed::HALF,
             y: fixed::from_int(best.1) + fixed::HALF,
             ..Default::default()
-        }
+        };
+        // The ground is not at sea level everywhere.  A camera left at the
+        // default eye height on ground that has risen is *underneath* it,
+        // and everything it renders is wrong in a way that looks like the
+        // renderer is broken rather than like the camera is buried.
+        cam.stand(city);
+        cam
     }
 
     /// Unit vector along the view direction.
@@ -133,6 +139,17 @@ impl Camera {
         );
     }
 
+    /// Put the eye at head height above whatever the ground is doing here.
+    ///
+    /// Called every frame rather than only on moving, because the ground
+    /// under a stationary camera can still change - the terrain generator
+    /// levels a pad under every building it raises, so a camera standing
+    /// next to a lot can find itself on a kerb that was not there when the
+    /// city was first laid out.
+    pub fn stand(&mut self, city: &City) {
+        self.z = city.ground(fixed::floor(self.x), fixed::floor(self.y)) + EYE;
+    }
+
     /// Move by a world-space delta, sliding along walls.
     ///
     /// The two axes are resolved separately, which is what makes a corner
@@ -143,21 +160,26 @@ impl Camera {
     /// along its *heading* while the camera is looking somewhere else - you
     /// do not stop walking to look up at a building.
     pub fn slide(&mut self, city: &City, mx: Fx, my: Fx) {
+        self.slide_where(mx, my, |x, y| city.walkable(x, y));
+    }
+
+    /// Move by a world-space delta, but only onto ground `allowed` accepts.
+    ///
+    /// The autopilot needs this. "Not built on" is the right test for a
+    /// vehicle and the wrong one for a camera touring the streets: parks and
+    /// plazas pass it, they are clearings in the middle of blocks, and a
+    /// camera that drifts into one is surrounded on all sides with nothing
+    /// to look at but the backs of buildings.
+    pub fn slide_where(&mut self, mx: Fx, my: Fx, allowed: impl Fn(i32, i32) -> bool) {
         let nx = self.x + mx;
-        if clear(city, nx + RADIUS.copysign(mx), self.y) {
+        if allowed(fixed::floor(nx + RADIUS.copysign(mx)), fixed::floor(self.y)) {
             self.x = nx;
         }
         let ny = self.y + my;
-        if clear(city, self.x, ny + RADIUS.copysign(my)) {
+        if allowed(fixed::floor(self.x), fixed::floor(ny + RADIUS.copysign(my))) {
             self.y = ny;
         }
     }
-}
-
-/// Whether a point is in open air at eye level.
-#[inline]
-fn clear(city: &City, x: Fx, y: Fx) -> bool {
-    city.walkable(fixed::floor(x), fixed::floor(y))
 }
 
 /// `Fx` has no `copysign`, and the sign that matters here is the *movement's*

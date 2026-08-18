@@ -411,11 +411,11 @@ mod tests {
     /// place cars at the origin and care about nothing else.
     fn open_ground() -> City {
         let mut c = City::generate(21);
-        for y in 0..4 {
-            for x in 0..4 {
-                let i = y * crate::world::SIZE + x;
-                c.cells[i].height = 0;
-                c.cells[i].kind = crate::world::Kind::Road;
+        for y in 0..4i32 {
+            for x in 0..4i32 {
+                c.elev.build(x, y, 0);
+                c.cells[y as usize * crate::world::SIZE + x as usize].kind =
+                    crate::world::Kind::Road;
             }
         }
         c

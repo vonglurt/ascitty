@@ -12,14 +12,19 @@
 //! and a handful of cell heights; its windows are a hash of
 //! (lot, face, floor, bay), evaluated when a ray happens to land on one.
 
+use crate::elevation::Elevation;
 use crate::rng::{hash3, Rng};
+use crate::walk::WalkMap;
+use crate::zone::{self, Use, Zone, ZoneMap, BLOCK_PITCH, CITY_BLOCKS, MIN_BLOCK};
 
 /// The city is this many cells on a side.
 ///
-/// 128, and it wants to stay a power of two under 256: the lot record stores
-/// its footprint corners as `u8`, and the Plus/4 build indexes its baked
-/// district with a shift.
-pub const SIZE: usize = 128;
+/// Derived rather than chosen: sixteen blocks of built city, plus a block of
+/// outskirts on each side so that the built area has an edge you can walk to
+/// rather than one that coincides with the end of the world.  The lot record
+/// stores its footprint corners as `u8`, so this must stay under 256, which
+/// eighteen blocks of thirteen cells comfortably does.
+pub const SIZE: usize = BLOCK_PITCH * (CITY_BLOCKS as usize + 2);
 
 /// A cell is about this many metres across.  Not used in any calculation -
 /// the renderer works in cells throughout - but every dimension in this file
@@ -47,9 +52,6 @@ pub enum Kind {
 pub struct Cell {
     /// What is here.
     pub kind: Kind,
-    /// Height in world units, where one unit is one cell width.  Zero for
-    /// anything you can walk on.
-    pub height: u8,
     /// Index into [`City::lots`], or [`NO_LOT`].
     pub lot: u16,
     /// Per-cell noise, so identical cells still differ in their detail.
@@ -117,6 +119,10 @@ pub struct Lot {
     pub height: u8,
     /// How it is built.
     pub arch: Arch,
+    /// What it is for.  Orthogonal to `arch`: a twelve-storey residential
+    /// slab and a twelve-storey office slab are built the same way and are
+    /// different buildings.
+    pub use_: Use,
     /// Hue of the facade, as a [`crate::palette`] hue index.
     pub hue: u8,
     /// Base luminance of the facade, 3 to 7.
@@ -156,6 +162,12 @@ pub struct City {
     /// The street system.  The renderer reads this directly for markings, so
     /// the paint on the road and the shape of the road come from one place.
     pub plan: Plan,
+    /// What each piece of ground is for.
+    pub zones: ZoneMap,
+    /// How high the ground is, and how high what stands on it is.
+    pub elev: Elevation,
+    /// Where a person on foot may be.
+    pub walk: WalkMap,
     /// The seed it was generated from.
     pub seed: u32,
 }
@@ -189,8 +201,13 @@ pub enum RoadClass {
     Street = 2,
     /// Three cells.
     Avenue = 3,
-    /// Four or five cells.  The arterials, and the long views.
+    /// Four or five cells.
     Boulevard = 4,
+    /// Twelve to sixteen cells - the better part of a hundred metres of
+    /// carriageway, kerb to kerb.  There are one or two of these in a city
+    /// and they run its whole length; everything about the core is arranged
+    /// around them.
+    Arterial = 5,
 }
 
 impl RoadClass {
@@ -200,6 +217,7 @@ impl RoadClass {
             2 => RoadClass::Street,
             3 => RoadClass::Avenue,
             4 => RoadClass::Boulevard,
+            5 => RoadClass::Arterial,
             _ => RoadClass::None,
         }
     }
@@ -281,10 +299,23 @@ impl Axis {
         let mut across = vec![0u8; SIZE];
         let mut width = vec![0u8; SIZE];
 
+        // The one arterial on this axis, placed before anything else so it
+        // lands where it belongs - through the middle of the city, not
+        // wherever the sequence of gaps happened to arrive.
+        let arterial = SIZE / 2 + rng.range(-(BLOCK_PITCH as i32), BLOCK_PITCH as i32) as usize;
+
         // Start part way in, so the edge of the map is never a kerb.
         let mut i = rng.range(3, 11) as usize;
+        let mut placed_arterial = false;
         while i < SIZE {
-            let c = pick_class(rng, long);
+            // An arterial takes precedence over whatever would have gone
+            // here, once, as soon as the walk reaches the middle.
+            let c = if !placed_arterial && i + 16 >= arterial {
+                placed_arterial = true;
+                RoadClass::Arterial
+            } else {
+                pick_class(rng, long)
+            };
             let w = road_width(rng, c);
             if i + w >= SIZE {
                 break;
@@ -333,6 +364,7 @@ fn road_width(rng: &mut Rng, c: RoadClass) -> usize {
         RoadClass::Street => 2,
         RoadClass::Avenue => 3,
         RoadClass::Boulevard => 4 + rng.below(2) as usize,
+        RoadClass::Arterial => 12 + rng.below(5) as usize,
     }
 }
 
@@ -352,9 +384,29 @@ fn gap_after(rng: &mut Rng, c: RoadClass, long: bool) -> usize {
         (RoadClass::Avenue, false) => (8, 14),
         (RoadClass::Boulevard, true) => (16, 26),
         (RoadClass::Boulevard, false) => (10, 17),
-        (RoadClass::None, _) => (8, 12),
+        (RoadClass::Arterial, true) => (18, 28),
+        (RoadClass::Arterial, false) => (14, 22),
+        (RoadClass::None, _) => (10, 14),
     };
-    rng.range(lo, hi) as usize
+    // Clamped, not merely chosen, so the guarantee holds however the figures
+    // above are retuned: a block is at least `MIN_BLOCK` cells of buildable
+    // ground plus a cell of pavement on each side.  Below that there is no
+    // room for a building with a front and a back, and a subdivision that
+    // tried would produce lots one cell deep.
+    (rng.range(lo, hi) as usize).max(MIN_BLOCK + 2)
+}
+
+/// Which road a crossing crosses.
+///
+/// The stripes run *with* the traffic on the road being crossed and repeat
+/// *across* it, which is the way round they are painted: someone walking
+/// east over a north-south avenue crosses a ladder of north-south bars.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Crossing {
+    /// Crossing a north-south road.  Stripes repeat along x.
+    OverCols,
+    /// Crossing an east-west road.  Stripes repeat along y.
+    OverRows,
 }
 
 /// The street system: the roads on both axes.
@@ -382,6 +434,32 @@ impl Plan {
     #[inline(always)]
     pub fn is_junction(&self, x: i32, y: i32) -> bool {
         self.cols.is_street(x) && self.rows.is_street(y)
+    }
+
+    /// If this cell is a pedestrian crossing, which road it crosses.
+    ///
+    /// Crossings sit **outside** the junction box, one cell back along the
+    /// road, which is where a stop line goes and where they are painted in
+    /// life.  Putting them inside the box instead - which is the obvious
+    /// thing, and was wrong here for a while - produces a crossing that no
+    /// pavement touches: every orthogonal neighbour of a junction cell is
+    /// either more junction or plain carriageway, so the pavements end up as
+    /// isolated rings around each block with no way between them.
+    #[inline(always)]
+    pub fn crossing_at(&self, x: i32, y: i32) -> Option<Crossing> {
+        if self.cols.is_street(x)
+            && !self.rows.is_road(y)
+            && (self.rows.is_street(y - 1) || self.rows.is_street(y + 1))
+        {
+            return Some(Crossing::OverCols);
+        }
+        if self.rows.is_street(y)
+            && !self.cols.is_road(x)
+            && (self.cols.is_street(x - 1) || self.cols.is_street(x + 1))
+        {
+            return Some(Crossing::OverRows);
+        }
+        None
     }
 
     /// Whether a cell has pavement on it: not carriageway, but beside one.
@@ -417,15 +495,21 @@ impl City {
     #[inline(always)]
     pub fn at(&self, x: i32, y: i32) -> Cell {
         if x < 0 || y < 0 || x >= SIZE as i32 || y >= SIZE as i32 {
-            return Cell { kind: Kind::Road, height: 0, lot: NO_LOT, seed: 0 };
+            return Cell { kind: Kind::Road, lot: NO_LOT, seed: 0 };
         }
         self.cells[y as usize * SIZE + x as usize]
     }
 
-    /// Height at a cell, zero outside the map.
+    /// Height of the building at a cell, zero outside the map.
     #[inline(always)]
     pub fn height(&self, x: i32, y: i32) -> u8 {
-        self.at(x, y).height
+        self.elev.building(x, y)
+    }
+
+    /// Ground level at a cell, in cells.
+    #[inline(always)]
+    pub fn ground(&self, x: i32, y: i32) -> crate::fixed::Fx {
+        self.elev.ground(x, y)
     }
 
     /// The lot a cell belongs to, if any.
@@ -439,20 +523,28 @@ impl City {
         }
     }
 
-    /// Whether a cell can be stood in.
+    /// Whether a *vehicle* can be here - anything that is not built on.
+    ///
+    /// Not the same question as whether a person can be here; that is
+    /// [`crate::walk::WalkMap`], and conflating the two is what put
+    /// pedestrians in the middle of the avenue.
     #[inline(always)]
     pub fn walkable(&self, x: i32, y: i32) -> bool {
-        self.at(x, y).height == 0
+        self.elev.open(x, y)
     }
 
     /// Generate a city from a seed.
+    ///
+    /// Four layers, in the order they depend on each other: the roads decide
+    /// where the blocks are, the zoning decides what those blocks are for,
+    /// the elevation carries what gets built, and the walking network is
+    /// derived from all three.
     pub fn generate(seed: u32) -> City {
         let mut rng = Rng::new(seed);
         let plan = Plan::generate(&mut rng);
-        let mut cells = vec![
-            Cell { kind: Kind::Road, height: 0, lot: NO_LOT, seed: 0 };
-            SIZE * SIZE
-        ];
+        let zones = ZoneMap::generate(SIZE, seed);
+        let mut elev = Elevation::generate(SIZE, seed);
+        let mut cells = vec![Cell { kind: Kind::Road, lot: NO_LOT, seed: 0 }; SIZE * SIZE];
         let mut lots: Vec<Lot> = Vec::new();
 
         // Pass 1: lay the plan onto the grid.
@@ -473,16 +565,14 @@ impl City {
         // Pass 2: find each block and fill it.
         //
         // A block is a maximal run of buildable cells in both directions.
-        // Scanning for runs - rather than stepping by a street period - is
-        // what lets the plan have roads of different widths at irregular
-        // spacing.
+        // Scanning for runs - rather than stepping at a fixed period - is
+        // what lets the roads be irregular in the first place.
         //
         // Each block is reached exactly once, at its **top row**: a run is
         // only filled when the cell above its left end is not buildable.
-        // Without that test a block gets refilled once per row it spans, and
+        // Without that test a block is refilled once per row it spans, and
         // the symptom is subtle - buildings quietly reroll their height and
-        // colour, plazas turn into towers on the second pass, and the city
-        // is different depending on how tall its blocks happen to be.
+        // colour, and plazas turn into towers on the second pass.
         for y in 0..SIZE as i32 {
             let mut x = 0i32;
             while x < SIZE as i32 {
@@ -500,11 +590,16 @@ impl City {
                     while y1 + 1 < SIZE as i32 && plan.is_buildable(x0, y1 + 1) {
                         y1 += 1;
                     }
-                    fill_block(
-                        &mut cells,
-                        &mut lots,
-                        &mut rng,
+                    let mut site = Site {
+                        cells: &mut cells,
+                        lots: &mut lots,
+                        elev: &mut elev,
+                        zones: &zones,
+                        rng: &mut rng,
                         seed,
+                    };
+                    fill_block(
+                        &mut site,
                         Rect {
                             x0: x0 as usize,
                             y0: y as usize,
@@ -517,7 +612,12 @@ impl City {
             }
         }
 
-        City { cells, lots, plan, seed }
+        // Pass 3: derive where a person may walk.
+        let walk = WalkMap::build(SIZE, &plan, |x, y| {
+            cells[y as usize * SIZE + x as usize].kind
+        });
+
+        City { cells, lots, plan, zones, elev, walk, seed }
     }
 }
 
@@ -547,25 +647,6 @@ impl Rect {
     }
 }
 
-/// How built-up a place is, 0 (outskirts) to 255 (the middle of downtown).
-///
-/// Two things added together, because one on its own is not a city.
-///
-/// A single falloff from the centre of the map gives a perfectly conical
-/// skyline: tallest in the middle, shorter in every direction, monotonic
-/// from everywhere. Real cities have a downtown *and* secondary clusters -
-/// a second business district, a tall patch around a station - with quiet
-/// ground in between. So the falloff is only two thirds of it; the rest is
-/// a smooth noise field, which puts the clusters somewhere different in
-/// every city.
-fn intensity(x: usize, y: usize, seed: u32) -> u32 {
-    let c = SIZE as i32 / 2;
-    let (dx, dy) = ((x as i32 - c).abs(), (y as i32 - c).abs());
-    let d = dx.max(dy) as u32;
-    let core = 255u32.saturating_sub(d * 255 / (SIZE as u32 / 2));
-    (core * 2 + field(x, y, seed)) / 3
-}
-
 /// Side of the noise lattice, in cells.  Sixteen puts a cluster about every
 /// hundred metres, which is the scale a district changes on.
 const FIELD_CELL: usize = 16;
@@ -587,51 +668,69 @@ fn field(x: usize, y: usize, seed: u32) -> u32 {
 }
 
 /// Fill one block interior: either open it as a park, or subdivide it into
+/// Everything the block filler is working with.
+///
+/// Introduced because the two functions below were taking eight loose
+/// arguments between them and it was never clear at a call site which `&mut`
+/// was which.  They are the same six things every time, they all live for
+/// exactly as long as `City::generate`, and naming them once says so.
+struct Site<'a> {
+    cells: &'a mut [Cell],
+    lots: &'a mut Vec<Lot>,
+    elev: &'a mut Elevation,
+    zones: &'a ZoneMap,
+    rng: &'a mut Rng,
+    seed: u32,
+}
+
 /// Fill one block interior: either open it as a park, or subdivide it into
 /// lots and raise a building on each.
-fn fill_block(
-    cells: &mut [Cell],
-    lots: &mut Vec<Lot>,
-    rng: &mut Rng,
-    seed: u32,
-    block: Rect,
-) {
+fn fill_block(site: &mut Site, block: Rect) {
     let Rect { x0, y0, x1, y1 } = block;
     let mid = ((x0 + x1) / 2, (y0 + y1) / 2);
-    let built = intensity(mid.0, mid.1, seed);
+    let zone = site.zones.at(mid.0 as i32, mid.1 as i32);
 
-    // Open ground.  Likelier out in the neighbourhoods than downtown, and
-    // likelier on a big block than a small one - a square needs room.
-    let open_odds = 1 + (255 - built) / 45 + (block.w() * block.h() / 40) as u32;
-    if rng.chance(open_odds, 16) {
-        let park = rng.chance(2, 3);
+    // Some ground is not built on at all, and which ground that is comes
+    // from the zoning rather than from a dice roll per block - a park is a
+    // place, not an accident.
+    if !zone.is_built() {
+        let green = zone == Zone::Park;
         for y in y0..=y1 {
             for x in x0..=x1 {
-                cells[y * SIZE + x].kind = if park { Kind::Park } else { Kind::Plaza };
+                site.cells[y * SIZE + x].kind = if green { Kind::Park } else { Kind::Plaza };
             }
         }
         return;
     }
 
+    // A civic block keeps most of its ground open and puts one broad low
+    // building in the middle of it, which is what a courthouse looks like
+    // from the street.
+    let civic = zone == Zone::Civic;
+
     // Subdivide.  Split the longer axis until every piece is small enough to
     // be one address.  Downtown lots are bigger, because downtown buildings
     // are - a tower needs a footprint and a walk-up does not.
-    let min_lot = if built > 170 { 4 } else { 3 };
+    let min_lot = match zone {
+        Zone::Downtown => 5,
+        Zone::Commercial => 4,
+        _ => 3,
+    };
     let mut queue = vec![(x0, y0, x1, y1)];
     let mut out = Vec::new();
     while let Some((ax, ay, bx, by)) = queue.pop() {
         let (w, h) = (bx - ax + 1, by - ay + 1);
         let big = w.max(h);
-        if big <= min_lot || (big <= min_lot + 2 && rng.chance(1, 3)) {
+        if big <= min_lot || (big <= min_lot + 2 && site.rng.chance(1, 3)) {
             out.push((ax, ay, bx, by));
             continue;
         }
         if w >= h {
-            let cut = ax + 1 + rng.below((w - 2) as u32) as usize;
+            let cut = ax + 1 + site.rng.below((w - 2) as u32) as usize;
             queue.push((ax, ay, cut, by));
             queue.push((cut + 1, ay, bx, by));
         } else {
-            let cut = ay + 1 + rng.below((h - 2) as u32) as usize;
+            let cut = ay + 1 + site.rng.below((h - 2) as u32) as usize;
             queue.push((ax, ay, bx, cut));
             queue.push((ax, cut + 1, bx, by));
         }
@@ -641,17 +740,19 @@ fn fill_block(
     // than as a shuffled deck.  Neighbouring blocks draw from neighbouring
     // lattice cells, so the palette drifts across the map instead of
     // changing at every kerb.
-    let palette_id = (field(mid.0, mid.1, seed ^ 0x_9A11_E77E) / 32) as usize;
+    let palette_id = (field(mid.0, mid.1, site.seed ^ 0x_9A11_E77E) / 32) as usize;
 
-    for (ax, ay, bx, by) in out {
-        raise(
-            cells,
-            lots,
-            rng,
-            built,
-            palette_id,
-            Rect { x0: ax, y0: ay, x1: bx, y1: by },
-        );
+    for (i, (ax, ay, bx, by)) in out.iter().copied().enumerate() {
+        // On a civic block only the middle lot is built.
+        if civic && i != out.len() / 2 {
+            for y in ay..=by {
+                for x in ax..=bx {
+                    site.cells[y * SIZE + x].kind = Kind::Plaza;
+                }
+            }
+            continue;
+        }
+        raise(site, zone, palette_id, Rect { x0: ax, y0: ay, x1: bx, y1: by });
     }
 }
 
@@ -687,21 +788,22 @@ const PALETTES: [&[u8]; 8] = [
 ];
 
 /// Put a building on one lot.
-fn raise(
-    cells: &mut [Cell],
-    lots: &mut Vec<Lot>,
-    rng: &mut Rng,
-    built: u32,
-    palette_id: usize,
-    lot: Rect,
-) {
+fn raise(site: &mut Site, zone: Zone, palette_id: usize, lot: Rect) {
     let footprint = (lot.w() * lot.h()) as u32;
+    let use_ = zone::use_for(zone, site.rng);
 
-    // The tallest thing this ground could carry.  Downtown ground carries
-    // more, and a big footprint carries more than a narrow one - which is
-    // why the tall things cluster and the gaps between them fill with
-    // walk-ups.
-    let ceiling = (6 + built * 54 / 255 + footprint.min(30)).clamp(6, 84);
+    // The tallest thing this ground could carry.  Three things multiply
+    // together, and they are the layout the whole city is arranged around:
+    //
+    //   the zone       an office tower may be tall; a house may not
+    //   the ring       full height in the core, a fifth of it at the edge
+    //   the footprint  a tower needs ground under it
+    //
+    // The ring term is what the "decreasing height outwards" is: intensity
+    // is 255 through the downtown blocks and falls to 50 by the built edge.
+    let intensity = site.zones.intensity(lot.x0 as i32, lot.y0 as i32);
+    let zoned = zone.ceiling() * intensity / 255;
+    let ceiling = (zoned * (8 + footprint.min(24)) / 20).clamp(3, 96);
 
     // Height is drawn from a skewed distribution, not a uniform one.
     //
@@ -711,88 +813,129 @@ fn raise(
     // ones, progressively fewer tall ones, and the occasional landmark far
     // above everything near it.  Four bands approximate that closely enough
     // and are legible.
-    let roll = rng.below(1000);
-    let low = (ceiling / 5).max(4) as i32;
+    let roll = site.rng.below(1000);
+    let low = (ceiling / 5).max(3) as i32;
     let mid = (ceiling / 2).max(low as u32 + 2) as i32;
     let height = if roll < 520 {
-        rng.range(2, low) // the fabric: walk-ups and low commercial
+        site.rng.range(2, low) // the fabric: walk-ups and low commercial
     } else if roll < 840 {
-        rng.range(low, mid) // mid-rise, the bulk of a real skyline
+        site.rng.range(low, mid) // mid-rise, the bulk of a real skyline
     } else if roll < 985 {
-        rng.range(mid, ceiling as i32) // towers
+        site.rng.range(mid, (ceiling as i32).max(mid + 1)) // towers
     } else {
         // A landmark, allowed to break the local roofline.  Rare enough that
         // finding one is an event, and gated on a footprint that could
         // actually carry it.
-        let over = if footprint >= 9 { ceiling * 3 / 2 } else { ceiling + 4 };
-        rng.range(ceiling as i32, over as i32)
+        let over = if footprint >= 12 { ceiling * 3 / 2 } else { ceiling + 4 };
+        site.rng.range(ceiling as i32, over as i32)
     }
-    .clamp(2, 90) as u8;
+    .clamp(2, 96) as u8;
 
-    let arch = pick_arch(rng, height);
+    let arch = pick_arch(site.rng, use_, height);
 
     let palette = PALETTES[palette_id.min(PALETTES.len() - 1)];
-    let hue = palette[rng.below(palette.len() as u32) as usize];
+    let hue = palette[site.rng.below(palette.len() as u32) as usize];
 
     // Brightness, biased by how built-up the area is: downtown glass is lit
     // late and the outskirts are not.
-    let luma = (3 + rng.below(3) + u32::from(built > 160)).min(7) as u8;
+    let luma = (3 + site.rng.below(3) + u32::from(intensity > 200)).min(7) as u8;
 
-    // Occupancy.  A wide spread on purpose: the towers that are nearly dark
-    // are what make the ones that are nearly full look full.
-    let lit = match rng.below(10) {
-        0 => rng.range(1, 4),
-        1..=2 => rng.range(4, 8),
-        3..=7 => rng.range(8, 12),
-        _ => rng.range(11, 15),
+    // Occupancy.  Offices empty out and light up unevenly; homes are mostly
+    // occupied.  The spread is wide on purpose - the towers that are nearly
+    // dark are what make the ones that are nearly full look full.
+    let lit = match use_ {
+        Use::Residential => site.rng.range(8, 15),
+        Use::Civic => site.rng.range(3, 8),
+        Use::Commercial => match site.rng.below(10) {
+            0 => site.rng.range(1, 4),
+            1..=2 => site.rng.range(4, 8),
+            3..=7 => site.rng.range(8, 12),
+            _ => site.rng.range(11, 15),
+        },
     } as u8;
 
-    let idx = lots.len() as u16;
-    lots.push(Lot {
+    // Cut the whole footprint to one pad before anything stands on it.
+    site.elev.level(lot.x0, lot.y0, lot.x1, lot.y1);
+
+    let idx = site.lots.len() as u16;
+    site.lots.push(Lot {
         x0: lot.x0 as u8,
         y0: lot.y0 as u8,
         x1: lot.x1 as u8,
         y1: lot.y1 as u8,
         height,
         arch,
+        use_,
         hue,
         luma,
         lit,
-        seed: rng.next_u32(),
+        seed: site.rng.next_u32(),
     });
 
     for y in lot.y0..=lot.y1 {
         for x in lot.x0..=lot.x1 {
-            let c = &mut cells[y * SIZE + x];
+            let c = &mut site.cells[y * SIZE + x];
             c.kind = Kind::Building;
             c.lot = idx;
-            c.height = cell_height(height, arch, lot, x, y);
+            site.elev.build(x as i32, y as i32, cell_height(height, arch, lot, x, y));
         }
     }
 }
 
 /// What a building of a given height is likely to be built as.
-fn pick_arch(rng: &mut Rng, height: u8) -> Arch {
-    if height <= 3 {
-        Arch::LowRise
-    } else if height <= 10 {
-        if rng.chance(3, 4) {
-            Arch::Prewar
-        } else {
-            Arch::LowRise
+fn pick_arch(rng: &mut Rng, use_: Use, height: u8) -> Arch {
+    // What a building is for narrows how it is likely to be built.  Nobody
+    // puts a curtain wall on a walk-up and nobody bolts a fire escape to an
+    // office tower, so the two questions are asked in the right order:
+    // use first, then height.
+    match use_ {
+        Use::Civic => {
+            if height <= 4 {
+                Arch::LowRise
+            } else {
+                Arch::Prewar
+            }
         }
-    } else if height >= 34 {
-        match rng.below(3) {
-            0 => Arch::Setback,
-            1 => Arch::Deco,
-            _ => Arch::CurtainWall,
+        Use::Residential => {
+            if height <= 4 {
+                Arch::LowRise
+            } else if height <= 14 {
+                // Brick, punched windows, a fire escape on the street face.
+                if rng.chance(4, 5) {
+                    Arch::Prewar
+                } else {
+                    Arch::LowRise
+                }
+            } else if rng.chance(3, 5) {
+                // The post-war residential slab: long, flat, repetitive.
+                Arch::Slab
+            } else {
+                Arch::Setback
+            }
         }
-    } else {
-        match rng.below(4) {
-            0 => Arch::Slab,
-            1 => Arch::CurtainWall,
-            2 => Arch::Setback,
-            _ => Arch::Prewar,
+        Use::Commercial => {
+            if height <= 3 {
+                Arch::LowRise
+            } else if height <= 10 {
+                if rng.chance(3, 4) {
+                    Arch::Prewar
+                } else {
+                    Arch::LowRise
+                }
+            } else if height >= 34 {
+                match rng.below(3) {
+                    0 => Arch::Setback,
+                    1 => Arch::Deco,
+                    _ => Arch::CurtainWall,
+                }
+            } else {
+                match rng.below(4) {
+                    0 => Arch::Slab,
+                    1 => Arch::CurtainWall,
+                    2 => Arch::Setback,
+                    _ => Arch::Prewar,
+                }
+            }
         }
     }
 }
@@ -846,7 +989,9 @@ mod tests {
         let b = City::generate(99);
         assert_eq!(a.lots.len(), b.lots.len());
         for i in 0..a.cells.len() {
-            assert_eq!(a.cells[i].height, b.cells[i].height, "cell {i} differs");
+            let (x, y) = ((i % SIZE) as i32, (i / SIZE) as i32);
+            assert_eq!(a.height(x, y), b.height(x, y), "cell {i} differs");
+            assert_eq!(a.elev.ground_eighths(x, y), b.elev.ground_eighths(x, y));
             assert_eq!(a.cells[i].kind, b.cells[i].kind);
         }
     }
@@ -855,7 +1000,12 @@ mod tests {
     fn different_seeds_build_different_cities() {
         let a = City::generate(1);
         let b = City::generate(2);
-        let same = (0..a.cells.len()).filter(|&i| a.cells[i].height == b.cells[i].height).count();
+        let same = (0..a.cells.len())
+            .filter(|&i| {
+                let (x, y) = ((i % SIZE) as i32, (i / SIZE) as i32);
+                a.height(x, y) == b.height(x, y)
+            })
+            .count();
         assert!(same < a.cells.len() * 9 / 10, "two seeds produced nearly the same city");
     }
 
@@ -865,7 +1015,7 @@ mod tests {
         for y in 0..SIZE as i32 {
             for x in 0..SIZE as i32 {
                 if c.plan.is_road(x, y) {
-                    assert_eq!(c.at(x, y).height, 0, "a building stands in the road at {x},{y}");
+                    assert_eq!(c.height(x, y), 0, "a building stands in the road at {x},{y}");
                 }
             }
         }
@@ -905,45 +1055,110 @@ mod tests {
     fn roads_never_run_straight_into_each_other() {
         // Two roads with no block between them are one wide road with a
         // seam down it, and the marking code would paint two centre lines
-        // three metres apart.
+        // three metres apart.  Checked by *shape* rather than by a length
+        // limit, because an arterial is legitimately sixteen cells wide:
+        // every unbroken run of road must be exactly one road, so all its
+        // cells agree on a width and the run is that long.
         for seed in [1u32, 2, 3, 4, 5] {
             let c = City::generate(seed);
             for axis in [&c.plan.cols, &c.plan.rows] {
-                let mut run = 0;
-                for i in 0..SIZE as i32 {
-                    if axis.is_road(i) {
-                        run += 1;
-                        assert!(run <= 5, "seed {seed}: a {run}-cell run of road");
-                    } else {
-                        run = 0;
+                let mut i = 0i32;
+                while i < SIZE as i32 {
+                    if !axis.is_road(i) {
+                        i += 1;
+                        continue;
                     }
+                    let w = axis.at(i).width as i32;
+                    for k in 0..w {
+                        let r = axis.at(i + k);
+                        assert!(r.is_road(), "seed {seed}: a road at {i} is {w} wide but ends at {}", i + k);
+                        assert_eq!(r.width as i32, w, "seed {seed}: two roads meet at {}", i + k);
+                        assert_eq!(r.across as i32, k, "seed {seed}: offsets do not run 0..{w} at {i}");
+                    }
+                    assert!(!axis.is_road(i + w), "seed {seed}: a road runs on past its width at {i}");
+                    i += w;
                 }
             }
         }
     }
 
     #[test]
-    fn an_alley_has_no_pavement_beside_it() {
-        // An alley is a gap between buildings, not a small street.
+    fn an_alley_alone_never_produces_a_pavement() {
+        // An alley is a gap between buildings, not a small street.  A cell
+        // beside one may still be pavement if a *proper* street is also next
+        // to it - that is a corner, and it is correct - so the claim has to
+        // be about cells whose only neighbouring road is the alley.
         let c = City::generate(7);
-        for x in 0..SIZE as i32 {
-            if c.plan.cols.at(x).class != RoadClass::Alley {
-                continue;
-            }
-            for y in 0..SIZE as i32 {
-                if c.plan.rows.is_road(y) {
+        let mut checked = 0;
+        for y in 0..SIZE as i32 {
+            for x in 0..SIZE as i32 {
+                if c.plan.is_road(x, y) {
                     continue;
                 }
-                for dx in [-1i32, 1] {
-                    if c.plan.is_road(x + dx, y) {
+                let neighbours = [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)];
+                let roads: Vec<RoadClass> = neighbours
+                    .iter()
+                    .filter_map(|(dx, dy)| {
+                        let (nx, ny) = (x + dx, y + dy);
+                        c.plan.is_road(nx, ny).then(|| {
+                            let col = c.plan.cols.at(nx).class;
+                            if col != RoadClass::None {
+                                col
+                            } else {
+                                c.plan.rows.at(ny).class
+                            }
+                        })
+                    })
+                    .collect();
+                if roads.is_empty() || roads.iter().any(|k| k.is_street()) {
+                    continue;
+                }
+                checked += 1;
+                assert_ne!(
+                    c.at(x, y).kind,
+                    Kind::Sidewalk,
+                    "a cell at {x},{y} whose only neighbour is an alley grew a pavement"
+                );
+            }
+        }
+        assert!(checked > 20, "only {checked} alley-only cells - the test proved nothing");
+    }
+
+    #[test]
+    fn no_block_is_smaller_than_the_minimum() {
+        for seed in [1u32, 2, 3, 4, 5, 99] {
+            let c = City::generate(seed);
+            // Every run of buildable ground, on both axes, through the
+            // middle of the map where the blocks are.
+            let mid = SIZE as i32 / 2;
+            for (horizontal, fixed_axis) in [(true, mid), (false, mid)] {
+                // Only blocks that get built on.  The strips left over at
+                // the very edge of the map are whatever is between the last
+                // road and the end of the world; they are zoned as outskirts
+                // and nothing is raised on them, so their size is not a
+                // claim this makes.
+                let mut run = 0usize;
+                let mut start = 0i32;
+                for i in 0..SIZE as i32 {
+                    let (x, y) = if horizontal { (i, fixed_axis) } else { (fixed_axis, i) };
+                    if c.plan.is_buildable(x, y) {
+                        if run == 0 {
+                            start = i;
+                        }
+                        run += 1;
                         continue;
                     }
-                    assert_ne!(
-                        c.at(x + dx, y).kind,
-                        Kind::Sidewalk,
-                        "an alley at {x} grew a pavement at {},{y}",
-                        x + dx
-                    );
+                    if run > 0 {
+                        let (sx, sy) =
+                            if horizontal { (start, fixed_axis) } else { (fixed_axis, start) };
+                        if c.zones.at(sx, sy).is_built() {
+                            assert!(
+                                run >= MIN_BLOCK,
+                                "seed {seed}: a built block only {run} cells across at {sx},{sy}"
+                            );
+                        }
+                    }
+                    run = 0;
                 }
             }
         }
@@ -986,13 +1201,14 @@ mod tests {
     #[test]
     fn buildings_always_carry_a_lot_and_a_height() {
         let c = city();
-        for cell in &c.cells {
+        for (i, cell) in c.cells.iter().enumerate() {
+            let (x, y) = ((i % SIZE) as i32, (i / SIZE) as i32);
             if cell.kind == Kind::Building {
                 assert_ne!(cell.lot, NO_LOT);
-                assert!(cell.height > 0);
+                assert!(c.height(x, y) > 0, "a building at {x},{y} has no height");
                 assert!((cell.lot as usize) < c.lots.len());
             } else {
-                assert_eq!(cell.height, 0);
+                assert_eq!(c.height(x, y), 0, "something stands on open ground at {x},{y}");
             }
         }
     }
@@ -1014,20 +1230,23 @@ mod tests {
     }
 
     #[test]
-    fn downtown_is_taller_than_the_edge() {
+    fn downtown_is_taller_than_the_outskirts() {
+        // Sampled over a couple of blocks rather than a few cells: the very
+        // middle of the map is as likely as not to be the junction of the
+        // two arterials, which is a large amount of tarmac and no buildings
+        // at all.
         let c = city();
-        let mid = SIZE / 2;
-        let tall_mid: u32 = (mid - 8..mid + 8)
-            .flat_map(|y| (mid - 8..mid + 8).map(move |x| (x, y)))
-            .map(|(x, y)| c.height(x as i32, y as i32) as u32)
-            .max()
-            .unwrap();
-        let tall_edge: u32 = (0..16)
-            .flat_map(|y| (0..16).map(move |x| (x, y)))
-            .map(|(x, y)| c.height(x, y) as u32)
-            .max()
-            .unwrap();
-        assert!(tall_mid > tall_edge, "downtown ({tall_mid}) is no taller than the edge ({tall_edge})");
+        let mid = SIZE as i32 / 2;
+        let tallest = |x0: i32, y0: i32, n: i32| -> u32 {
+            (y0..y0 + n)
+                .flat_map(|y| (x0..x0 + n).map(move |x| (x, y)))
+                .map(|(x, y)| c.height(x, y) as u32)
+                .max()
+                .unwrap()
+        };
+        let core = tallest(mid - 26, mid - 26, 52);
+        let out = tallest(BLOCK_PITCH as i32, BLOCK_PITCH as i32, 40);
+        assert!(core > out * 2, "downtown tops out at {core} and the outskirts at {out}");
     }
 
     #[test]

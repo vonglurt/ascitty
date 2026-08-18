@@ -27,6 +27,7 @@ use crate::catalog::{self, GlyphId};
 use crate::fixed::{self, Fx};
 use crate::rng::hash3;
 use crate::world::{Arch, Lot};
+use crate::zone::Use;
 
 /// Floors per world unit of height.
 ///
@@ -180,16 +181,36 @@ pub fn facade(lot: &Lot, face: Face, along: Fx, z: Fx, local_h: Fx, lod: Lod) ->
         return Surface { glyph: g, hue, luma: lot.luma };
     }
 
-    // Ground floor: lit shopfront, with a sign band over it.
+    // The ground floor.
+    //
+    // This is where the two uses part company hardest.  A commercial
+    // building meets the street with glass, a lit lobby and signage; a
+    // residential one meets it with a door, a step and a lot of dark wall,
+    // with the occasional shop on the corner.  It is the difference between
+    // a street that is open for business and one where people live, and it
+    // reads from further away than anything else about the building.
     if z < GROUND {
         let h = hash3(lot.seed, f, bay as u32);
-        let sign = h & 7 == 0;
-        return if sign {
-            Surface { glyph: catalog::ST_SIGN, hue: sign_hue(h), luma: 7 }
-        } else if z < fixed::mul(GROUND, fixed::ratio(1, 4)) {
-            Surface { glyph: catalog::G_CORNICE, hue, luma: 3 }
-        } else {
-            Surface { glyph: catalog::facade_tile(lod.cfg(), 0), hue: shop_hue(h), luma: 7 }
+        if z < fixed::mul(GROUND, fixed::ratio(1, 4)) {
+            return Surface { glyph: catalog::G_CORNICE, hue, luma: 3 };
+        }
+        return match lot.use_ {
+            Use::Commercial => {
+                if h & 7 == 0 {
+                    Surface { glyph: catalog::ST_SIGN, hue: sign_hue(h), luma: 7 }
+                } else {
+                    Surface { glyph: catalog::facade_tile(lod.cfg(), 0), hue: shop_hue(h), luma: 7 }
+                }
+            }
+            Use::Civic => Surface { glyph: catalog::G_MULLION + 2, hue, luma: 5 },
+            Use::Residential => {
+                // A doorway every so often, and dark stone between.
+                if h.is_multiple_of(11) {
+                    Surface { glyph: catalog::facade_tile(lod.cfg(), 0), hue: shop_hue(h), luma: 6 }
+                } else {
+                    Surface { glyph: catalog::shade(2), hue, luma: 3 }
+                }
+            }
         };
     }
 
@@ -197,6 +218,17 @@ pub fn facade(lot: &Lot, face: Face, along: Fx, z: Fx, local_h: Fx, lod: Lod) ->
     if lot.arch.has_fire_escape() {
         if let Some(s) = fire_escape(lot, face, bay, floor, z, top_floor) {
             return s;
+        }
+    }
+
+    // A balcony course on the residential slabs.  Two floors in three carry
+    // one, and it is the single most recognisable thing about a block of
+    // flats seen from the street - a horizontal shadow line every storey,
+    // where an office tower has an unbroken sheet of glass.
+    if lot.use_ == Use::Residential && height_of(lot) > 4 && floor % 3 != 2 {
+        let sub = fixed::frac(fixed::mul(z, fixed::from_int(FLOORS_PER_UNIT)));
+        if sub < fixed::ratio(1, 4) {
+            return Surface { glyph: catalog::G_CORNICE + 2, hue, luma: lot.luma.saturating_sub(2).max(1) };
         }
     }
 
@@ -258,11 +290,29 @@ pub fn facade(lot: &Lot, face: Face, along: Fx, z: Fx, local_h: Fx, lod: Lod) ->
         // A dark window is not black - it still catches the sky.
         return Surface { glyph: catalog::shade(1), hue, luma: (lot.luma / 3).max(1) };
     }
+    // A lit window.  A home glows warm and a little unevenly; an office is
+    // the colour of the building and uniformly bright, because it is one
+    // sheet of glass with fluorescent light behind it.
+    let (lit_hue, jitter) = match lot.use_ {
+        Use::Residential => (warm_hue(h), (h >> 20) % 3),
+        _ => (hue, (h >> 20) % 2),
+    };
     Surface {
         glyph: catalog::facade_tile(lod.cfg(), house_style(lot)),
-        hue,
-        luma: (lot.luma as u32 + (h >> 20) % 2).min(7) as u8,
+        hue: lit_hue,
+        luma: (lot.luma as u32 + jitter).min(7) as u8,
     }
+}
+
+/// The colour of a lamp behind a curtain.
+fn warm_hue(h: u32) -> u8 {
+    const WARM: [u8; 4] = [
+        crate::palette::H_YELLOW,
+        crate::palette::H_ORANGE,
+        crate::palette::H_YELLOW,
+        crate::palette::H_WHITE,
+    ];
+    WARM[(h >> 25) as usize & 3]
 }
 
 /// Which of the four lit patterns this *building* is drawn in.  Constant for
@@ -270,6 +320,12 @@ pub fn facade(lot: &Lot, face: Face, along: Fx, z: Fx, local_h: Fx, lod: Lod) ->
 #[inline]
 fn house_style(lot: &Lot) -> u8 {
     (lot.seed >> 17) as u8 & 3
+}
+
+/// A lot's height, as a fixed-point value.
+#[inline]
+fn height_of(lot: &Lot) -> i32 {
+    lot.height as i32
 }
 
 /// How many bays fit across the widest face of a lot.
@@ -354,7 +410,19 @@ mod tests {
     use crate::world::{Arch, City, Lot};
 
     fn lot(arch: Arch, height: u8) -> Lot {
-        Lot { x0: 10, y0: 10, x1: 13, y1: 13, height, arch, hue: 6, luma: 6, lit: 10, seed: 0x1234_5678 }
+        Lot {
+            x0: 10,
+            y0: 10,
+            x1: 13,
+            y1: 13,
+            height,
+            arch,
+            use_: Use::Commercial,
+            hue: 6,
+            luma: 6,
+            lit: 10,
+            seed: 0x1234_5678,
+        }
     }
 
     #[test]

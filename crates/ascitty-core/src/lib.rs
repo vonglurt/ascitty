@@ -34,6 +34,7 @@ pub mod atmos;
 pub mod camera;
 pub mod catalog;
 pub mod drive;
+pub mod elevation;
 pub mod fixed;
 pub mod font;
 pub mod frame;
@@ -45,7 +46,9 @@ pub mod sim;
 pub mod sprite;
 pub mod tour;
 pub mod trig;
+pub mod walk;
 pub mod world;
+pub mod zone;
 
 /// The version of this crate, for the status line and the build manifest.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

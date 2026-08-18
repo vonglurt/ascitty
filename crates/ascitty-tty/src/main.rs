@@ -146,7 +146,8 @@ fn chase(cam: &mut Camera, sim: &Sim, city: &City, rows: i32) {
         cam.x = sim.taxi.x;
         cam.y = sim.taxi.y;
     }
-    cam.z = fixed::ratio(4, 5);
+    // Head height for a car, above whatever the ground is doing here.
+    cam.z = city.ground(fixed::floor(cam.x), fixed::floor(cam.y)) + fixed::ratio(4, 5);
     cam.pitch = rows / 10;
 }
 
@@ -311,6 +312,8 @@ fn run(mut o: Opts) -> Result<(), String> {
     let city = City::generate(o.seed);
     let mut cam = Camera::spawn(&city, SIZE as i32 / 2, SIZE as i32 / 2);
     let mut sim = Sim::new(&city, o.seed);
+    // The cab waits where you start, not where the middle of the map is.
+    sim.park_near(&city, fixed::floor(cam.x), fixed::floor(cam.y));
     let mut view = o.view;
     match view {
         View::Copter => {
@@ -334,7 +337,7 @@ fn run(mut o: Opts) -> Result<(), String> {
         let mut events = Vec::new();
         let mut tour = Tour::new(&city, o.seed);
         if o.view == View::Drive {
-            cam.z = fixed::ratio(4, 5);
+            sim.park_near(&city, fixed::floor(cam.x), fixed::floor(cam.y));
         }
         for _ in 0..n {
             o.atmos.step();
@@ -536,8 +539,8 @@ fn run(mut o: Opts) -> Result<(), String> {
         match view {
             View::Walk if autopilot => {}
             View::Walk => {
-                cam.z = ascitty_core::camera::EYE;
                 cam.walk(&city, fwd, side);
+                cam.stand(&city);
             }
             View::Copter => {
                 // Flight ignores buildings horizontally - you are above them
