@@ -51,6 +51,38 @@ pub const CELL_ASPECT: i32 = 2;
 /// zero.  Far below `Fx::MAX` so that accumulating it cannot overflow.
 const HUGE: Fx = 1 << 28;
 
+/// The projection one frame was drawn with.
+///
+/// The sprite pass has to agree with the wall pass exactly - the same
+/// horizon, the same rows per world unit - or billboards float above the
+/// pavement.  Rather than recomputing it and hoping the two derivations stay
+/// in step, the numbers are handed over.
+#[derive(Clone, Copy, Debug)]
+pub struct Proj {
+    /// Frame width in columns.
+    pub w: i32,
+    /// Frame height in rows.
+    pub h: i32,
+    /// Screen row the horizon falls on, pitch included.
+    pub horizon: i32,
+    /// Screen rows per world unit at unit distance.
+    pub proj: Fx,
+}
+
+/// Work out the projection for a camera and a frame.
+pub fn projection(cam: &Camera, f: &Frame) -> Proj {
+    let (w, h) = (f.w as i32, f.h as i32);
+    Proj {
+        w,
+        h,
+        horizon: h / 2 + cam.pitch,
+        proj: fixed::div(
+            fixed::from_int(w),
+            fixed::mul(cam.fov, fixed::from_int(2 * CELL_ASPECT)),
+        ),
+    }
+}
+
 /// What one frame cost.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Stats {
@@ -62,19 +94,40 @@ pub struct Stats {
     pub nearest: f32,
 }
 
-/// Render a frame.
+/// Render a frame, then rain on it.
+///
+/// The convenience form, for callers with nothing to draw between the city
+/// and the weather.  Anything with sprites wants [`render_to`] instead, so
+/// that the billboards go on before the rain rather than under it.
 pub fn render(city: &City, cam: &Camera, atmos: &Atmos, f: &mut Frame) -> Stats {
+    let mut depth = Vec::new();
+    let st = render_to(city, cam, atmos, f, &mut depth);
+    atmos.rain_over(f, cam);
+    st
+}
+
+/// Render the city, and record how far away the nearest wall was in each
+/// column so that sprites can be clipped against it.
+///
+/// Does *not* draw rain: rain belongs in front of the traffic as well as in
+/// front of the buildings, so it is the caller's last step.
+pub fn render_to(
+    city: &City,
+    cam: &Camera,
+    atmos: &Atmos,
+    f: &mut Frame,
+    depth: &mut Vec<Fx>,
+) -> Stats {
     let mut st = Stats { nearest: f32::MAX, ..Default::default() };
+    depth.clear();
+    depth.resize(f.w, Fx::MAX);
     if f.w == 0 || f.h == 0 {
         return st;
     }
-    let (w, h) = (f.w as i32, f.h as i32);
-    let horizon = h / 2 + cam.pitch;
-    // Rows per world unit at unit distance.  See CELL_ASPECT.
-    let proj = fixed::div(
-        fixed::from_int(w),
-        fixed::mul(cam.fov, fixed::from_int(2 * CELL_ASPECT)),
-    );
+    let p = projection(cam, f);
+    let (w, h) = (p.w, p.h);
+    let horizon = p.horizon;
+    let proj = p.proj;
     let far = fixed::from_int(draw_distance(atmos.haze));
     let (dx, dy) = cam.dir();
     let (px, py) = cam.plane();
@@ -120,12 +173,11 @@ pub fn render(city: &City, cam: &Camera, atmos: &Atmos, f: &mut Frame) -> Stats 
         let s = column(city, cam, atmos, f, x, rdx, rdy, horizon, proj, far);
         st.steps += s.0;
         st.closed += s.1;
+        depth[x as usize] = if s.2 == f32::MAX { Fx::MAX } else { fixed::from_f64(s.2 as f64) };
         if x == w / 2 {
             st.nearest = s.2;
         }
     }
-
-    atmos.rain_over(f, cam);
     st
 }
 

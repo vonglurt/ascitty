@@ -33,6 +33,7 @@ pub mod arch;
 pub mod atmos;
 pub mod camera;
 pub mod catalog;
+pub mod drive;
 pub mod fixed;
 pub mod font;
 pub mod frame;
@@ -40,6 +41,8 @@ pub mod glyph;
 pub mod palette;
 pub mod raycast;
 pub mod rng;
+pub mod sim;
+pub mod sprite;
 pub mod trig;
 pub mod world;
 
