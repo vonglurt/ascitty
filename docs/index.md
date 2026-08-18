@@ -29,6 +29,11 @@ drawn, how the catalogue is laid out, what dithering means here, and how the
 same 128 shapes become a character set on the Plus/4 and printable ASCII on
 a terminal.
 
+### [`camera.md`](camera.md)
+The three camera modes and how each is driven, why pitch is measured in
+screen rows, and the autopilot that walks the streets and looks around on its
+own — including how to record it as an animation.
+
 ### [`renderer.md`](renderer.md)
 The height-field walk in detail — why it does not stop at the first hit,
 where the perspective divide happens, why there is no per-column cosine, and
@@ -76,6 +81,7 @@ re-litigated every few months.
 | [`media/walk-blocks.txt`](media/walk-blocks.txt) | The same, in block elements |
 | [`media/drive-ascii.txt`](media/drive-ascii.txt) | Behind the taxi |
 | [`media/copter-blocks.txt`](media/copter-blocks.txt) | Above the roofline |
+| [`media/tour-strip.txt`](media/tour-strip.txt) | the autopilot's walk, sampled every few seconds |
 | [`media/glyph-sheet.txt`](media/glyph-sheet.txt) | All 128 glyphs, as bitmaps |
 | [`media/plus4.png`](media/plus4.png) | The Plus/4 build, in VICE |
 

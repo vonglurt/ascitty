@@ -66,6 +66,26 @@ make run
 Full instructions, including the Plus/4, are in
 **[INSTALL.md](INSTALL.md)**.
 
+### Watch it walk itself
+
+```sh
+make demo                    # the camera walks the streets and looks around
+make cast                    # record it to build/tour.cast (asciinema)
+```
+
+`--tour` hands the camera to a walker that reads the city rather than
+following a baked path: it probes ahead, turns at junctions, keeps to the
+middle of the street, and stops to look up at whatever is tallest nearby.
+Touch any movement key and you take over; `\` hands it back.
+
+The trick that makes it look like a person rather than a dolly is that
+**heading and gaze are separate** — the feet go one way while the head turns
+to watch a tower go past, and the walking never stops to let the look happen.
+It is deterministic, so a recorded animation is reproducible.
+
+[`docs/media/tour-strip.txt`](docs/media/tour-strip.txt) is the same walk
+sampled every few seconds.
+
 ### Controls
 
 | | |
@@ -81,6 +101,7 @@ Full instructions, including the Plus/4, are in
 | `1`–`9` `0` | rain, from torrential to dry |
 | `h` | cycle the haze |
 | `m` | moon on and off |
+| `\` | hand the camera back to the autopilot |
 | `esc` | quit |
 
 ### Options
@@ -93,6 +114,10 @@ Full instructions, including the Plus/4, are in
 --size WxH        override the terminal size
 --rain 0..8   --haze 0..8   --stars 0..8   --no-moon
 --drive  --copter
+--tour            let the camera walk itself
+--anim            play the tour and exit
+--record FILE     write the tour to an asciinema .cast
+--frames N        how long, for --anim and --record   (default 900)
 --shot [N]        render N frames, print the last as plain text, exit
 --bench           200 frames as fast as possible, and report
 ```
@@ -202,6 +227,7 @@ Everything is indexed at **[docs/index.md](docs/index.md)**.
 | | |
 |---|---|
 | [architecture.md](docs/architecture.md) | how the whole thing fits together |
+| [camera.md](docs/camera.md) | the three modes, the autopilot, recording |
 | [renderer.md](docs/renderer.md) | the height-field walk, in detail |
 | [glyphs.md](docs/glyphs.md) | the procedural block font and the dithering |
 | [city.md](docs/city.md) | streets, lots, archetypes, fire escapes |
@@ -221,6 +247,8 @@ make disk     # ...on a .d64
 make test     # 131 tests, about a tenth of a second
 make check    # the gate: tests, both builds, and both actually rendering
 make bench    # frames per second here
+make demo     # watch it walk itself
+make cast     # record the walk as an asciinema file
 make sheet    # print the glyph catalogue
 make shot     # regenerate docs/media
 ```

@@ -123,16 +123,26 @@ impl Camera {
     }
 
     /// Walk, sliding along walls rather than stopping dead at them.
+    pub fn walk(&mut self, city: &City, forward: Fx, strafe: Fx) {
+        let (dx, dy) = self.dir();
+        let (px, py) = (-dy, dx);
+        self.slide(
+            city,
+            fixed::mul(dx, forward) + fixed::mul(px, strafe),
+            fixed::mul(dy, forward) + fixed::mul(py, strafe),
+        );
+    }
+
+    /// Move by a world-space delta, sliding along walls.
     ///
     /// The two axes are resolved separately, which is what makes a corner
     /// feel like a corner: running into a wall at an angle should slide you
     /// along it, not pin you to it.
-    pub fn walk(&mut self, city: &City, forward: Fx, strafe: Fx) {
-        let (dx, dy) = self.dir();
-        let (px, py) = (-dy, dx);
-        let mx = fixed::mul(dx, forward) + fixed::mul(px, strafe);
-        let my = fixed::mul(dy, forward) + fixed::mul(py, strafe);
-
+    ///
+    /// Separate from [`Camera::walk`] because the autopilot needs to move
+    /// along its *heading* while the camera is looking somewhere else - you
+    /// do not stop walking to look up at a building.
+    pub fn slide(&mut self, city: &City, mx: Fx, my: Fx) {
         let nx = self.x + mx;
         if clear(city, nx + RADIUS.copysign(mx), self.y) {
             self.x = nx;

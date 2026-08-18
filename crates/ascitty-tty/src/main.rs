@@ -6,6 +6,7 @@
 //! are made and how the build checks that the renderer still works without
 //! needing a terminal at all.
 
+mod cast;
 mod hud;
 mod paint;
 mod term;
@@ -18,6 +19,7 @@ use ascitty_core::frame::Frame;
 use ascitty_core::glyph::Mode;
 use ascitty_core::raycast;
 use ascitty_core::sim::{Event, Sim};
+use ascitty_core::tour::Tour;
 
 use ascitty_core::world::City;
 use paint::Depth;
@@ -158,6 +160,10 @@ struct Opts {
     shot: Option<u32>,
     bench: bool,
     view: View,
+    tour: bool,
+    anim: bool,
+    frames: u32,
+    record: Option<std::path::PathBuf>,
 }
 
 impl Default for Opts {
@@ -172,6 +178,10 @@ impl Default for Opts {
             shot: None,
             bench: false,
             view: View::Walk,
+            tour: false,
+            anim: false,
+            frames: 900,
+            record: None,
         }
     }
 }
@@ -196,11 +206,19 @@ USAGE: ascitty [options]
   --bench           render 200 frames as fast as possible and report
   -h, --help        this
 
+WALKING ITSELF
+  --tour            the camera walks the streets and looks around on its own.
+                    Touch any movement key and you take over.
+  --anim            play the tour and exit; --frames says for how long
+  --record FILE     write the tour to an asciinema .cast file and exit
+  --frames N        frames for --anim and --record   (default: 900, 30 s)
+
 CONTROLS
   w s        forward, back            a d        turn
   q e        strafe                   arrows     turn and look
   shift+w    run
   r f        rise, descend (copter)   c          walk / drive / copter
+  \\         hand the camera back to the autopilot
   space      handbrake (drive)        w a s d    throttle, steer, brake
   1-9 0      rain                     h          haze
   m          moon                     t          ascii / unicode
@@ -241,6 +259,18 @@ fn parse_args() -> Result<Opts, String> {
             "--no-moon" => o.atmos.moon = false,
             "--copter" => o.view = View::Copter,
             "--drive" => o.view = View::Drive,
+            "--tour" => o.tour = true,
+            "--anim" => {
+                o.tour = true;
+                o.anim = true;
+                o.view = View::Walk;
+            }
+            "--frames" => o.frames = val()?.parse().map_err(|_| "bad --frames".to_string())?,
+            "--record" => {
+                o.record = Some(std::path::PathBuf::from(val()?));
+                o.tour = true;
+                o.view = View::Walk;
+            }
             "--bench" => o.bench = true,
             "--shot" => {
                 let n = match args.peek() {
@@ -302,12 +332,17 @@ fn run(mut o: Opts) -> Result<(), String> {
         let mut f = Frame::new(w, h);
         let mut depth = Vec::new();
         let mut events = Vec::new();
+        let mut tour = Tour::new(&city, o.seed);
         if o.view == View::Drive {
             cam.z = fixed::ratio(4, 5);
         }
         for _ in 0..n {
             o.atmos.step();
-            if o.view == View::Drive {
+            if o.tour {
+                tour.step(&city, o.fps.max(1) as i32);
+                cam = tour.cam;
+                cam.pitch = cam.pitch.clamp(-(h as i32 / 3), h as i32 / 3);
+            } else if o.view == View::Drive {
                 sim.step(&city, &Controls { throttle: ONE, ..Default::default() }, 60, &mut events);
                 chase(&mut cam, &sim, &city, h as i32);
             }
@@ -317,6 +352,37 @@ fn run(mut o: Opts) -> Result<(), String> {
             o.atmos.rain_over(&mut f, &cam);
         }
         print!("{}", paint::plain(&f, o.mode));
+        return Ok(());
+    }
+    if let Some(path) = o.record.clone() {
+        let (w, h) = o.size.unwrap_or((120, 36));
+        let mut f = Frame::new(w, h);
+        let mut buf = String::new();
+        let mut depth: Vec<Fx> = Vec::new();
+        let mut tour = Tour::new(&city, o.seed);
+        let mut rec = cast::Recorder::create(&path, w, h, o.fps)
+            .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        // A clear and a cursor home first, so a player starting mid-stream
+        // does not inherit whatever was on the terminal before.
+        rec.frame("\x1b[2J\x1b[H").map_err(|e| e.to_string())?;
+        for _ in 0..o.frames {
+            tour.step(&city, o.fps.max(1) as i32);
+            o.atmos.step();
+            raycast::render_to(&city, &tour.cam, &o.atmos, &mut f, &mut depth);
+            let proj = raycast::projection(&tour.cam, &f);
+            sim.draw(&mut f, &depth, &tour.cam, &o.atmos, &proj);
+            o.atmos.rain_over(&mut f, &tour.cam);
+            paint::paint(&f, o.mode, o.depth, &mut buf);
+            rec.frame(&buf).map_err(|e| e.to_string())?;
+        }
+        let (n, secs) = rec.finish().map_err(|e| e.to_string())?;
+        let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        eprintln!(
+            "{}  {n} frames  {secs:.1}s  {} KB\n  play it:  asciinema play {}",
+            path.display(),
+            bytes / 1024,
+            path.display()
+        );
         return Ok(());
     }
     if o.bench {
@@ -353,6 +419,14 @@ fn run(mut o: Opts) -> Result<(), String> {
     let mut quit = false;
     let mut depth: Vec<Fx> = Vec::new();
     let mut pedals = Pedals::default();
+    let mut tour = Tour::new(&city, o.seed);
+    let mut autopilot = o.tour;
+    if autopilot {
+        cam = tour.cam;
+    }
+    // --anim plays a fixed length and exits; otherwise it runs until you
+    // press escape.
+    let mut left = if o.anim { o.frames } else { u32::MAX };
     let mut events: Vec<Event> = Vec::new();
     let mut flash: Option<(&'static str, i32)> = None;
 
@@ -368,8 +442,29 @@ fn run(mut o: Opts) -> Result<(), String> {
         let mut rise: Fx = 0;
         pedals.decay();
         for k in keys.drain() {
+            // Any movement key takes the camera back off the autopilot -
+            // there is no mode to leave, you just start walking.
+            if autopilot
+                && matches!(
+                    k,
+                    Key::Char('w' | 's' | 'a' | 'd' | 'q' | 'e' | 'r' | 'f' | 'c')
+                        | Key::Left
+                        | Key::Right
+                        | Key::Up
+                        | Key::Down
+                )
+            {
+                autopilot = false;
+            }
             match k {
                 Key::Quit => quit = true,
+                Key::Char('\\') => {
+                    // ...and this hands it back, from wherever you are now.
+                    tour = Tour::new(&city, o.seed);
+                    tour.cam = cam;
+                    autopilot = true;
+                    view = View::Walk;
+                }
                 Key::Char('w') => {
                     fwd += step;
                     pedals.gas.press();
@@ -431,7 +526,15 @@ fn run(mut o: Opts) -> Result<(), String> {
             }
         }
 
+        if autopilot {
+            tour.step(&city, o.fps.max(1) as i32);
+            cam = tour.cam;
+            // The autopilot does not know how tall the frame is, so its tilt
+            // is clamped again here against the real one.
+            cam.pitch = cam.pitch.clamp(-(f.h as i32 / 3), f.h as i32 / 3);
+        }
         match view {
+            View::Walk if autopilot => {}
             View::Walk => {
                 cam.z = ascitty_core::camera::EYE;
                 cam.walk(&city, fwd, side);
@@ -480,7 +583,7 @@ fn run(mut o: Opts) -> Result<(), String> {
         o.atmos.rain_over(&mut f, &cam);
         paint::paint(&f, o.mode, o.depth, &mut buf);
         hud::append(&mut buf, &hud::Status {
-            view: view.name(),
+            view: if autopilot { "TOUR" } else { view.name() },
             mode: o.mode,
             depth: o.depth,
             cam: &cam,
@@ -498,6 +601,13 @@ fn run(mut o: Opts) -> Result<(), String> {
             }
         }
         term::present(&buf).map_err(|e| e.to_string())?;
+
+        if left != u32::MAX {
+            left -= 1;
+            if left == 0 {
+                quit = true;
+            }
+        }
 
         let spent = t0.elapsed();
         fps_ms = fps_ms * 0.9 + spent.as_secs_f64() * 1000.0 * 0.1;

@@ -43,6 +43,7 @@ pub mod raycast;
 pub mod rng;
 pub mod sim;
 pub mod sprite;
+pub mod tour;
 pub mod trig;
 pub mod world;
 

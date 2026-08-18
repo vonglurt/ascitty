@@ -47,7 +47,7 @@ GENHDRS = $(GEN)/charset.h $(GEN)/trig.h $(GEN)/recip.h $(GEN)/glyphs.h $(GEN)/c
 T4SRC   = $(T4)/src/main.c $(T4)/src/cast.c
 T4HDRS  = $(T4)/src/plus4.h $(T4)/src/cast.h
 
-.PHONY: all host prg disk bake run run4 shot shots test check bench sheet clean help
+.PHONY: all host prg disk bake run run4 demo cast shot test check bench sheet clean help
 
 all: host prg disk
 
@@ -56,6 +56,8 @@ help:
 	@echo 'make prg     the Plus/4 build'
 	@echo 'make disk    the Plus/4 build, on a .d64'
 	@echo 'make run     play it in this terminal'
+	@echo 'make demo    watch it walk itself'
+	@echo 'make cast    record the walk to build/tour.cast (asciinema)'
 	@echo 'make run4    play it in xplus4'
 	@echo 'make test    every test in the workspace'
 	@echo 'make check   test, then verify both targets still build'
@@ -74,6 +76,22 @@ $(BAKE): $(HOST)
 
 run: $(HOST)
 	@$(HOST)
+
+# The attract mode: the camera walks the streets and looks around on its own.
+# Any movement key takes it over; backslash hands it back.
+demo: $(HOST)
+	@$(HOST) --tour
+
+# An animation you can send somebody.  A .cast is terminal output with
+# timestamps, not a video, so it stays sharp at any size and is a few hundred
+# kilobytes gzipped rather than a few hundred megabytes.
+CASTLEN ?= 600
+CASTSIZE ?= 110x32
+
+cast: $(HOST)
+	@mkdir -p $(BUILD)
+	@$(HOST) --record $(BUILD)/tour.cast --frames $(CASTLEN) --size $(CASTSIZE)
+	@echo "  gzip it before sending: gzip -9 -k $(BUILD)/tour.cast"
 
 bench: $(HOST)
 	@$(HOST) --bench --size 160x48
@@ -132,6 +150,7 @@ shot: $(HOST) $(PRG)
 	@$(HOST) --shot 1   --size 150x44 --mode unicode --rain 3 > docs/media/walk-blocks.txt
 	@$(HOST) --shot 200 --size 150x44 --mode ascii --drive     > docs/media/drive-ascii.txt
 	@$(HOST) --shot 1   --size 150x44 --mode unicode --copter  > docs/media/copter-blocks.txt
+	@$(TOOLS)/strip.sh > docs/media/tour-strip.txt
 	@$(BAKE) --sheet > docs/media/glyph-sheet.txt
 	@$(TOOLS)/viceshot.sh $(PRG) docs/media/plus4.png
 	@echo "  docs/media updated"
