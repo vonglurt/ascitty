@@ -163,7 +163,7 @@ struct Opts {
 impl Default for Opts {
     fn default() -> Self {
         Opts {
-            seed: 0x_A5C1_77_1E,
+            seed: ascitty_core::DEFAULT_SEED,
             mode: Mode::Unicode,
             depth: Depth::detect(),
             size: None,

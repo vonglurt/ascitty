@@ -277,7 +277,7 @@ fn span_bays(lot: &Lot) -> i32 {
 fn fire_escape(lot: &Lot, face: Face, bay: i32, floor: i32, z: Fx, top: i32) -> Option<Surface> {
     // Which face carries it, and where along that face, is fixed per lot -
     // it must not move between frames or between viewing angles.
-    let pick = hash3(lot.seed, 0x_F14E_5C00, 0);
+    let pick = hash3(lot.seed, 0xF14E_5C00, 0);
     if face.index() != pick & 3 {
         return None;
     }

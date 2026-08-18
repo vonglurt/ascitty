@@ -176,7 +176,7 @@ impl Sim {
             ticks_left: START_TIME * drive::HZ,
             tick: 0,
             over: false,
-            rng: Rng::new(seed.wrapping_add(0x_5EED)),
+            rng: Rng::new(seed.wrapping_add(0x0000_5EED)),
             order: Vec::new(),
             boards: Vec::new(),
         };
@@ -204,7 +204,7 @@ impl Sim {
                 if city.at(x, y).kind != Kind::Sidewalk {
                     continue;
                 }
-                let h = hash3(x as u32, y as u32, 0x_F0_11_1_u32);
+                let h = hash3(x as u32, y as u32, 0x000F_0111);
                 let stamp = match h % 24 {
                     0 | 1 => Stamp::LampPost,
                     2 => Stamp::Hydrant,
@@ -416,7 +416,7 @@ impl Sim {
                 p.board.y += fixed::mul(p.vy, inv);
                 p.vx = fixed::mul(p.vx, fixed::ratio(93, 100));
                 p.vy = fixed::mul(p.vy, fixed::ratio(93, 100));
-                if self.tick % 4 == 0 {
+                if self.tick.is_multiple_of(4) {
                     p.board.lean += 1;
                 }
             }
@@ -429,7 +429,7 @@ impl Sim {
         for (i, p) in self.peds.iter_mut().enumerate() {
             p.x += fixed::mul(fixed::mul(trig::cos(p.dir), pace), inv);
             p.y += fixed::mul(fixed::mul(trig::sin(p.dir), pace), inv);
-            if self.tick.wrapping_add(i as u32) % 24 == 0 {
+            if self.tick.wrapping_add(i as u32).is_multiple_of(24) {
                 p.phase ^= 1;
             }
         }
@@ -703,7 +703,7 @@ mod tests {
 
     #[test]
     fn driving_into_a_lamp_post_flattens_it_and_does_not_slow_the_car() {
-        let (city, mut sim) = shift();
+        let (_city, mut sim) = shift();
         let mut ev = Vec::new();
         // Park the taxi on top of a standing prop, moving.
         let p = sim.props[0].board;

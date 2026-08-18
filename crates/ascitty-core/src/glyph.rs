@@ -237,10 +237,13 @@ mod tests {
     }
 
     #[test]
-    fn screen_codes_stay_inside_the_charset() {
+    fn the_plus4_screen_code_mapping_is_the_identity() {
+        // Not a tautology worth deleting: it is the property the Plus/4
+        // renderer's inner loop depends on, and if PLUS4_BASE ever moves off
+        // zero again this is what says so.
+        assert_eq!(PLUS4_BASE, 0);
         for g in 0..N_GLYPHS as u8 {
-            assert!(screen_code(g) >= PLUS4_BASE);
-            assert!(screen_code(g) as usize <= 255);
+            assert_eq!(screen_code(g), g);
         }
     }
 

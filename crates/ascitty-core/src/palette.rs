@@ -45,7 +45,7 @@ pub const fn luma_of(c: Color) -> u8 {
 #[inline(always)]
 pub const fn darken(c: Color, steps: u8) -> Color {
     let l = luma_of(c);
-    let l = if l > steps { l - steps } else { 0 };
+    let l = l.saturating_sub(steps);
     rgb_index(hue_of(c), l)
 }
 

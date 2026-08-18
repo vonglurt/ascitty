@@ -7,8 +7,8 @@
 //! enough for a skyline, because the thing that makes a city look like a
 //! city is a *tall* building visible over the top of a *near* one.  So the
 //! walk does not stop at the first hit.  It keeps going, front to back,
-//! carrying one number - the topmost screen row anything has claimed so far
-//! - and each further building may only draw above that line.  When the line
+//! carrying one number (the topmost screen row anything has claimed so far),
+//! and each further building may only draw above that line.  When the line
 //! reaches the top of the screen the column is finished and the walk stops.
 //!
 //! That is the Comanche voxel-space idea rather than the Wolfenstein one,
@@ -457,7 +457,7 @@ mod tests {
             for deg in (0..360).step_by(11) {
                 let mut cam = Camera::spawn(&city, 20, 70);
                 cam.yaw = crate::trig::from_degrees(deg as f64);
-                cam.pitch = (deg % 21) as i32 - 10;
+                cam.pitch = (deg % 21) - 10;
                 render(&city, &cam, &atmos, &mut f);
             }
         }

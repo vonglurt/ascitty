@@ -69,7 +69,11 @@ USAGE: ascitty-bake [options]
 ";
 
 fn main() {
-    let mut o = Opts { out: PathBuf::from("targets/plus4/gen"), seed: 0x_A5C1_77_1E, sheet: false };
+    let mut o = Opts {
+        out: PathBuf::from("targets/plus4/gen"),
+        seed: ascitty_core::DEFAULT_SEED,
+        sheet: false,
+    };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {

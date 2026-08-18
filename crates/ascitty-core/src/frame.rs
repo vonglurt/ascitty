@@ -108,7 +108,7 @@ mod tests {
         let c = Cel { glyph: 9, color: 40 };
         f.put(2, 1, c);
         assert_eq!(f.get(2, 1), c);
-        assert_eq!(f.cels[1 * 4 + 2], c);
+        assert_eq!(f.cels[4 + 2], c);
     }
 
     #[test]

@@ -268,7 +268,7 @@ impl City {
                     x += 1;
                 }
                 let x1 = x - 1;
-                fill_block(&mut cells, &mut lots, &mut rng, x0, y0, x1, y1);
+                fill_block(&mut cells, &mut lots, &mut rng, Rect { x0, y0, x1, y1 });
             }
         }
 
@@ -286,17 +286,38 @@ fn downtown(x: usize, y: usize) -> u32 {
     (d * 255 / (SIZE as u32 / 2)).min(255)
 }
 
-/// Fill one block interior: either open it as a park, or subdivide it into
-/// lots and raise a building on each.
-fn fill_block(
-    cells: &mut [Cell],
-    lots: &mut Vec<Lot>,
-    rng: &mut Rng,
+/// A rectangle of cells, inclusive at both ends.
+///
+/// Introduced because the two helpers below took the four corners as loose
+/// arguments and it was never obvious at a call site which pair was which.
+/// A lot is a rectangle; saying so once is cheaper than saying `x0, y0, x1,
+/// y1` at every boundary.
+#[derive(Clone, Copy, Debug)]
+struct Rect {
     x0: usize,
     y0: usize,
     x1: usize,
     y1: usize,
-) {
+}
+
+impl Rect {
+    fn w(&self) -> usize {
+        self.x1 - self.x0 + 1
+    }
+    fn h(&self) -> usize {
+        self.y1 - self.y0 + 1
+    }
+    /// How many rings in from the edge a cell sits.  This is the whole of
+    /// the setback model.
+    fn ring(&self, x: usize, y: usize) -> u32 {
+        (x - self.x0).min(self.x1 - x).min(y - self.y0).min(self.y1 - y) as u32
+    }
+}
+
+/// Fill one block interior: either open it as a park, or subdivide it into
+/// lots and raise a building on each.
+fn fill_block(cells: &mut [Cell], lots: &mut Vec<Lot>, rng: &mut Rng, block: Rect) {
+    let Rect { x0, y0, x1, y1 } = block;
     let far = downtown((x0 + x1) / 2, (y0 + y1) / 2);
 
     // One block in nine is left open, and it is likelier out in the
@@ -334,7 +355,7 @@ fn fill_block(
     }
 
     for (ax, ay, bx, by) in out {
-        raise(cells, lots, rng, far, ax, ay, bx, by);
+        raise(cells, lots, rng, far, Rect { x0: ax, y0: ay, x1: bx, y1: by });
     }
 }
 
@@ -353,17 +374,9 @@ const FACADE_HUES: [u8; 8] = [
 ];
 
 /// Put a building on one lot.
-fn raise(
-    cells: &mut [Cell],
-    lots: &mut Vec<Lot>,
-    rng: &mut Rng,
-    far: u32,
-    x0: usize,
-    y0: usize,
-    x1: usize,
-    y1: usize,
-) {
-    let footprint = (x1 - x0 + 1) * (y1 - y0 + 1);
+fn raise(cells: &mut [Cell], lots: &mut Vec<Lot>, rng: &mut Rng, far: u32, lot: Rect) {
+    let Rect { x0, y0, x1, y1 } = lot;
+    let footprint = lot.w() * lot.h();
 
     // Height falls off from downtown, and a big footprint can carry a taller
     // building than a narrow one - which is why the tall things cluster and
@@ -410,7 +423,7 @@ fn raise(
             let c = &mut cells[y * SIZE + x];
             c.kind = Kind::Building;
             c.lot = idx;
-            c.height = cell_height(height, arch, x0, y0, x1, y1, x, y);
+            c.height = cell_height(height, arch, lot, x, y);
         }
     }
 }
@@ -421,18 +434,8 @@ fn raise(
 /// setback loses a tier for every ring you move out from the middle; a Deco
 /// tower does the same but keeps its corner piers, so the crown is a notch
 /// taller than the shoulders.
-fn cell_height(
-    height: u8,
-    arch: Arch,
-    x0: usize,
-    y0: usize,
-    x1: usize,
-    y1: usize,
-    x: usize,
-    y: usize,
-) -> u8 {
-    // How many rings in from the lot edge this cell sits.
-    let ring = (x - x0).min(x1 - x).min(y - y0).min(y1 - y) as u32;
+fn cell_height(height: u8, arch: Arch, lot: Rect, x: usize, y: usize) -> u8 {
+    let ring = lot.ring(x, y);
     match arch {
         Arch::CurtainWall | Arch::Slab | Arch::Prewar | Arch::LowRise => height,
         Arch::Setback => {
@@ -445,7 +448,7 @@ fn cell_height(
             let tiers = (height as u32 / 5).clamp(1, 4);
             let step = height as u32 / (tiers + 3);
             let lost = step * (tiers.saturating_sub(ring.min(tiers)));
-            let corner = (x == x0 || x == x1) && (y == y0 || y == y1);
+            let corner = (x == lot.x0 || x == lot.x1) && (y == lot.y0 || y == lot.y1);
             let h = (height as u32).saturating_sub(lost).max(2);
             (if corner { h + step / 2 } else { h }).min(63) as u8
         }
@@ -532,15 +535,16 @@ mod tests {
     #[test]
     fn setbacks_step_inwards_rather_than_outwards() {
         // The middle of a setback lot must never be shorter than its edge.
-        let h_edge = cell_height(40, Arch::Setback, 0, 0, 6, 6, 0, 3);
-        let h_mid = cell_height(40, Arch::Setback, 0, 0, 6, 6, 3, 3);
+        let block = Rect { x0: 0, y0: 0, x1: 6, y1: 6 };
+        let h_edge = cell_height(40, Arch::Setback, block, 0, 3);
+        let h_mid = cell_height(40, Arch::Setback, block, 3, 3);
         assert!(h_mid > h_edge, "setback got taller towards the street");
     }
 
     #[test]
     fn a_slab_is_flat_topped() {
         for x in 0..=5 {
-            assert_eq!(cell_height(30, Arch::Slab, 0, 0, 5, 5, x, 2), 30);
+            assert_eq!(cell_height(30, Arch::Slab, Rect { x0: 0, y0: 0, x1: 5, y1: 5 }, x, 2), 30);
         }
     }
 
@@ -555,7 +559,7 @@ mod tests {
             .unwrap();
         let tall_edge: u32 = (0..16)
             .flat_map(|y| (0..16).map(move |x| (x, y)))
-            .map(|(x, y)| c.height(x as i32, y as i32) as u32)
+            .map(|(x, y)| c.height(x, y) as u32)
             .max()
             .unwrap();
         assert!(tall_mid > tall_edge, "downtown ({tall_mid}) is no taller than the edge ({tall_edge})");

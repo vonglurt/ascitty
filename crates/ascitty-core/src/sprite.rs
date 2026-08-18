@@ -319,7 +319,7 @@ fn glyph_for(c: char, hue: u8, phase: u8) -> Option<(GlyphId, u8, u8)> {
         'R' => (catalog::G_QUAD + 12 - 1, hue, 5),
         // The three signal aspects, only one of which is ever lit; which one
         // comes from the phase, so a junction full of them stays in step.
-        'r' => (catalog::G_SOLID, palette::H_RED, if phase % 3 == 0 { 7 } else { 1 }),
+        'r' => (catalog::G_SOLID, palette::H_RED, if phase.is_multiple_of(3) { 7 } else { 1 }),
         'y' => (catalog::G_SOLID, palette::H_YELLOW, if phase % 3 == 1 { 7 } else { 1 }),
         'g' => (catalog::G_SOLID, palette::H_GREEN, if phase % 3 == 2 { 7 } else { 1 }),
         _ => (catalog::G_SOLID, hue, 5),

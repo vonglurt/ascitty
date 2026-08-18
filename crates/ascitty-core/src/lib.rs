@@ -48,3 +48,12 @@ pub mod world;
 
 /// The version of this crate, for the status line and the build manifest.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The city everything defaults to.
+///
+/// One constant, in one place, because three copies of it is three chances
+/// to disagree - and the disagreement is invisible.  The terminal renders
+/// this city, the bake tool freezes *this* city into the Plus/4 build, and
+/// the Makefile passes it on the command line; if any of them drifts, the
+/// two targets quietly render different places and nothing fails.
+pub const DEFAULT_SEED: u32 = 0xA5C1_771E;

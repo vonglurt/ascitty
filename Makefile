@@ -36,10 +36,12 @@ DISK    = $(BUILD)/ascitty.d64
 # and a stack frame.  Both matter here: this is a renderer.
 CC65FLAGS = -t plus4 -Osir -Cl -I $(T4)/src
 
-# The city the two targets share.  Changing it changes both, which is the
-# point - the same seed must produce the same city on a laptop and on a
-# Plus/4, and `make conform` is what checks that it does.
-SEED ?= 2781283102
+# The city the two targets share.  Must equal ascitty_core::DEFAULT_SEED -
+# that constant is the definition, and this is 0xA5C1771E written out for
+# make.  Overriding it here bakes a different city into the Plus/4 build than
+# the terminal renders, which is occasionally what you want and never what
+# you want by accident.
+SEED ?= 2780919582
 
 GENHDRS = $(GEN)/charset.h $(GEN)/trig.h $(GEN)/recip.h $(GEN)/glyphs.h $(GEN)/city.h
 T4SRC   = $(T4)/src/main.c $(T4)/src/cast.c
