@@ -160,7 +160,7 @@ pub struct Sim {
     /// Scratch for the billboard sort, so a frame does not allocate.
     order: Vec<(Fx, usize)>,
     /// Scratch for the billboards handed to the sprite pass.
-    boards: Vec<Billboard>,
+    pub(crate) boards: Vec<Billboard>,
 }
 
 impl Sim {
@@ -228,9 +228,23 @@ impl Sim {
                     _ => (fixed::ratio(1, 5), fixed::ratio(2, 5), palette::H_YELLOW),
                 };
                 // Off-centre by a stable amount, so a street of lamp posts
-                // is not a row of identically placed lamp posts.
-                let jx = fixed::ratio(((h >> 8) % 5) as i32 - 2, 12);
-                let jy = fixed::ratio(((h >> 12) % 5) as i32 - 2, 12);
+                // is not a row of identically placed lamp posts - but never
+                // far enough that the *sprite* leaves the pavement.  A tree
+                // is four fifths of a cell across, so it has a tenth of a
+                // cell of play on each side and no more; without the clamp
+                // a canopy overhangs the carriageway, which is exactly what
+                // a street tree must not do.
+                // A margin as well as the half-width: a prop centred so
+                // that its edge lands exactly on the kerb line is read as
+                // being in the next cell, because a boundary belongs to the
+                // cell after it.
+                let play = (fixed::HALF - w / 2 - fixed::ratio(1, 16)).max(0);
+                let jitter = |v: u32| {
+                    let t = fixed::ratio((v % 5) as i32 - 2, 2); // -1..1
+                    fixed::mul(t, play)
+                };
+                let jx = jitter(h >> 8);
+                let jy = jitter(h >> 12);
                 self.props.push(Prop {
                     board: Billboard::upright(
                         stamp,
@@ -623,6 +637,20 @@ impl Sim {
                 self.boards.push(b);
             }
         }
+        // The cab itself, first, so a chase camera has something to chase.
+        // Leaving it out is easy to do - you are notionally inside it - and
+        // the result is a camera following an invisible car.
+        if near(self.taxi.x, self.taxi.y) {
+            let (w, h) = self.taxi.kind.body();
+            self.boards.push(Billboard::upright(
+                Stamp::Taxi,
+                self.taxi.x,
+                self.taxi.y,
+                w,
+                h,
+                palette::H_YELLOW,
+            ));
+        }
         for c in &self.traffic {
             if !near(c.x, c.y) {
                 continue;
@@ -632,14 +660,8 @@ impl Sim {
                 (_, d) if d > 60 => Stamp::Wreck,
                 _ => Stamp::Car,
             };
-            self.boards.push(Billboard::upright(
-                stamp,
-                c.x,
-                c.y,
-                if c.kind == CarKind::Bus { fixed::ratio(6, 5) } else { fixed::ratio(4, 5) },
-                if c.kind == CarKind::Bus { fixed::ratio(11, 10) } else { fixed::ratio(3, 5) },
-                c.hue,
-            ));
+            let (w, h) = c.kind.body();
+            self.boards.push(Billboard::upright(stamp, c.x, c.y, w, h, c.hue));
         }
         for pd in &self.peds {
             if near(pd.x, pd.y) {
@@ -806,6 +828,46 @@ mod tests {
             let k = city.at(fixed::floor(p.board.x), fixed::floor(p.board.y)).kind;
             assert_eq!(k, Kind::Sidewalk, "a {:?} is standing in the {:?}", p.board.stamp, k);
         }
+    }
+
+    #[test]
+    fn nothing_on_the_pavement_overhangs_the_road() {
+        // Props stand on pavement cells, which was already true - but a
+        // tree is four fifths of a cell across, and with unbounded jitter
+        // its canopy reached over the kerb.  The claim is about the
+        // *sprite*, not the anchor.
+        let (city, sim) = shift();
+        for p in &sim.props {
+            let b = &p.board;
+            let half = b.w / 2;
+            for (dx, dy) in [(-half, 0), (half, 0), (0, -half), (0, half)] {
+                let (x, y) = (fixed::floor(b.x + dx), fixed::floor(b.y + dy));
+                assert_ne!(
+                    city.at(x, y).kind,
+                    Kind::Road,
+                    "a {:?} at {},{} reaches over the carriageway",
+                    b.stamp,
+                    fixed::to_f32(b.x),
+                    fixed::to_f32(b.y)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_cab_is_drawn_so_there_is_something_to_follow() {
+        let (city, mut sim) = shift();
+        let cam = crate::camera::Camera::spawn(&city, fixed::floor(sim.taxi.x), fixed::floor(sim.taxi.y));
+        let atmos = crate::atmos::Atmos::default();
+        let mut f = crate::frame::Frame::new(80, 24);
+        let mut depth = Vec::new();
+        crate::raycast::render_to(&city, &cam, &atmos, &mut f, &mut depth);
+        let proj = crate::raycast::projection(&cam, &f);
+        sim.draw(&mut f, &depth, &cam, &atmos, &proj);
+        assert!(
+            sim.boards.iter().any(|b| b.stamp == crate::sprite::Stamp::Taxi),
+            "the cab was not among the billboards"
+        );
     }
 
     #[test]

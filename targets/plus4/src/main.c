@@ -15,6 +15,7 @@
 #define ASCITTY_TRIG_DATA
 #define ASCITTY_RECIP_DATA
 #define ASCITTY_CITY_DATA
+#define ASCITTY_TABLES_DATA
 
 #include "plus4.h"
 #include "cast.h"
@@ -23,6 +24,7 @@
 #include "../gen/city.h"
 #include "../gen/glyphs.h"
 #include "../gen/recip.h"
+#include "../gen/tables.h"
 #include "../gen/trig.h"
 
 /* Point TED at a character set of our own.

@@ -201,6 +201,31 @@ impl CopySign for Fx {
     }
 }
 
+/// The camera-plane half-width for a horizontal field of view in degrees.
+///
+/// `fov` is stored as a half-width rather than as an angle because that is
+/// what the ray equation wants - see `docs/raytracing.md` §1.1 - but nobody
+/// thinks in half-widths, so this is the conversion:
+///
+/// ```text
+///     half_width = tan(degrees / 2)
+/// ```
+///
+/// Clamped well short of 180, where the tangent goes to infinity and the
+/// projection with it.  Note that this is a *planar* projection, so a very
+/// wide angle stretches the edges of the frame hard - that is not a defect,
+/// it is what a wide rectilinear lens does, and past about 120 degrees it
+/// stops being a view and starts being a smear.
+pub fn fov_for_degrees(deg: f64) -> Fx {
+    let half = (deg.clamp(20.0, 160.0) / 2.0).to_radians();
+    fixed::from_f64(half.tan())
+}
+
+/// The horizontal field of view, in degrees, for a plane half-width.
+pub fn degrees_for_fov(fov: Fx) -> f64 {
+    2.0 * fixed::to_f32(fov).atan().to_degrees() as f64
+}
+
 /// One unit of walking speed, per second.
 pub const WALK_SPEED: Fx = fixed::ratio(9, 2);
 /// Turning speed, in angle units per second.
@@ -263,6 +288,38 @@ mod tests {
         let mut c = Camera::default();
         for _ in 0..1000 {
             c.turn(30_000); // would overflow an i16 in a dozen steps
+        }
+    }
+
+    #[test]
+    fn the_field_of_view_round_trips_through_degrees() {
+        for deg in [40.0, 67.0, 90.0, 110.0, 140.0] {
+            let fov = fov_for_degrees(deg);
+            let back = degrees_for_fov(fov);
+            assert!((back - deg).abs() < 1.0, "{deg} degrees came back as {back}");
+        }
+    }
+
+    #[test]
+    fn a_wider_angle_is_a_wider_plane() {
+        assert!(fov_for_degrees(110.0) > fov_for_degrees(67.0));
+        assert!(fov_for_degrees(67.0) > fov_for_degrees(40.0));
+    }
+
+    #[test]
+    fn the_default_is_about_sixty_seven_degrees() {
+        // The figure the whole renderer was tuned against, written down so
+        // that changing it is a decision rather than a drift.
+        let d = degrees_for_fov(Camera::default().fov);
+        assert!((d - 67.0).abs() < 2.0, "the default field of view is {d} degrees");
+    }
+
+    #[test]
+    fn an_absurd_angle_is_clamped_rather_than_exploding() {
+        // tan(90 degrees) is infinite and the projection divides by it.
+        for deg in [0.0, 1.0, 179.0, 360.0, -50.0] {
+            let fov = fov_for_degrees(deg);
+            assert!(fov > 0 && fov < fixed::from_int(20), "{deg} degrees gave a plane of {fov}");
         }
     }
 

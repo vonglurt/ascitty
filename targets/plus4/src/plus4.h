@@ -28,8 +28,10 @@
 #ifndef ASCITTY_PLUS4_H
 #define ASCITTY_PLUS4_H
 
-#define SCR_W           40
-#define SCR_H           25
+/* SCR_W, SCR_H, PROJ, FAR, HORIZON and FOV all come from gen/tables.h,
+** which ascitty-bake writes from the same figures the host renderer uses.
+** They were duplicated here and in cast.c, which is two more places for
+** them to disagree. */
 
 #define SCREEN          ((unsigned char *)0x0C00U)
 #define COLORMAP        ((unsigned char *)0x0800U)

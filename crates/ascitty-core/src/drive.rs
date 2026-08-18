@@ -91,10 +91,26 @@ impl CarKind {
     }
 
     /// Half-length of the body, in world units.
+    ///
+    /// A cell is about six metres, so these are: a saloon at 4.8 m, the cab
+    /// at 6 m, a bus at 12 m.  They were all 3 m before, which is a smart
+    /// car - and it showed, because the collision reach is the sum of two
+    /// half-lengths and cars were passing through each other's boots.
     pub fn half_len(self) -> Fx {
         match self {
-            CarKind::Bus => fixed::ratio(1, 2),
-            _ => fixed::ratio(1, 4),
+            CarKind::Bus => fixed::from_int(1),
+            CarKind::Taxi => fixed::ratio(1, 2),
+            CarKind::Traffic => fixed::ratio(2, 5),
+        }
+    }
+
+    /// How wide and how tall the billboard for one of these is, in world
+    /// units.
+    pub fn body(self) -> (Fx, Fx) {
+        match self {
+            CarKind::Bus => (fixed::ratio(8, 5), fixed::ratio(6, 5)),
+            CarKind::Taxi => (fixed::ratio(11, 10), fixed::ratio(7, 10)),
+            CarKind::Traffic => (fixed::from_int(1), fixed::ratio(13, 20)),
         }
     }
 }

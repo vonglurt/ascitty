@@ -70,7 +70,7 @@ pub fn append(out: &mut String, s: &Status) {
         return;
     }
     let line = format!(
-        "{}  {},{}  {}  rain {}  haze {}  {}  #{:08x}  {:.1}ms {:.0}fps  {} steps  [c]opter [t]ext [1-9]rain [h]aze esc",
+        "{}  {},{}  {}  rain {}  haze {}  {}  #{:08x}  {:.1}ms {:.0}fps  {} steps  [t]axi [c]opter [g]lyphs [1-9]rain esc",
         s.view,
         fixed::floor(s.cam.x),
         fixed::floor(s.cam.y),

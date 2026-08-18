@@ -420,19 +420,7 @@ fn ground(city: &City, atmos: &Atmos, light: &Light, wx: Fx, wy: Fx, dist: Fx) -
 
     let (glyph, hue, luma) = match cell.kind {
         Kind::Road => road(&city.plan, gx, gy, fx, fy),
-        Kind::Sidewalk => {
-            // The kerb is the edge of the sidewalk that faces the road.
-            let kerb = !city.at(gx, gy).kind.eq(&Kind::Road)
-                && (city.at(gx - 1, gy).kind == Kind::Road && fx < fixed::ratio(1, 5)
-                    || city.at(gx + 1, gy).kind == Kind::Road && fx > fixed::ratio(4, 5)
-                    || city.at(gx, gy - 1).kind == Kind::Road && fy < fixed::ratio(1, 5)
-                    || city.at(gx, gy + 1).kind == Kind::Road && fy > fixed::ratio(4, 5));
-            if kerb {
-                (catalog::ROAD_KERB, palette::H_WHITE, 4)
-            } else {
-                (catalog::ROAD_PAVING, palette::H_WHITE, 2)
-            }
-        }
+        Kind::Sidewalk => pavement(city, gx, gy, fx, fy),
         Kind::Park => {
             let h = hash3(gx as u32, gy as u32, (fixed::floor(fx * 4) + fixed::floor(fy * 4)) as u32);
             if h & 7 == 0 {
@@ -462,6 +450,57 @@ fn ground(city: &City, atmos: &Atmos, light: &Light, wx: Fx, wy: Fx, dist: Fx) -
     // The ground faces up, so it takes the roof normal.
     let luma = lit(luma, light.on(arch::ROOF, shaded));
     Cel { glyph, color: atmos.shade(hue, luma, dist) }
+}
+
+/// The pavement: cement, and dirty with it.
+///
+/// It runs from the kerb to the building line on both sides of every
+/// street, which is what the plan already lays down - a cell of it, about
+/// six metres, wherever a block meets a proper road.
+///
+/// Three bands rather than one flat colour, because a pavement seen in
+/// perspective is mostly its *edges*:
+///
+/// - the **kerb** at the road edge, the brightest thing on the ground and
+///   the line that tells you where the carriageway stops
+/// - the **flags** in between, cement-coloured and varying cell to cell
+/// - the **building line** at the back, a dark seam where the paving meets
+///   the wall, which is what stops a wall appearing to float
+///
+/// The dirt is a hash of the cell, not noise: a pavement is stained in
+/// particular places and stays stained. Flat cement at one luminance reads
+/// as a painted floor.
+fn pavement(city: &City, gx: i32, gy: i32, fx: Fx, fy: Fx) -> (catalog::GlyphId, u8, u8) {
+    let road = |dx: i32, dy: i32| city.at(gx + dx, gy + dy).kind == Kind::Road;
+    let built = |dx: i32, dy: i32| city.at(gx + dx, gy + dy).kind == Kind::Building;
+
+    let near = fixed::ratio(1, 5);
+    let far = fixed::ratio(4, 5);
+    let toward = |f: Fx, lo: bool| if lo { f < near } else { f > far };
+
+    if (road(-1, 0) && toward(fx, true))
+        || (road(1, 0) && toward(fx, false))
+        || (road(0, -1) && toward(fy, true))
+        || (road(0, 1) && toward(fy, false))
+    {
+        return (catalog::ROAD_KERB, palette::H_WHITE, 5);
+    }
+    if (built(-1, 0) && toward(fx, true))
+        || (built(1, 0) && toward(fx, false))
+        || (built(0, -1) && toward(fy, true))
+        || (built(0, 1) && toward(fy, false))
+    {
+        return (catalog::G_CORNICE, palette::H_WHITE, 1);
+    }
+
+    // Cement, and what has been spilled on it.
+    let h = hash3(gx as u32, gy as u32, 0x_CE_11_7A_00);
+    match h & 15 {
+        0 => (catalog::ROAD_GRATE, palette::H_WHITE, 2),
+        1 => (catalog::ROAD_PAVING, palette::H_BROWN, 2),
+        2..=4 => (catalog::ROAD_PAVING, palette::H_WHITE, 2),
+        _ => (catalog::ROAD_PAVING, palette::H_WHITE, 3),
+    }
 }
 
 /// Road surface markings.

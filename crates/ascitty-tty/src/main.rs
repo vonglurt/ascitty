@@ -45,14 +45,6 @@ impl View {
         }
     }
 
-    /// The next mode in the cycle.
-    fn next(self) -> View {
-        match self {
-            View::Walk => View::Drive,
-            View::Drive => View::Copter,
-            View::Copter => View::Walk,
-        }
-    }
 }
 
 /// A key that has to feel held down on a device that never reports a key
@@ -161,6 +153,7 @@ struct Opts {
     shot: Option<u32>,
     bench: bool,
     view: View,
+    fov: f64,
     tour: bool,
     anim: bool,
     frames: u32,
@@ -179,6 +172,7 @@ impl Default for Opts {
             shot: None,
             bench: false,
             view: View::Walk,
+            fov: 67.0,
             tour: false,
             anim: false,
             frames: 900,
@@ -197,6 +191,7 @@ USAGE: ascitty [options]
   --color D         true | 16 | none          (default: from $COLORTERM)
   --size WxH        override the terminal size
   --fps N           frame rate cap            (default: 30)
+  --fov DEGREES     horizontal field of view  (default: 67)
   --rain N          0 dry .. 8 torrential     (default: 2)
   --haze N          0 clear .. 8 soup         (default: 3)
   --stars N         0 .. 8                    (default: 4)
@@ -218,12 +213,13 @@ CONTROLS
   w s        forward, back            q e        rotate the camera
   a d        strafe sideways          arrows     rotate and look
   space      up                       z          down
-  c          walk / drive / copter    \\          back to the autopilot
-  t          ascii / unicode          m          moon
+  t          get in / out of the taxi c          walk / copter
+  g          ascii / unicode glyphs   m          moon
   1-9 0      rain                     h          haze
-  esc        quit
+  \\          back to the autopilot    esc        quit
 
   Driving:   w throttle, s brake, a d or q e steer, space handbrake.
+             The camera follows the yellow cab from behind.
 
   A terminal cannot see a bare Shift - it sends no bytes at all - so `z`
   descends where you might expect Shift to.
@@ -257,6 +253,7 @@ fn parse_args() -> Result<Opts, String> {
                 ));
             }
             "--fps" => o.fps = val()?.parse().map_err(|_| "bad --fps".to_string())?,
+            "--fov" => o.fov = val()?.parse().map_err(|_| "bad --fov".to_string())?,
             "--rain" => o.atmos.rain = val()?.parse::<u8>().map_err(|_| "bad --rain")?.min(8),
             "--haze" => o.atmos.haze = val()?.parse::<u8>().map_err(|_| "bad --haze")?.min(8),
             "--stars" => o.atmos.stars = val()?.parse::<u8>().map_err(|_| "bad --stars")?.min(8),
@@ -314,6 +311,11 @@ fn ceiling_of(city: &City) -> Fx {
 fn run(mut o: Opts) -> Result<(), String> {
     let city = City::generate(o.seed);
     let mut cam = Camera::spawn(&city, SIZE as i32 / 2, SIZE as i32 / 2);
+    // One lens, applied to every camera in the program.  Set on the tour's
+    // camera as well as this one: the autopilot owns its own, and a --fov
+    // that quietly does nothing on a recorded tour is worse than no --fov.
+    let lens = ascitty_core::camera::fov_for_degrees(o.fov);
+    cam.fov = lens;
     let mut sim = Sim::new(&city, o.seed);
     // The cab waits where you start, not where the middle of the map is.
     sim.park_near(&city, fixed::floor(cam.x), fixed::floor(cam.y));
@@ -339,6 +341,7 @@ fn run(mut o: Opts) -> Result<(), String> {
         let mut depth = Vec::new();
         let mut events = Vec::new();
         let mut tour = Tour::new(&city, o.seed);
+        tour.cam.fov = lens;
         if o.view == View::Drive {
             sim.park_near(&city, fixed::floor(cam.x), fixed::floor(cam.y));
         }
@@ -366,6 +369,7 @@ fn run(mut o: Opts) -> Result<(), String> {
         let mut buf = String::new();
         let mut depth: Vec<Fx> = Vec::new();
         let mut tour = Tour::new(&city, o.seed);
+        tour.cam.fov = lens;
         let mut rec = cast::Recorder::create(&path, w, h, o.fps)
             .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
         // A clear and a cursor home first, so a player starting mid-stream
@@ -426,6 +430,7 @@ fn run(mut o: Opts) -> Result<(), String> {
     let mut depth: Vec<Fx> = Vec::new();
     let mut pedals = Pedals::default();
     let mut tour = Tour::new(&city, o.seed);
+    tour.cam.fov = lens;
     let mut autopilot = o.tour;
     if autopilot {
         cam = tour.cam;
@@ -453,7 +458,7 @@ fn run(mut o: Opts) -> Result<(), String> {
             if autopilot
                 && matches!(
                     k,
-                    Key::Char('w' | 's' | 'a' | 'd' | 'q' | 'e' | 'z' | ' ' | 'c')
+                    Key::Char('w' | 's' | 'a' | 'd' | 'q' | 'e' | 'z' | ' ' | 'c' | 't')
                         | Key::Left
                         | Key::Right
                         | Key::Up
@@ -506,32 +511,39 @@ fn run(mut o: Opts) -> Result<(), String> {
                 }
                 Key::Up => cam.look(-1, (f.h / 3) as i32),
                 Key::Down => cam.look(1, (f.h / 3) as i32),
-                Key::Char('c') => {
-                    view = view.next();
-                    match view {
-                        View::Copter => {
-                            cam.z = ceiling_of(&city);
-                            cam.pitch = -(f.h as i32 / 6);
-                        }
-                        View::Walk => {
-                            cam.z = ascitty_core::camera::EYE;
-                            cam.pitch = 0;
-                        }
-                        View::Drive => {
-                            // Start the shift from wherever you were
-                            // standing, so switching in feels like getting
-                            // into a cab rather than teleporting.
-                            sim.taxi.x = cam.x;
-                            sim.taxi.y = cam.y;
-                            sim.taxi.vx = 0;
-                            sim.taxi.vy = 0;
-                            sim.taxi.yaw = cam.yaw;
-                        }
+                // Get in the cab, or get out of it.  Its own key rather
+                // than a position in a cycle: driving is a mode you enter
+                // deliberately, and having to pass through the helicopter
+                // to reach it is silly.
+                Key::Char('t') => {
+                    if view == View::Drive {
+                        view = View::Walk;
+                        cam.x = sim.taxi.x;
+                        cam.y = sim.taxi.y;
+                        cam.yaw = sim.taxi.yaw;
+                        cam.pitch = 0;
+                        cam.stand(&city);
+                    } else {
+                        view = View::Drive;
+                        // The cab is where it is parked; you are put in it
+                        // rather than it being brought to you.
+                        cam.yaw = sim.taxi.yaw;
                     }
+                }
+                // Walk and fly.  Driving is not in this cycle.
+                Key::Char('c') => {
+                    view = if view == View::Copter {
+                        cam.pitch = 0;
+                        View::Walk
+                    } else {
+                        cam.z = ceiling_of(&city);
+                        cam.pitch = -(f.h as i32 / 6);
+                        View::Copter
+                    };
                 }
                 Key::Char('m') => o.atmos.moon = !o.atmos.moon,
                 Key::Char('h') => o.atmos.haze = (o.atmos.haze + 1) % 9,
-                Key::Char('t') => {
+                Key::Char('g') => {
                     o.mode = match o.mode {
                         Mode::Ascii => Mode::Unicode,
                         Mode::Unicode => Mode::Ascii,

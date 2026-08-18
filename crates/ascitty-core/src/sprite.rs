@@ -49,6 +49,10 @@ pub enum Stamp {
     Meter,
     /// A car, seen from behind or in front.
     Car,
+    /// The cab.  Longer than a saloon, with a checker band and a sign on
+    /// the roof, because a taxi you are chasing has to be identifiable at a
+    /// glance among a street full of traffic.
+    Taxi,
     /// A car that has been hit hard enough to show it.
     Wreck,
     /// A bus.
@@ -199,6 +203,18 @@ const CAR_ART: [&str; 8] = [
 ];
 
 #[rustfmt::skip]
+const TAXI_ART: [&str; 8] = [
+    "   SS   ",
+    "  ####  ",
+    " ###### ",
+    " ###### ",
+    "LkkkkkkR",
+    "L######R",
+    "LL#  #RR",
+    " oo  oo ",
+];
+
+#[rustfmt::skip]
 const WRECK_ART: [&str; 8] = [
     "        ",
     "    #   ",
@@ -282,6 +298,7 @@ impl Stamp {
             Stamp::Bollard => &BOLLARD_ART,
             Stamp::Meter => &METER_ART,
             Stamp::Car => &CAR_ART,
+            Stamp::Taxi => &TAXI_ART,
             Stamp::Wreck => &WRECK_ART,
             Stamp::Bus => &BUS_ART,
             Stamp::Ped => &PED_ART,
@@ -317,6 +334,9 @@ fn glyph_for(c: char, hue: u8, phase: u8) -> Option<(GlyphId, u8, u8)> {
         't' => (catalog::FLORA_TRUNK, palette::H_BROWN, 3),
         'L' => (catalog::G_QUAD + 12 - 1, hue, 5), // lower half - the flank
         'R' => (catalog::G_QUAD + 12 - 1, hue, 5),
+        // The checker band, and the sign on the roof.
+        'k' => (catalog::G_QUAD + 6 - 1, palette::H_WHITE, 7),
+        'S' => (catalog::G_SOLID, palette::H_YELLOW, 7),
         // The three signal aspects, only one of which is ever lit; which one
         // comes from the phase, so a junction full of them stays in step.
         'r' => (catalog::G_SOLID, palette::H_RED, if phase.is_multiple_of(3) { 7 } else { 1 }),

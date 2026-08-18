@@ -80,21 +80,55 @@ backlog.
 
 ## 5. The measured frame rate
 
-**About 1.3 frames a second**, at 40×25.
+**About 2.6 frames a second**, at 40×25 — up from 0.93 after the table work
+below.
 
-Measured rather than estimated, and the method matters because warp mode
-makes wall-clock meaningless. A build that renders exactly *N* frames and
-then sets the border white is run under `-limitcycles`, and the cycle count
-at which the border turns is found by bisection:
+### What the tables bought
 
-- boot, injection and the character-set copy complete under **15 million**
-  cycles
-- fifty frames complete between **75 and 80 million**
+Everything the machine used to work out at boot now comes from
+`gen/tables.h`, which `ascitty-bake` writes from the same figures the host
+renderer uses: the projection scale per distance, the haze ramp, the
+camera-plane offset per column, the ground colours, the star field, the
+field of view and the light bearing. That removed 337 divisions and modulos
+from boot, but the reason it matters is correctness — they were a second
+copy of formulas the host already has, and the two could drift.
 
-which is roughly 1.3 million cycles a frame against a PAL clock of
-1 773 447 Hz.
+The speed came from somewhere else. The DDA's innermost line was
 
-`tools/viceshot.sh` is the harness. Note `-autostartprgmode 1`, which injects
+```c
+    city_h[(my << CITY_SHIFT) | mx]
+```
+
+and that shift is a 16-bit value shifted six times, on every step of every
+column of every frame. A table of row base pointers — built at boot, because
+the addresses are not known until the linker has run — turns it into an
+index off a pointer.
+
+| | cycles/frame | fps |
+|---|---:|---:|
+| Before | 1 910 156 | 0.93 |
+| Baked tables + row pointers | 687 500 | **2.58** |
+
+Measured with `tools/frametime.sh`, which builds a variant that renders
+exactly *N* frames and then turns the border white, and bisects the cycle
+budget at which that happens. Two runs at different *N* cancel the boot
+cost, which is otherwise most of the answer.
+
+### One that did not work
+
+The side-distance set-up is still a 32-bit multiply. It was briefly a pair
+of quarter-square products — `a*b = (a+b)²/4 − (a−b)²/4`, two reads of a
+baked table and a subtraction, which is the classic way to multiply on a
+machine that cannot. The algebra checks out and the screen came up blank:
+every column bailed out of the walk immediately.
+
+It is worth recording *how* that nearly got shipped. The first measurement
+of the quarter-square build said **5.4 fps**, which looked like a triumph and
+was an artefact: the columns were terminating early, so the renderer was
+doing a fraction of the work. A frame-rate number from a build whose output
+has not been looked at is not a measurement of anything.
+
+`tools/viceshot.sh` boots and screenshots; `tools/frametime.sh` measures. Note `-autostartprgmode 1`, which injects
 the program straight into memory: loading a 19 KB program through an emulated
 1541 takes about ninety seconds of machine time, and the screenshot catches
 the `LOADING` message rather than the city.

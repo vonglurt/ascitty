@@ -98,6 +98,7 @@ fn main() {
 
     std::fs::create_dir_all(&o.out).expect("cannot create the output directory");
     write(&o.out, "charset.h", &charset());
+    write(&o.out, "tables.h", &tables());
     write(&o.out, "trig.h", &trig_table());
     write(&o.out, "recip.h", &recip_table());
     write(&o.out, "glyphs.h", &glyph_defines());
@@ -204,6 +205,125 @@ fn recip_table() -> String {
     }
     s.push_str("};\n#endif\n\n#endif\n");
     s
+}
+
+/// Screen geometry of the Plus/4, which the baked tables are sized for.
+const SCR_W: i32 = 40;
+const SCR_H: i32 = 25;
+/// Rows per world unit at unit distance, on that screen.
+const PROJ: i32 = 15;
+/// Longest ray, in whole cells.
+const FAR: i32 = 40;
+/// Horizontal field of view, in degrees.  The one place it is decided.
+const FOV_DEGREES: f64 = 67.0;
+
+/// Everything the target used to work out at boot.
+///
+/// Five tables and a multiplication table.  The renderer on the machine now
+/// starts by reading, not by dividing: the boot code had 41 divisions for
+/// the projection, 40 for the column offsets and 256 modulos for the star
+/// field, and every one of them was recomputing a number this program
+/// already knows.
+///
+/// The correctness argument matters more than the cycles. These are the
+/// *same* formulas the host renderer uses, evaluated once, here - so the two
+/// targets cannot drift apart by someone retuning a constant on one side.
+fn tables() -> String {
+    let mut s = banner("tables.h - everything the target would otherwise work out at boot");
+    s.push_str("#ifndef ASCITTY_TABLES_H\n#define ASCITTY_TABLES_H\n\n");
+
+    let _ = writeln!(s, "#define SCR_W {SCR_W}");
+    let _ = writeln!(s, "#define SCR_H {SCR_H}");
+    let _ = writeln!(s, "#define PROJ  {PROJ}");
+    let _ = writeln!(s, "#define FAR   {FAR}");
+    let _ = writeln!(s, "#define HORIZON (SCR_H / 2)\n");
+
+    // The camera plane half-width, in Q8.8, from the field of view in
+    // degrees.  See `camera::fov_for_degrees`.
+    let fov = (FOV_DEGREES / 2.0).to_radians().tan();
+    let _ = writeln!(s, "/* Field of view: {FOV_DEGREES} degrees, as a camera-plane half-width. */");
+    let _ = writeln!(s, "#define FOV {}\n", (fov * 256.0).round() as i32);
+
+    // The light bearing, as one byte of turn.  The same constant the host
+    // lights from and the same one the baked shadows were swept for - if
+    // the target lit from a different direction than its own shadows were
+    // cast from, the two would disagree and nothing would say so.
+    let _ = writeln!(s, "/* Light bearing, from ascitty_core::shadow::DEFAULT_AZ. */");
+    let _ = writeln!(s, "#define MOON_AZ {}\n", ascitty_core::shadow::DEFAULT_AZ >> 8);
+
+    s.push_str("/* Rows per world unit at distance d, Q4.4. */\n");
+    let proj: Vec<i32> = (0..=FAR + 1)
+        .map(|d| if d == 0 { PROJ * 16 } else { PROJ * 16 / d })
+        .collect();
+    emit_table(&mut s, "projtab", "unsigned int", &proj);
+
+    s.push_str("/* Luminance steps lost to haze at distance d. */\n");
+    let fade: Vec<i32> = (0..=FAR + 1).map(|d| d * 7 / FAR).collect();
+    emit_table(&mut s, "fadetab", "unsigned char", &fade);
+
+    s.push_str("/* Camera-plane offset per screen column, Q8.8, -255..255. */\n");
+    let camx: Vec<i32> = (0..SCR_W)
+        .map(|x| (x * 512 / SCR_W - 256).clamp(-255, 255))
+        .collect();
+    emit_table(&mut s, "camxtab", "int", &camx);
+
+    s.push_str("/* Colour of each road row below the horizon. */\n");
+    let ground: Vec<i32> = (0..SCR_H)
+        .map(|d| {
+            // The target computed this in an `unsigned char`, so rows past
+            // the horizon wrapped negative and fell into the far branch.
+            // Reproduced rather than corrected: the rows it affects are the
+            // ones below the bottom of the screen, and "the same numbers as
+            // before" is worth more here than "the numbers I would pick now".
+            let away = (SCR_H - (SCR_H / 2) - d).rem_euclid(256);
+            let l = if away >= 8 { 1 } else { (3 - (away >> 2)).max(1) };
+            (l << 4) | palette::H_WHITE as i32
+        })
+        .collect();
+    emit_table(&mut s, "groundtab", "unsigned char", &ground);
+
+    s.push_str("/* Which row a column's star sits on, by column plus heading. */\n");
+    let star: Vec<i32> = (0..256)
+        .map(|i: i32| 1 + (i * 7 + (i >> 3)) % (SCR_H / 2 - 1))
+        .collect();
+    emit_table(&mut s, "startab", "unsigned char", &star);
+
+    s.push_str(
+        "/* Quarter squares: qsq[n] = n*n/4.\n\
+         **\n\
+         ** An 8x8 multiply without a multiply, which a 6502 does not have:\n\
+         **\n\
+         **     a*b = (a+b)^2/4 - (a-b)^2/4\n\
+         **\n\
+         ** and the floors cancel exactly, because a+b and a-b always share a\n\
+         ** parity.  Two table reads and a subtraction against cc65's\n\
+         ** software multiply.  511 entries because a+b reaches 510; the\n\
+         ** largest value is 510^2/4 = 65025, which is the reason this is the\n\
+         ** widest table that still fits an unsigned int. */\n",
+    );
+    let qsq: Vec<i32> = (0..511).map(|n: i32| n * n / 4).collect();
+    emit_table(&mut s, "qsq", "unsigned int", &qsq);
+
+    s.push_str("#endif\n");
+    s
+}
+
+/// Emit one table as an extern plus a guarded definition.
+fn emit_table(s: &mut String, name: &str, ctype: &str, data: &[i32]) {
+    let _ = writeln!(s, "#define {}_LEN {}", name.to_uppercase(), data.len());
+    let _ = writeln!(s, "extern const {ctype} {name}[{}_LEN];", name.to_uppercase());
+    let _ = writeln!(s, "#ifdef ASCITTY_TABLES_DATA");
+    let _ = writeln!(s, "const {ctype} {name}[{}_LEN] = {{", name.to_uppercase());
+    for row in data.chunks(8) {
+        let _ = write!(s, "    ");
+        for v in row {
+            // cc65 promotes an unsigned constant above INT_MAX to long.
+            let suffix = if *v > 32767 { "U" } else { "" };
+            let _ = write!(s, "{v}{suffix},");
+        }
+        s.push('\n');
+    }
+    let _ = writeln!(s, "}};\n#endif\n");
 }
 
 /// The catalogue's names, so the C reads like the Rust.

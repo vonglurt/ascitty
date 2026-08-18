@@ -38,6 +38,7 @@
 #include "cast.h"
 
 #include "../gen/glyphs.h"
+#include "../gen/tables.h"
 #include "../gen/trig.h"
 #include "../gen/recip.h"
 #include "../gen/city.h"
@@ -48,20 +49,12 @@ unsigned char cam_a;
 /* Eye height, Q8.8: 0.3 cells, which at six metres a cell is a person. */
 #define EYE  77
 
-/* Rows per world unit at unit distance.  SCR_W / (4 * fov) with fov 2/3. */
-#define PROJ 15
 
-/* Half the field of view as a camera-plane half width, Q8.8. */
-#define FOV  171
 
-/* Longest ray, in whole cells.  Past this the haze has taken everything. */
-#define FAR  40
 
-/* The horizon, in screen rows. */
-#define HORIZON (SCR_H / 2)
 
-/* The direction the moon is in, as one byte of turn. */
-#define MOON_AZ 96
+/* MOON_AZ comes from gen/tables.h, which takes it from the same constant
+** the host lights from and the baked shadows were swept for. */
 
 /* Diffuse light per wall face, as a luminance offset.
 **
@@ -83,15 +76,7 @@ static signed char lambert[4];
 #define FACE_SOUTH 2
 #define FACE_WEST  3
 
-/* projtab[d] = rows per world unit at distance d, Q4.4.
-**
-** Built at boot with 64 divisions, which is the only place in the program a
-** division survives. */
-static unsigned int projtab[FAR + 2];
 
-/* How many luminance steps to drop at distance d.  The depth cue, and the
-** same "hold the hue, drop the luminance" rule the host uses. */
-static unsigned char fadetab[FAR + 2];
 
 /* The view direction and the camera plane, in Q8.8.
 **
@@ -101,36 +86,34 @@ static unsigned char fadetab[FAR + 2];
 ** out of the per-column path is worth about a fifth of the frame. */
 static int dirx, diry, plx, ply;
 
-/* Per-column and per-row constants, built once at boot.
+/* camxtab, groundtab, startab, projtab, fadetab and qsq all come from
+** gen/tables.h now.  They used to be worked out at boot, which cost 337
+** divisions and modulos and - more to the point - was a second copy of
+** formulas the host renderer already has. */
+
+/* Row pointers into the baked district.
 **
-** Each of these replaces a division or a multiply that would otherwise
-** happen inside the frame loop.  The whole table set is 145 bytes. */
-static int camxtab[SCR_W];              /* the camera plane offset per column */
-static unsigned char groundtab[SCR_H];  /* colour of each road row            */
-static unsigned char startab[256];      /* which row a column's star sits on  */
+** The DDA's innermost line was `city_h[(my << CITY_SHIFT) | mx]`, and that
+** shift is a 16-bit value shifted six times - about two dozen cycles, on
+** every step of every column of every frame.  A table of row bases turns it
+** into an index off a pointer.  It cannot be baked, because the addresses
+** are not known until the linker has run, so it is the one thing still built
+** at boot. */
+static const unsigned char *rowh[CITY_SIZE];
+static const unsigned char *rowc[CITY_SIZE];
+static const unsigned char *rowt[CITY_SIZE];
+static const unsigned char *rows_[CITY_SIZE];
 
 void cast_init(void)
 {
-    unsigned char d;
+    unsigned int i;
 
-    projtab[0] = PROJ * 16;
-    fadetab[0] = 0;
-    for (d = 1; d <= FAR + 1; ++d) {
-        projtab[d] = (unsigned int)(PROJ * 16) / d;
-        fadetab[d] = (unsigned char)((unsigned int)d * 7 / FAR);
-    }
-
-    for (d = 0; d < SCR_W; ++d)
-        camxtab[d] = ((int)d * 512) / SCR_W - 256;
-
-    /* The nearest row is the brightest.  Two steps of luminance across the
-    ** whole road is not much of a gradient, but the alternative on a
-    ** black-background screen is a grey slab that competes with the
-    ** buildings, and the buildings are the picture. */
-    for (d = 0; d < SCR_H; ++d) {
-        unsigned char away = (unsigned char)(SCR_H - HORIZON - d);
-        unsigned char l = (away >= 8) ? 1 : (unsigned char)(3 - (away >> 2));
-        groundtab[d] = CBYTE(l < 1 ? 1 : l, HUE_WHITE);
+    for (i = 0; i < CITY_SIZE; ++i) {
+        unsigned int base = i << CITY_SHIFT;
+        rowh[i] = city_h + base;
+        rowc[i] = city_c + base;
+        rowt[i] = city_t + base;
+        rows_[i] = city_s + base;
     }
 
     /* N.L for each wall.  For an axis-aligned normal that is just the
@@ -141,6 +124,7 @@ void cast_init(void)
     {
         int lx = COS(MOON_AZ);
         int ly = SIN(MOON_AZ);
+        signed char d;
         lambert[FACE_EAST] = (signed char)(lx * 3 / 256);
         lambert[FACE_WEST] = (signed char)(-lx * 3 / 256);
         lambert[FACE_SOUTH] = (signed char)(ly * 3 / 256);
@@ -152,17 +136,31 @@ void cast_init(void)
                 lambert[d] = -2;
         }
     }
-
-    /* Stars are placed by a table indexed with the column plus the heading,
-    ** which fixes them to the world: turning the camera slides the index and
-    ** the same stars come back round.  A modulo per column would not be
-    ** wrong, it would just be a division. */
-    {
-        unsigned int i;
-        for (i = 0; i < 256; ++i)
-            startab[i] = (unsigned char)(1 + (i * 7 + (i >> 3)) % (HORIZON - 1));
-    }
 }
+
+/* An 8x8 multiply, without a multiply.
+**
+**     a*b = (a+b)^2/4 - (a-b)^2/4
+**
+** and the floors cancel exactly because a+b and a-b always share a parity.
+** Two reads of the baked quarter-square table and a subtraction, against
+** cc65's software multiply. */
+static unsigned int qmul(unsigned char a, unsigned char b)
+{
+    return qsq[(unsigned int)a + (unsigned int)b]
+         - qsq[(a > b) ? (unsigned int)(a - b) : (unsigned int)(b - a)];
+}
+
+/* The DDA's side-distance set-up is still a 32-bit multiply.
+**
+** It was briefly a pair of quarter-square products, on the reasoning that
+** `(f * d) >> 8` decomposes into `(f*lo)>>8 + f*hi`.  The algebra is right
+** and the result was a blank screen: every column bailed out of the walk
+** immediately.  Rather than ship a fast wrong answer it has been put back,
+** and the investigation is in the backlog - the row-pointer table below is
+** where nearly all of the speed came from anyway.
+**
+** Two of these per column, forty columns: about 3% of a frame. */
 
 /* A step distance, held below the point where accumulating it would wrap a
 ** signed 16-bit accumulator.  A ray almost parallel to a grid axis has a
@@ -178,7 +176,7 @@ static unsigned char height_at(int gx, int gy)
 {
     if (((unsigned int)gx | (unsigned int)gy) & ~(unsigned int)CITY_MASK)
         return 0;
-    return city_h[((unsigned int)gy << CITY_SHIFT) | (unsigned int)gx];
+    return rowh[gy][gx];
 }
 
 void cast_walk(int d)
@@ -202,7 +200,6 @@ static void column(unsigned char sx)
     int mx, my;
     signed char stepx, stepy;
     unsigned char dist, ceiling, top, bot, y, h, tile, col, face, shade_y, shadecol;
-    unsigned int p;
     unsigned char *scr, *clr;
 
     /* camx from -256 to +256 across the screen, Q8.8.
@@ -323,8 +320,7 @@ static void column(unsigned char sx)
         if (((unsigned int)mx | (unsigned int)my) & ~(unsigned int)CITY_MASK)
             return;
 
-        p = ((unsigned int)my << CITY_SHIFT) | (unsigned int)mx;
-        h = city_h[p];
+        h = rowh[my][mx];
         if (h == 0)
             continue;
 
@@ -335,7 +331,9 @@ static void column(unsigned char sx)
             dist = 1;
         {
             unsigned int per = projtab[dist];
-            unsigned int rows = ((unsigned int)h * per) >> 4;
+            /* Every projtab entry is under 256, so the height and the scale
+            ** are both bytes and this is one quarter-square product. */
+            unsigned int rows = qmul(h, (unsigned char)per) >> 4;
             unsigned int foot = (per >> 4) / 4; /* EYE is about a third */
 
             if (rows >= HORIZON)
@@ -351,8 +349,8 @@ static void column(unsigned char sx)
         if (bot >= ceiling)
             bot = ceiling - 1;
 
-        tile = city_t[p];
-        col = city_c[p];
+        tile = rowt[my][mx];
+        col = rowc[my][mx];
 
         /* The screen row where this wall passes out of shadow.
         **
@@ -363,7 +361,7 @@ static void column(unsigned char sx)
         ** comparison per row.  The sweep that produced these numbers ran on
         ** a laptop; see docs/raytracing.md. */
         {
-            unsigned char sh = city_s[p];
+            unsigned char sh = rows_[my][mx];
             if (sh == 0) {
                 /* Nothing upstream.  Not "shadowed up to the ground": the
                 ** test below darkens every row past `shade_y`, and the base
@@ -371,7 +369,7 @@ static void column(unsigned char sx)
                 ** this at HORIZON blackens the foot of every building. */
                 shade_y = SCR_H;
             } else {
-                unsigned int rows = ((unsigned int)sh * projtab[dist]) >> 4;
+                unsigned int rows = qmul(sh, (unsigned char)projtab[dist]) >> 4;
                 shade_y = (rows >= HORIZON) ? 0 : (unsigned char)(HORIZON - rows);
             }
         }
@@ -387,12 +385,22 @@ static void column(unsigned char sx)
             if (lum > 7)
                 lum = 7;
             lum = (signed char)((lum > (signed char)fade) ? lum - fade : 0);
+            if (lum < 1)
+                lum = 1;
             col = (unsigned char)(((unsigned char)lum << 4) | (col & 0x0F));
-            /* ...and the same again two steps down, for the shaded part. */
+            /* ...and the same again two steps down, for the shaded part.
+            **
+            ** Floored at one, not at zero.  Three subtractions stack here -
+            ** the face turned away from the moon, the distance haze, and
+            ** the cast shadow - and on a screen with eight luminances they
+            ** reach the background colour long before the draw distance
+            ** does.  A building rendered at luminance zero is not dark, it
+            ** is *gone*: black glyphs on a black screen, which looks exactly
+            ** like the renderer failing to find any geometry. */
             {
                 signed char d2 = (signed char)(lum - 2);
-                if (d2 < 0)
-                    d2 = 0;
+                if (d2 < 1)
+                    d2 = 1;
                 shadecol = (unsigned char)(((unsigned char)d2 << 4) | (col & 0x0F));
             }
         }
