@@ -12,13 +12,13 @@ mod term;
 
 use ascitty_core::atmos::Atmos;
 use ascitty_core::camera::{Camera, TURN_SPEED, WALK_SPEED};
-use ascitty_core::drive::{self, Controls};
+use ascitty_core::drive::Controls;
 use ascitty_core::fixed::{self, Fx, ONE};
 use ascitty_core::frame::Frame;
 use ascitty_core::glyph::Mode;
 use ascitty_core::raycast;
 use ascitty_core::sim::{Event, Sim};
-use ascitty_core::trig;
+
 use ascitty_core::world::City;
 use paint::Depth;
 use term::{Key, Keys, Term};
@@ -293,7 +293,7 @@ fn run(mut o: Opts) -> Result<(), String> {
         }
         View::Walk => {}
     }
-    let _ = trig::QUARTER;
+
 
     // Headless paths first: neither needs a terminal, which is what makes
     // them usable from a Makefile and from CI.

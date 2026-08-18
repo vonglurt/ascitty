@@ -6,20 +6,23 @@
 //!
 //! | Target | How an index becomes a shape |
 //! |---|---|
-//! | Plus/4 | screen code `index + 64`, drawn from the baked charset in RAM |
+//! | Plus/4 | screen code `index`, drawn from the baked charset in RAM |
 //! | Terminal, Unicode | the block/box character in [`UNICODE`] |
 //! | Terminal, ASCII | the typeable character in [`ASCII`] - the tty mode the project is named for |
 //! | Terminal, PETSCII | the ROM screen code in [`PETSCII`], for an unmodified character set |
 //!
 //! Because the Plus/4 mapping is the identity, the machine has no glyph
-//! selection cost at all: the renderer's output byte *is* the screen byte.
-//! The terminal pays one array index.
+//! selection cost at all: the renderer's output byte *is* the screen byte,
+//! and the colour byte is already in the TED's own packing.  The terminal
+//! pays one array index.
 //!
-//! 128 is not arbitrary.  A Plus/4 character set is 256 definitions of 8
-//! bytes; the ROM's lower 64 screen codes carry the alphabet, the digits and
-//! the punctuation the status line needs, so the custom half starts at 64
-//! and runs to 191.  That leaves the HUD legible without a second charset
-//! bank.
+//! 128 is not arbitrary.  When the TED takes character definitions from RAM
+//! rather than from ROM it reads a **1 KB** set - 128 definitions of eight
+//! bytes - and bit 7 of a screen code becomes a reverse-video flag rather
+//! than an address bit.  So 128 is the whole budget, codes 128..255 come out
+//! free as inverses of the first half, and the ROM alphabet is gone the
+//! moment the custom set is installed.  The Plus/4 build therefore has no
+//! text on screen at all; see `docs/adr/0004-plus4-charset.md`.
 
 use crate::font::{self, Bitmap, Xform};
 
@@ -29,8 +32,9 @@ pub type GlyphId = u8;
 /// Number of glyphs in the catalogue.
 pub const N_GLYPHS: usize = 128;
 
-/// Screen code of catalogue index 0 on the Plus/4.
-pub const PLUS4_BASE: u8 = 64;
+/// Screen code of catalogue index 0 on the Plus/4.  Zero: the mapping is
+/// the identity, and it is the identity on purpose.
+pub const PLUS4_BASE: u8 = 0;
 
 // --- the layout ------------------------------------------------------------
 
@@ -432,8 +436,13 @@ mod tests {
     }
 
     #[test]
-    fn the_catalogue_fits_a_plus4_charset_half() {
-        assert!(PLUS4_BASE as usize + N_GLYPHS <= 256);
+    fn the_catalogue_is_exactly_a_ram_charset() {
+        // A TED RAM character set is 1 KB: 128 definitions of 8 bytes.  The
+        // catalogue must fill it exactly - fewer wastes the set, more will
+        // not fit and there is no second bank to spill into.
+        assert_eq!(N_GLYPHS, 128);
+        assert_eq!(PLUS4_BASE, 0);
+        assert_eq!(N_GLYPHS * 8, 1024);
     }
 
     #[test]

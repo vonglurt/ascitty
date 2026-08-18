@@ -102,8 +102,6 @@ impl Billboard {
 // other character names a catalogue glyph in `glyph_for` below, and the
 // second character of the pair - in `LIT` - says how bright it is.
 
-const BLANK_ART: [&str; 8] = ["        "; 8];
-
 #[rustfmt::skip]
 const LAMP_POST_ART: [&str; 8] = [
     "   ooo  ",
@@ -464,7 +462,6 @@ mod tests {
                 assert!(row.is_ascii(), "{s:?} row {i} is not ASCII");
             }
         }
-        assert_eq!(BLANK_ART.len(), 8);
     }
 
     #[test]

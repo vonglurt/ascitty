@@ -8,9 +8,12 @@
 //! interpolation.  So the shading model here is the Plus/4's, and the
 //! terminal emulates *it* - not the other way round.
 //!
-//! A colour is one byte: `hue << 3 | luminance`.  That is also the byte the
-//! Plus/4 pokes into colour RAM, so the renderer's output needs no
-//! translation on the target at all.
+//! A colour is one byte: `luminance << 4 | hue`.  That is not an arbitrary
+//! packing - it is exactly the byte the TED wants in colour RAM, so on the
+//! Plus/4 the renderer's output byte *is* the hardware byte and there is no
+//! translation step at all.  Getting this the wrong way round costs nothing
+//! on a host and costs a per-cell shift-and-or on a 1.76 MHz machine, which
+//! is why it is worth writing down.
 
 /// A packed `hue << 3 | luminance` colour byte.
 pub type Color = u8;
@@ -20,22 +23,22 @@ pub const HUES: u8 = 16;
 /// Number of luminance steps per hue.
 pub const LUMA: u8 = 8;
 
-/// Pack a hue and luminance.
+/// Pack a hue and luminance into a TED colour byte.
 #[inline(always)]
 pub const fn rgb_index(hue: u8, luma: u8) -> Color {
-    ((hue & 0x0f) << 3) | (luma & 0x07)
+    ((luma & 0x07) << 4) | (hue & 0x0f)
 }
 
 /// The hue half of a colour byte.
 #[inline(always)]
 pub const fn hue_of(c: Color) -> u8 {
-    c >> 3
+    c & 0x0f
 }
 
 /// The luminance half of a colour byte.
 #[inline(always)]
 pub const fn luma_of(c: Color) -> u8 {
-    c & 0x07
+    (c >> 4) & 0x07
 }
 
 /// Darken by `steps`, saturating at black.  This is the depth cue.
