@@ -34,6 +34,12 @@ The three camera modes and how each is driven, why pitch is measured in
 screen rows, and the autopilot that walks the streets and looks around on its
 own — including how to record it as an animation.
 
+### [`raytracing.md`](raytracing.md)
+The classical ray-tracing and shading formulas, what this renderer actually
+computes, and which of the things it does not compute are cheap enough to
+add. Includes a costing table of what an ASCII city can afford. Read this
+before proposing a lighting feature.
+
 ### [`renderer.md`](renderer.md)
 The height-field walk in detail — why it does not stop at the first hit,
 where the perspective divide happens, why there is no per-column cosine, and

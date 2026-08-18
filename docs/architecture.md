@@ -172,6 +172,19 @@ The gate is `make check`: tests, both builds, the tables regenerated, a host
 frame rendered, and the target booted in the emulator to confirm it still
 draws something. A `.prg` that compiles is not evidence.
 
+## 9a. Lighting
+
+There is one light: a directional one, the moon. The whole model is five
+numbers — `L·N` for each of the five normals a height field can present —
+recomputed once per frame and applied as a luminance offset per surface.
+
+That it collapses this far is a property of the geometry rather than a
+simplification. [`raytracing.md`](raytracing.md) sets the classical formulas
+against what this renderer actually computes, and costs out what else is
+affordable: directional shadows from a horizon sweep, wet-road reflections
+as a vertical mirror about the horizon, and sub-cell gradient shading using
+the glyph rather than the colour.
+
 ## 10. Decisions worth not re-litigating
 
 - [0001](adr/0001-fixed-point.md) — fixed point everywhere

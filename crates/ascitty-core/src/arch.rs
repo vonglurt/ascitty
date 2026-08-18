@@ -58,6 +58,17 @@ pub enum Face {
     West,
 }
 
+/// Index of the roof in a table of per-normal values.
+///
+/// A height field of axis-aligned cells has exactly five possible normals -
+/// the four walls of [`Face`] and this one.  That number being *five* is
+/// what makes a diffuse lighting term nearly free here; see
+/// `docs/raytracing.md`.
+pub const ROOF: usize = 4;
+
+/// How many distinct normals the geometry can present.
+pub const NORMALS: usize = 5;
+
 impl Face {
     /// Index 0..3, for hashing.
     pub fn index(self) -> u32 {

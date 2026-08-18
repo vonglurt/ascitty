@@ -7,9 +7,10 @@
 //! is four glyphs.  Every one of these has to survive on a 1.76 MHz machine,
 //! and none of them may allocate.
 
+use crate::arch::{self, Face};
 use crate::camera::Camera;
 use crate::catalog;
-use crate::fixed::{self, Fx};
+use crate::fixed::{self, Fx, ONE};
 use crate::frame::{Cel, Frame};
 use crate::palette::{self, rgb_index, Color};
 use crate::rng::hash3;
@@ -231,6 +232,64 @@ impl Atmos {
         }
     }
 
+    /// The diffuse light each of the five possible normals receives, as a
+    /// luminance offset.
+    ///
+    /// This is the whole of the lighting model, and it is five numbers.
+    ///
+    /// A height field of axis-aligned cells presents exactly five normals -
+    /// four walls and a roof - and the renderer already knows which one a
+    /// ray hit, because that is [`crate::arch::Face`].  The moon is a
+    /// *directional* source, so `L` is the same everywhere in the scene.
+    /// Therefore `L·N` is five numbers, and they only change when the moon
+    /// moves.
+    ///
+    /// Per frame, not per pixel and not per hit.  A textbook renderer
+    /// evaluates a dot product per fragment; here the whole term collapses
+    /// to a five-entry table and one addition at the point of use, because
+    /// luminance is a three-bit nibble and adding an offset to it is the
+    /// same operation as scaling it.
+    ///
+    /// Indexed by `Face as usize`, with [`crate::arch::ROOF`] last.
+    pub fn lambert(&self) -> [i8; arch::NORMALS] {
+        if !self.moon {
+            return [0; arch::NORMALS];
+        }
+        // The moon's ground bearing, foreshortened by how high it is.  The
+        // altitude is carried as screen rows rather than as an angle - see
+        // `Camera::pitch` for why - so it is turned into a horizontal
+        // fraction here rather than pretending to be a real elevation.
+        let tilt = fixed::clamp(
+            fixed::div(fixed::from_int(self.moon_alt), fixed::from_int(24)),
+            0,
+            ONE,
+        );
+        let flat = ONE - fixed::mul(tilt, fixed::ratio(3, 4));
+        let lx = fixed::mul(trig::cos(self.moon_az), flat);
+        let ly = fixed::mul(trig::sin(self.moon_az), flat);
+
+        // N·L for each wall, which for an axis-aligned normal is just the
+        // matching component of L with the matching sign.  No dot product
+        // is actually evaluated - there is nothing left of one.
+        let step = |nl: Fx| -> i8 {
+            // Q16.16 in -1..1 to a luminance offset.  Asymmetric on
+            // purpose: an eight-level ramp has far more room below a
+            // building's base brightness than above it, so a face turned
+            // away loses more than a face turned towards gains.
+            let v = fixed::floor(fixed::mul(nl, fixed::from_int(3)));
+            v.clamp(-2, 1) as i8
+        };
+        let mut t = [0i8; arch::NORMALS];
+        t[Face::North as usize] = step(-ly);
+        t[Face::East as usize] = step(lx);
+        t[Face::South as usize] = step(ly);
+        t[Face::West as usize] = step(-lx);
+        // The roof faces up, and the moon is above the horizon whenever it
+        // is up at all.
+        t[arch::ROOF] = step(tilt.max(fixed::ratio(1, 3)));
+        t
+    }
+
     /// Whether the ground should be wet, which the ground pass uses to put
     /// puddles and reflections down.
     pub fn wet(&self) -> bool {
@@ -241,7 +300,8 @@ impl Atmos {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::camera::Camera;
+    use crate::arch::{self, Face};
+use crate::camera::Camera;
 
     #[test]
     fn fade_reaches_black_at_the_draw_distance() {
@@ -296,6 +356,77 @@ mod tests {
         let a = Atmos::default();
         let ang = trig::from_degrees(41.0);
         assert_eq!(a.sky(ang, 5).glyph, a.sky(ang, 5).glyph);
+    }
+
+    #[test]
+    fn a_face_turned_towards_the_moon_is_lit_and_one_turned_away_is_not() {
+        let a = Atmos { moon: true, moon_az: trig::from_degrees(0.0), moon_alt: 6, ..Default::default() };
+        let t = a.lambert();
+        // Bearing zero is +x, so the east-facing wall takes the light.
+        assert!(
+            t[Face::East as usize] > t[Face::West as usize],
+            "east {} west {} with the moon due east",
+            t[Face::East as usize],
+            t[Face::West as usize]
+        );
+        // ...and the two walls perpendicular to it are between the extremes.
+        for f in [Face::North, Face::South] {
+            assert!(t[f as usize] <= t[Face::East as usize]);
+            assert!(t[f as usize] >= t[Face::West as usize]);
+        }
+    }
+
+    #[test]
+    fn moving_the_moon_moves_which_wall_is_lit() {
+        let brightest = |deg: f64| {
+            let a = Atmos { moon: true, moon_az: trig::from_degrees(deg), moon_alt: 6, ..Default::default() };
+            let t = a.lambert();
+            (0..4).max_by_key(|i| t[*i]).unwrap()
+        };
+        let east = brightest(0.0);
+        let south = brightest(90.0);
+        let west = brightest(180.0);
+        assert_ne!(east, south, "the moon moved a quarter turn and nothing changed");
+        assert_ne!(south, west);
+        assert_ne!(east, west);
+    }
+
+    #[test]
+    fn a_moonless_night_has_no_diffuse_term_at_all() {
+        let a = Atmos { moon: false, ..Default::default() };
+        assert_eq!(a.lambert(), [0; arch::NORMALS]);
+    }
+
+    #[test]
+    fn the_roof_is_always_lit_when_the_moon_is_up() {
+        for deg in (0..360).step_by(30) {
+            let a = Atmos {
+                moon: true,
+                moon_az: trig::from_degrees(deg as f64),
+                moon_alt: 9,
+                ..Default::default()
+            };
+            assert!(a.lambert()[arch::ROOF] >= 0, "a roof in shadow at {deg} degrees");
+        }
+    }
+
+    #[test]
+    fn the_offsets_stay_inside_the_luminance_ramp() {
+        // Eight levels total, so an offset that could move a building by
+        // more than a few steps would clip half the palette away.
+        for deg in (0..360).step_by(7) {
+            for alt in [0, 6, 12, 24] {
+                let a = Atmos {
+                    moon: true,
+                    moon_az: trig::from_degrees(deg as f64),
+                    moon_alt: alt,
+                    ..Default::default()
+                };
+                for v in a.lambert() {
+                    assert!((-2..=1).contains(&v), "offset {v} at {deg} degrees, altitude {alt}");
+                }
+            }
+        }
     }
 
     #[test]

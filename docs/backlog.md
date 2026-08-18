@@ -8,6 +8,119 @@ Status: **now** (next up) · **soon** · **later** · **maybe** · **dropped**
 
 ---
 
+## Lighting
+
+The formulas, the costings and the reasoning are in
+[`raytracing.md`](raytracing.md). The items below are what falls out of it.
+
+### ~~A directional light and a five-entry Lambert table~~ — **built**
+`Atmos::lambert()` on the host, `lambert[4]` on the Plus/4. A height field
+presents five normals and the renderer already knows which one it hit, so
+`L·N` for a directional source is five numbers recomputed once per frame.
+Measured cost: none, on either target. See `raytracing.md` §2.1.
+
+Left here rather than deleted because the *shape* of the argument is the
+reusable part: whenever a quantity is constant over a surface the renderer
+can already identify, it belongs in a per-frame table and not in the inner
+loop.
+
+### Directional shadows from a horizon sweep — **now**
+Shadow rays double the cost of a renderer and bring a bias term that is a
+well-known source of artefacts. A height field with a directional light needs
+none of it: shadow is a horizon problem.
+
+Sweep the grid once along the light's ground direction carrying
+
+```
+    horizon = max(horizon − slope_per_cell, height_here)
+```
+
+A cell is in shadow exactly when its height is under the running horizon.
+**O(cells) once per light direction, O(1) per lookup**, one byte per cell.
+
+Long shadows down the avenues and lit tower tops over a shaded street, for
+the price of one pass. Storing the height *difference* rather than a bit
+gives the penumbra for nothing, which is the soft-shadow effect that
+normally needs an area light and a great many shadow rays.
+
+### Wet-road reflections as a vertical mirror — **soon**
+The ground is a horizontal plane, so a reflected ray is the incident one with
+its vertical component negated and its horizontal component unchanged. On
+screen, for a camera with no roll, that is exactly:
+
+> what is drawn at row `horizon + k` reflects what is at row `horizon − k`,
+> in the same column.
+
+A second read of a cell the renderer has already computed. No recursion, no
+depth limit, no second trace. Fade it with distance and mask it with the
+puddles that already exist. Probably the change that most looks like ray
+tracing to somebody watching.
+
+### Sub-cell gradient shading — **soon**
+A character cell is one colour but **eight by eight sub-cells of shape**, and
+the font is generated rather than drawn, so all of it is reachable.
+
+Ordered dithering already uses this for magnitude - `catalog::shade(n)` picks
+a glyph covering exactly `n/8` of the cell. The extension is to use it for
+*direction*: the `half_plane` family gives sixteen edge orientations, and
+`font::moments` already computes where a glyph's mass sits. Pick the glyph
+whose centre of mass lies towards the brighter side and a wall lit from the
+left gets glyphs weighted left.
+
+This is the ASCII-native answer to Gouraud shading - the colour stays flat
+because it must, and the *shape* carries the interpolation. It is the most
+interesting unexplored idea in the renderer.
+
+### Quadratic attenuation as a table — **later**
+`Atmos::fade` is linear in distance on purpose: an eight-level ramp under
+inverse-square spends six levels in the first three cells. The softened form
+`1/(a + bd + cd²)` is worth *trying* as an 80-byte table indexed by whole
+cells - not as a correction, as a different look.
+
+### Specular via a halfway-vector table — **later**
+`H = (L+V)/|L+V|` is a normalise, which is a square root, which is the thing
+this renderer is built around not doing. But `N` is one of five and `V` is
+constant per column, so `N·H` is a `width × 5` table rebuilt when the camera
+turns - 800 bytes on a host, 200 on the Plus/4.
+
+Worth it for wet asphalt and glass. Not worth it for brick: at one colour per
+character cell a matte wall has no highlight to draw.
+
+### Point lights with real attenuation — **maybe**
+Street lamps and lit shopfronts as actual sources rather than as bright
+glyphs. `L` is no longer constant so `L·N` is per hit per light, and the
+five-normal trick still removes the normalise but not the direction
+subtraction. Affordable on a host for a handful of lights, out of the
+question on the Plus/4.
+
+### Sphere primitives — **maybe**
+The one place the quadratic
+
+```
+    (D·D)t² + 2(D·(O−C))t + ((O−C)·(O−C) − R²) = 0
+```
+
+would earn its discriminant and its square root: a moon that is a real
+sphere, lamp glow as a shaded ball. Everything curved in the city is
+currently a billboard, which is right for cost and slightly wrong for the
+moon at the horizon.
+
+### Distribution ray tracing — **dropped**
+Anti-aliasing, soft shadows, depth of field, glossy reflection and motion
+blur from one mechanism: many jittered samples per pixel. Its slogan is that
+it turns aliasing into *noise*.
+
+That trade is backwards here, twice. On cost, sixteen samples on a machine
+managing 1.3 frames a second is a different project. On the medium, noise is
+worse than aliasing in a character grid, because a cell is coarse enough to
+be legible: a pixel renderer's noise dissolves into texture, a character
+renderer's noise is a visibly wrong letter, and re-sampled each frame it
+crawls. It is the same argument that makes the dither ordered rather than
+diffused.
+
+The one part worth having is soft shadows, and the horizon sweep above gives
+those without sampling anything.
+
 ## Renderer
 
 ### Roof surfaces, properly — **now**

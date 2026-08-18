@@ -253,6 +253,7 @@ Everything is indexed at **[docs/index.md](docs/index.md)**.
 | [architecture.md](docs/architecture.md) | how the whole thing fits together |
 | [camera.md](docs/camera.md) | the three modes, the autopilot, recording |
 | [renderer.md](docs/renderer.md) | the height-field walk, in detail |
+| [raytracing.md](docs/raytracing.md) | the formulas, what we compute, and what an ASCII city can afford |
 | [glyphs.md](docs/glyphs.md) | the procedural block font and the dithering |
 | [city.md](docs/city.md) | streets, lots, archetypes, fire escapes |
 | [driving.md](docs/driving.md) | the arcade physics |

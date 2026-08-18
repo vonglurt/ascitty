@@ -60,6 +60,29 @@ unsigned char cam_a;
 /* The horizon, in screen rows. */
 #define HORIZON (SCR_H / 2)
 
+/* The direction the moon is in, as one byte of turn. */
+#define MOON_AZ 96
+
+/* Diffuse light per wall face, as a luminance offset.
+**
+** The whole lighting model, and it is four numbers.
+**
+** A height field of axis-aligned cells presents exactly four wall normals,
+** and the DDA already knows which one it crossed - that is `vertical` and
+** the step sign.  The moon is a directional source, so N.L is the same
+** everywhere in the scene and collapses to a table computed once at boot.
+**
+** A textbook renderer evaluates a dot product per fragment.  Here there is
+** nothing left of one: an index and an add, and the index is a value the
+** walk has in hand.  See docs/raytracing.md. */
+static signed char lambert[4];
+
+/* Face indices, matching ascitty_core::arch::Face. */
+#define FACE_NORTH 0
+#define FACE_EAST  1
+#define FACE_SOUTH 2
+#define FACE_WEST  3
+
 /* projtab[d] = rows per world unit at distance d, Q4.4.
 **
 ** Built at boot with 64 divisions, which is the only place in the program a
@@ -110,6 +133,26 @@ void cast_init(void)
         groundtab[d] = CBYTE(l < 1 ? 1 : l, HUE_WHITE);
     }
 
+    /* N.L for each wall.  For an axis-aligned normal that is just the
+    ** matching component of L with the matching sign, so no dot product is
+    ** actually evaluated.  Q8.8 in -256..256 scaled to a -2..+1 offset:
+    ** asymmetric because an eight-level ramp has more room below a
+    ** building's own brightness than above it. */
+    {
+        int lx = COS(MOON_AZ);
+        int ly = SIN(MOON_AZ);
+        lambert[FACE_EAST] = (signed char)(lx * 3 / 256);
+        lambert[FACE_WEST] = (signed char)(-lx * 3 / 256);
+        lambert[FACE_SOUTH] = (signed char)(ly * 3 / 256);
+        lambert[FACE_NORTH] = (signed char)(-ly * 3 / 256);
+        for (d = 0; d < 4; ++d) {
+            if (lambert[d] > 1)
+                lambert[d] = 1;
+            if (lambert[d] < -2)
+                lambert[d] = -2;
+        }
+    }
+
     /* Stars are placed by a table indexed with the column plus the heading,
     ** which fixes them to the world: turning the camera slides the index and
     ** the same stars come back round.  A modulo per column would not be
@@ -158,7 +201,7 @@ static void column(unsigned char sx)
     int sidex, sidey, dx, dy;
     int mx, my;
     signed char stepx, stepy;
-    unsigned char dist, ceiling, top, bot, y, h, tile, col;
+    unsigned char dist, ceiling, top, bot, y, h, tile, col, face;
     unsigned int p;
     unsigned char *scr, *clr;
 
@@ -254,6 +297,9 @@ static void column(unsigned char sx)
 
     for (;;) {
         if (sidex < sidey) {
+            /* Crossed a north-south grid line, so the face pointing back at
+            ** the ray is east or west depending on which way we stepped. */
+            face = (stepx > 0) ? FACE_WEST : FACE_EAST;
             dist = (unsigned char)(sidex >> 8);
             if (sidex > 32767 - dx)
                 sidex = 32767;
@@ -261,6 +307,7 @@ static void column(unsigned char sx)
                 sidex += dx;
             mx += stepx;
         } else {
+            face = (stepy > 0) ? FACE_NORTH : FACE_SOUTH;
             dist = (unsigned char)(sidey >> 8);
             if (sidey > 32767 - dy)
                 sidey = 32767;
@@ -307,10 +354,18 @@ static void column(unsigned char sx)
         tile = city_t[p];
         col = city_c[p];
         {
-            unsigned char lum = col >> 4;
+            /* The building's own brightness, plus the diffuse term for the
+            ** face the ray hit, less the distance fade.  One table index
+            ** and one add, hoisted out of the per-row loop below because
+            ** every cell of this span shares a normal. */
+            signed char lum = (signed char)((col >> 4) + lambert[face]);
             unsigned char fade = fadetab[dist];
-            lum = (lum > fade) ? (unsigned char)(lum - fade) : 0;
-            col = (unsigned char)((lum << 4) | (col & 0x0F));
+            if (lum < 1)
+                lum = 1;
+            if (lum > 7)
+                lum = 7;
+            lum = (signed char)((lum > (signed char)fade) ? lum - fade : 0);
+            col = (unsigned char)(((unsigned char)lum << 4) | (col & 0x0F));
         }
 
         scr = SCREEN + (unsigned int)top * SCR_W + sx;

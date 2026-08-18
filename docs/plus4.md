@@ -99,6 +99,21 @@ the program straight into memory: loading a 19 KB program through an emulated
 1541 takes about ninety seconds of machine time, and the screenshot catches
 the `LOADING` message rather than the city.
 
+## 5a. The lighting is four numbers
+
+A directional light on a height field costs almost nothing here, and the
+argument is worth reading in full in [`raytracing.md`](raytracing.md) §2.1.
+
+The DDA already knows which grid plane it crossed and which way it stepped,
+so it knows which of the four wall normals is facing the ray. The light does
+not move in this build, so `N·L` for each of them is computed once at boot
+into `lambert[4]` and applied as a luminance offset — one array index and
+one addition, hoisted out of the per-row loop because every cell of a wall
+span shares a normal.
+
+Cost: 342 bytes of program and no measurable frame time. A textbook renderer
+evaluates a dot product per fragment; there is nothing left of one here.
+
 ## 6. What is next
 
 A hand-written `cast.s` for the DDA and the wall fill. The C is already

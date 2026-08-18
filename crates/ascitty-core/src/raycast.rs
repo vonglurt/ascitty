@@ -131,6 +131,9 @@ pub fn render_to(
     let far = fixed::from_int(draw_distance(atmos.haze));
     let (dx, dy) = cam.dir();
     let (px, py) = cam.plane();
+    // The entire lighting model, computed once for the frame: one luminance
+    // offset per possible surface normal.  See `docs/raytracing.md`.
+    let lambert = atmos.lambert();
 
     // Ground distance per row, computed once for the whole frame.
     //
@@ -177,7 +180,7 @@ pub fn render_to(
         let camx = fixed::div(fixed::from_int(2 * x), fixed::from_int(w)) - ONE;
         let rdx = dx + fixed::mul(px, camx);
         let rdy = dy + fixed::mul(py, camx);
-        let s = column(city, cam, atmos, f, x, rdx, rdy, horizon, proj, far);
+        let s = column(city, cam, atmos, f, x, rdx, rdy, horizon, proj, far, &lambert);
         st.steps += s.0;
         st.closed += s.1;
         depth[x as usize] = if s.2 == f32::MAX { Fx::MAX } else { fixed::from_f64(s.2 as f64) };
@@ -186,6 +189,16 @@ pub fn render_to(
         }
     }
     st
+}
+
+/// Apply a diffuse offset to a surface's own brightness.
+///
+/// Clamped at one rather than at zero: a lit window is a light source in its
+/// own right and the moon cannot switch it off, so the floor is one step of
+/// luminance rather than black.
+#[inline(always)]
+fn lit(base: u8, offset: i8) -> u8 {
+    (base as i32 + offset as i32).clamp(1, 7) as u8
 }
 
 /// The compass bearing of one column's ray.
@@ -214,6 +227,7 @@ fn column(
     horizon: i32,
     proj: Fx,
     far: Fx,
+    lambert: &[i8; arch::NORMALS],
 ) -> (u32, u32, f32) {
     let h = f.h as i32;
 
@@ -307,16 +321,23 @@ fn column(
             // Looking down on it: cap the top row with roofscape.
             if cam.z > ch && y0 <= y1 {
                 let s = arch::roof(lot, map_x, map_y);
-                f.put(x, y0, Cel { glyph: s.glyph, color: atmos.shade(s.hue, s.luma, dist) });
+                let luma = lit(s.luma, lambert[arch::ROOF]);
+                f.put(x, y0, Cel { glyph: s.glyph, color: atmos.shade(s.hue, luma, dist) });
             }
             let first = if cam.z > ch { y0 + 1 } else { y0 };
             z -= fixed::mul(fixed::from_int(first - y0), dz);
             let bhf = fixed::from_int(bh as i32);
+            // The diffuse term for this wall.  One table index, hoisted out
+            // of the per-row loop, because every cell of this span shares a
+            // normal - which is the whole reason a height field can afford
+            // lighting at all.
+            let face_light = lambert[face.index() as usize];
             for y in first..=y1 {
                 // The facade is asked about height *above its own footing*,
                 // not above sea level.
                 let s = arch::facade(lot, face, along, (z - ground).max(0), bhf, lod);
-                f.put(x, y, Cel { glyph: s.glyph, color: atmos.shade(s.hue, s.luma, dist) });
+                let luma = lit(s.luma, face_light);
+                f.put(x, y, Cel { glyph: s.glyph, color: atmos.shade(s.hue, luma, dist) });
                 z -= dz;
             }
         }
@@ -843,6 +864,67 @@ mod tests {
             }
         }
         assert!(found, "the camera never faced a nearby building");
+    }
+
+    #[test]
+    fn the_moon_actually_lights_the_buildings() {
+        // The lighting has to reach the frame, not just the table.  Same
+        // scene, same camera, moon on and moon off.
+        let city = City::generate(2024);
+        let cam = Camera::spawn(&city, SIZE as i32 / 2, SIZE as i32 / 2);
+        let mut lit_frame = Frame::new(100, 32);
+        let mut dark_frame = Frame::new(100, 32);
+        let base = Atmos { rain: 0, stars: 0, haze: 2, ..Default::default() };
+        render(&city, &cam, &Atmos { moon: true, ..base }, &mut lit_frame);
+        render(&city, &cam, &Atmos { moon: false, ..base }, &mut dark_frame);
+        let differing = (0..lit_frame.cels.len())
+            .filter(|&i| lit_frame.cels[i].color != dark_frame.cels[i].color)
+            .count();
+        assert!(
+            differing > lit_frame.cels.len() / 20,
+            "only {differing} cells changed when the moon was turned off"
+        );
+    }
+
+    #[test]
+    fn walls_facing_the_moon_are_brighter_than_walls_facing_away() {
+        // Measured through the renderer rather than through the table: a
+        // wall's brightness has to depend on which way it points.
+        let city = City::generate(2024);
+        let mut cam = Camera::spawn(&city, SIZE as i32 / 2, SIZE as i32 / 2);
+        let mut f = Frame::new(100, 32);
+
+        // Average wall luminance looking one way, then the other, with the
+        // moon fixed.  Facing into the moon shows the lit faces of things.
+        let mean_luma = |cam: &Camera, f: &mut Frame, a: &Atmos| -> u32 {
+            render(&city, cam, a, f);
+            let lit: Vec<u32> = f
+                .cels
+                .iter()
+                .filter(|c| c.glyph != catalog::G_BLANK && palette::luma_of(c.color) > 0)
+                .map(|c| palette::luma_of(c.color) as u32)
+                .collect();
+            if lit.is_empty() {
+                0
+            } else {
+                lit.iter().sum::<u32>() * 100 / lit.len() as u32
+            }
+        };
+
+        let a = Atmos {
+            rain: 0,
+            stars: 0,
+            haze: 2,
+            moon: true,
+            moon_az: 0,
+            moon_alt: 6,
+            ..Default::default()
+        };
+        cam.yaw = crate::trig::HALF; // looking west, so east faces are towards us
+        let towards = mean_luma(&cam, &mut f, &a);
+        cam.yaw = 0; // looking east, so we see west faces
+        let away = mean_luma(&cam, &mut f, &a);
+        assert_ne!(towards, away, "the view is the same brightness in both directions");
     }
 
     #[test]
