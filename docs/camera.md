@@ -37,8 +37,8 @@ and expressing the field of view this way is what keeps the products inside a
 
 ### Walk
 
-Eye at 1.8 m. `w`/`s` forward and back, `q`/`e` strafe, `a`/`d` or ←/→ turn,
-↑/↓ look.
+Eye at 1.8 m. `w`/`s` forward and back, `a`/`d` strafe sideways, `q`/`e` or
+←/→ rotate, ↑/↓ look.
 
 Movement goes through `Camera::walk`, which resolves the two axes separately
 so that running into a wall at an angle **slides you along it** rather than
@@ -49,9 +49,12 @@ to eye height every frame.
 
 ### Drive
 
-`w` throttle, `s` brake, `space` handbrake, `a`/`d` steer. The camera is not
-attached to the car; it is a chase boom, and two things about it are
-deliberate.
+`w` throttle, `s` brake, `space` handbrake. Both `a`/`d` and `q`/`e` steer —
+a car steers rather than rotating or strafing, so rather than guessing which
+of the two the hands will reach for, both work.
+
+The camera is not attached to the car; it is a chase boom, and two things
+about it are deliberate.
 
 **The heading lags the car's**, by a sixth of the remaining angle per frame.
 A flick of the wheel swings the view a moment later, so a drift is watched
@@ -67,8 +70,11 @@ The physics itself is in [`driving.md`](driving.md).
 
 ### Copter
 
-`w`/`s`/`q`/`e` fly, `r`/`f` rise and descend, and it starts above the
-tallest roof looking down.
+`w`/`s` fly, `a`/`d` strafe, `q`/`e` rotate, `space` up and `z` down. It
+starts above the tallest roof looking down.
+
+`z` rather than Shift because a terminal cannot see a bare Shift: it sends no
+bytes at all, and Shift with a letter is indistinguishable from the capital.
 
 Flight ignores buildings horizontally — you are above them — but not the
 floor of the mode, which keeps the camera over the roofline where the view is

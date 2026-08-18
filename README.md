@@ -61,7 +61,7 @@ faster, the `.d64` is what an SD2IEC or an emulator wants.
 
 | File | Bytes | |
 |---|---:|---|
-| [ascitty.prg](https://github.com/vonglurt/ascitty/raw/main/build/ascitty.prg) | 19 524 | `DLOAD"ASCITTY"` then `RUN` |
+| [ascitty.prg](https://github.com/vonglurt/ascitty/raw/main/build/ascitty.prg) | 24 397 | `DLOAD"ASCITTY"` then `RUN` |
 | [ascitty.d64](https://github.com/vonglurt/ascitty/raw/main/build/ascitty.d64) | 174 848 | attach as drive 8, then the same |
 
 Both are built by `make disk` from the sources here, and both have been
@@ -104,11 +104,11 @@ sampled every few seconds.
 | | |
 |---|---|
 | `w` `s` | forward, back — throttle and brake when driving |
-| `a` `d` | turn — steer when driving |
-| `q` `e` | strafe |
-| `space` | handbrake |
-| `arrows` | turn and look |
-| `r` `f` | rise, descend (copter) |
+| `q` `e` | rotate the camera — also steers when driving |
+| `a` `d` | strafe sideways — also steers when driving |
+| `space` | up — handbrake when driving |
+| `z` | down |
+| `arrows` | rotate and look |
 | `c` | switch walk / drive / copter |
 | `t` | switch ASCII / block elements |
 | `1`–`9` `0` | rain, from torrential to dry |
@@ -116,6 +116,9 @@ sampled every few seconds.
 | `m` | moon on and off |
 | `\` | hand the camera back to the autopilot |
 | `esc` | quit |
+
+A terminal cannot see a bare Shift — it sends no bytes at all — so `z`
+descends where you might expect Shift to.
 
 ### Options
 
@@ -225,6 +228,23 @@ given window is lit is decided separately, at the resolution the screen cell
 can actually resolve. Getting those two rates the wrong way round was the
 first thing that looked wrong: a skyline becomes one textured mass instead of
 a row of buildings.
+
+### Lighting is five numbers, and shadows are one sweep
+
+A height field of axis-aligned cells presents exactly **five normals** — four
+walls and a roof — and the renderer already knows which one it hit. So for a
+directional light, `L·N` is five numbers recomputed once per frame, not a dot
+product per fragment.
+
+Cast shadows need no shadow rays either. Sweep the grid once in the direction
+the light travels, carrying a running horizon; a surface is dark below the
+line and lit above it. **O(cells) once per light, O(1) per lookup.** The
+Plus/4 does not even sweep — the line is a pure function of the heights and
+the bearing, so it is baked into the program.
+
+Both were measured free. [docs/raytracing.md](docs/raytracing.md) sets the
+classical formulas against what this renderer actually computes and costs out
+what else an ASCII city can afford.
 
 ### Colour is the Plus/4's, and depth is a subtraction
 

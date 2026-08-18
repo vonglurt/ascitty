@@ -10,9 +10,10 @@ this document was written there was no light source in the renderer at all
 — and adding one turns out to be far cheaper here than it is anywhere else,
 for reasons specific to a height field drawn on a character grid.
 
-The diffuse term described in §2.1 is now implemented on both targets. It
-cost five numbers per frame and one addition per surface, and the measured
-frame time did not change.
+The diffuse term of §2.1 and the cast shadows of §2.3 are now implemented on
+both targets. Between them they cost five numbers per frame, one array read
+per surface, and one sweep of the grid when the light moves. The measured
+frame time did not change on either target.
 
 ---
 
@@ -293,14 +294,50 @@ O(1) per lookup at render time** — one byte per cell, or one bit if only
 hard shadows are wanted.
 
 For a city of blocks lit by a low moon this gives exactly the right thing:
-long shadows down the avenues, sunlit tower tops above a shaded street. It
-is a genuinely good fit for this geometry and it is the second item in the
-backlog.
+long shadows down the avenues, sunlit tower tops above a shaded street.
 
-The same sweep gives the *soft* version for nothing extra: store the height
-*difference* from the horizon rather than a bit, and a cell just below the
-horizon is in penumbra. That is the umbra/penumbra distinction that normally
-requires an area light and many shadow rays.
+#### It is implemented, on both targets
+
+`shadow::ShadowMap::cast` sweeps once; `City` holds the result and
+`City::relight` recasts when the light moves. The renderer reads
+`line_at(x, y)` once per wall hit and once per ground sample.
+
+**It stores a height, not a flag**, and that is the whole reason it is worth
+doing. A wall is dark below the shadow line and lit above it, which is what
+a tower standing behind a nearer tower actually looks like. A bit could not
+express that, and the picture would be a city of uniformly black or
+uniformly lit buildings.
+
+Recording the horizon *before* folding in the cell's own height is what
+stops every building shadowing itself. There is a test for exactly that,
+because getting it wrong turns the entire city black and it is the obvious
+way to write the loop.
+
+| | |
+|---|---|
+| Sweep cost | ~2 ms for 234×234, once, at generation |
+| Frame cost, host | none measurable (0.18 ms before and after) |
+| Frame cost, Plus/4 | one multiply per wall hit, one compare per row |
+| Open ground in shade | 48% at a 21° light — asserted in a test |
+
+**The Plus/4 does not sweep anything.** The shadow line is a pure function
+of the height field and the light direction, and both are known at bake
+time, so `ascitty-bake` emits it as `city_s[]` alongside the heights and the
+colours. The machine reads an array. A textbook renderer traces a second ray
+per light per hit; this one indexes.
+
+One trap, and both targets fell into it: a shadow line of zero means
+*nothing is upstream*, not *shadowed up to the ground*. Without a guard the
+"below the line" test darkens the foot of every wall, because the base of a
+near building is drawn below the horizon.
+
+#### Still free: the penumbra
+
+The same sweep gives the *soft* version for nothing extra. The stored value
+is already a height, so a surface only just below the line is only just in
+shadow — grading the offset by how far below rather than switching it gives
+the umbra/penumbra distinction that normally requires an area light and a
+great many shadow rays. It is a change to one comparison.
 
 ### 2.4 Specular, and the halfway vector
 
@@ -446,7 +483,7 @@ assembly inner loop that is at the top of the backlog.
 | Perpendicular distance | `vlength`, a sqrt | falls out of the parameterisation | free | free |
 | Hidden surface | z-buffer or sort | one integer per column | free | free |
 | **Diffuse `N·L`** *(built)* | dot per fragment | **5-entry table, 1 lookup per wall hit** | measured free | measured free |
-| **Directional shadows** | a second trace per hit | **one O(cells) sweep per light** | cheap | affordable |
+| **Directional shadows** *(built)* | a second trace per hit | **one O(cells) sweep per light** | measured free | baked, free |
 | Attenuation | divide per fragment | 80-byte table | free | free |
 | **Ground reflection** | recursive trace | **mirror the column about the horizon** | cheap | affordable |
 | Sub-cell gradient shading | n/a | glyph choice from a moment table | cheap | cheap |
@@ -476,6 +513,7 @@ keeping the world a height field, recorded in
 | perpendicular distance | the `dist` returned by each DDA step |
 | projection, rows per unit at distance | `raycast::projection` |
 | octagonal norm | `drive::normalise`, `Car::speed`, `sprite::draw_all` |
+| the horizon sweep | `shadow::ShadowMap::cast` |
 | attenuation | `atmos::Atmos::fade` |
 | the five normals | `arch::Face`, `Face::of` |
 | ordered dither | `font::BAYER8`, `font::dither`, `catalog::shade` |

@@ -132,8 +132,9 @@ pub fn render_to(
     let (dx, dy) = cam.dir();
     let (px, py) = cam.plane();
     // The entire lighting model, computed once for the frame: one luminance
-    // offset per possible surface normal.  See `docs/raytracing.md`.
-    let lambert = atmos.lambert();
+    // offset per possible surface normal, plus whether there is a light at
+    // all to cast shadows.  See `docs/raytracing.md`.
+    let light = Light::of(atmos);
 
     // Ground distance per row, computed once for the whole frame.
     //
@@ -167,7 +168,7 @@ pub fn render_to(
             }
             let wx = cam.x + fixed::mul(rdx, d);
             let wy = cam.y + fixed::mul(rdy, d);
-            f.put(x, y, ground(city, atmos, wx, wy, d));
+            f.put(x, y, ground(city, atmos, &light, wx, wy, d));
         }
     }
 
@@ -180,7 +181,7 @@ pub fn render_to(
         let camx = fixed::div(fixed::from_int(2 * x), fixed::from_int(w)) - ONE;
         let rdx = dx + fixed::mul(px, camx);
         let rdy = dy + fixed::mul(py, camx);
-        let s = column(city, cam, atmos, f, x, rdx, rdy, horizon, proj, far, &lambert);
+        let s = column(city, cam, atmos, f, x, rdx, rdy, horizon, proj, far, &light);
         st.steps += s.0;
         st.closed += s.1;
         depth[x as usize] = if s.2 == f32::MAX { Fx::MAX } else { fixed::from_f64(s.2 as f64) };
@@ -190,6 +191,44 @@ pub fn render_to(
     }
     st
 }
+
+/// The lighting state for one frame.
+///
+/// Bundled rather than passed as loose arguments because it is the same two
+/// things everywhere, and because they have to agree: cast shadows without a
+/// light are not a subtle error, they are a scene lit from nowhere with
+/// black stripes across it.
+#[derive(Clone, Copy)]
+struct Light {
+    /// Diffuse offset per surface normal.
+    lambert: [i8; arch::NORMALS],
+    /// Whether anything casts a shadow at all.
+    shadows: bool,
+}
+
+impl Light {
+    fn of(atmos: &Atmos) -> Light {
+        Light { lambert: atmos.lambert(), shadows: atmos.moon }
+    }
+
+    /// The luminance offset for a surface with a given normal, at a height,
+    /// on a cell.
+    #[inline(always)]
+    fn on(&self, normal: usize, shaded: bool) -> i8 {
+        if self.shadows && shaded {
+            SHADOW_STEP
+        } else {
+            self.lambert[normal]
+        }
+    }
+}
+
+/// What a surface loses when something upstream is between it and the light.
+///
+/// The same magnitude as a face turned fully away, because that is what
+/// being in shadow means: no direct light on it, only the ambient term that
+/// the surface's own brightness already represents.
+const SHADOW_STEP: i8 = -2;
 
 /// Apply a diffuse offset to a surface's own brightness.
 ///
@@ -227,7 +266,7 @@ fn column(
     horizon: i32,
     proj: Fx,
     far: Fx,
-    lambert: &[i8; arch::NORMALS],
+    light: &Light,
 ) -> (u32, u32, f32) {
     let h = f.h as i32;
 
@@ -321,7 +360,8 @@ fn column(
             // Looking down on it: cap the top row with roofscape.
             if cam.z > ch && y0 <= y1 {
                 let s = arch::roof(lot, map_x, map_y);
-                let luma = lit(s.luma, lambert[arch::ROOF]);
+                let shaded = ch < city.shadow.line_at(map_x, map_y);
+                let luma = lit(s.luma, light.on(arch::ROOF, shaded));
                 f.put(x, y0, Cel { glyph: s.glyph, color: atmos.shade(s.hue, luma, dist) });
             }
             let first = if cam.z > ch { y0 + 1 } else { y0 };
@@ -331,12 +371,24 @@ fn column(
             // of the per-row loop, because every cell of this span shares a
             // normal - which is the whole reason a height field can afford
             // lighting at all.
-            let face_light = lambert[face.index() as usize];
+            let normal = face.index() as usize;
+            // ...and the height below which this wall is in the shade of
+            // something upstream, which is one lookup per hit for the same
+            // reason.  A wall is not uniformly lit: it is dark at the
+            // bottom and lit above the line, which is what a tower standing
+            // behind a nearer tower actually looks like.
+            // Zero means "nothing upstream", not "shadowed up to the
+            // ground": without the guard below, a wall with no shadow on it
+            // fails `z < 0` only by luck, and any rounding that puts the
+            // bottom row a hair under zero darkens the base of every
+            // building in the city.
+            let shade_below = city.shadow.line_at(map_x, map_y);
+            let shaded_at = |z: Fx| shade_below > 0 && z < shade_below;
             for y in first..=y1 {
                 // The facade is asked about height *above its own footing*,
                 // not above sea level.
                 let s = arch::facade(lot, face, along, (z - ground).max(0), bhf, lod);
-                let luma = lit(s.luma, face_light);
+                let luma = lit(s.luma, light.on(normal, shaded_at(z)));
                 f.put(x, y, Cel { glyph: s.glyph, color: atmos.shade(s.hue, luma, dist) });
                 z -= dz;
             }
@@ -358,8 +410,11 @@ fn column(
 /// beyond the height field: lane markings are the fractional part of the
 /// world coordinate, crosswalks are proximity to an intersection, and
 /// puddles are a hash that only exists when it is raining.
-fn ground(city: &City, atmos: &Atmos, wx: Fx, wy: Fx, dist: Fx) -> Cel {
+fn ground(city: &City, atmos: &Atmos, light: &Light, wx: Fx, wy: Fx, dist: Fx) -> Cel {
     let (gx, gy) = (fixed::floor(wx), fixed::floor(wy));
+    // Whether the pavement here has the light on it.  One array read; the
+    // whole city's cast shadows were swept once when the light was set.
+    let shaded = !city.shadow.lit(gx, gy, city.ground(gx, gy));
     let cell = city.at(gx, gy);
     let (fx, fy) = (fixed::frac(wx), fixed::frac(wy));
 
@@ -404,6 +459,8 @@ fn ground(city: &City, atmos: &Atmos, wx: Fx, wy: Fx, dist: Fx) -> Cel {
         }
     }
 
+    // The ground faces up, so it takes the roof normal.
+    let luma = lit(luma, light.on(arch::ROOF, shaded));
     Cel { glyph, color: atmos.shade(hue, luma, dist) }
 }
 

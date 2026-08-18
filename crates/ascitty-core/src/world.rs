@@ -14,6 +14,7 @@
 
 use crate::elevation::Elevation;
 use crate::rng::{hash3, Rng};
+use crate::shadow::{self, ShadowMap};
 use crate::walk::WalkMap;
 use crate::zone::{self, Use, Zone, ZoneMap, BLOCK_PITCH, CITY_BLOCKS, MIN_BLOCK};
 
@@ -168,6 +169,12 @@ pub struct City {
     pub elev: Elevation,
     /// Where a person on foot may be.
     pub walk: WalkMap,
+    /// The height of the shadow line at each cell, for the current light.
+    ///
+    /// Cast once, when the light moves - see [`City::relight`].  It is one
+    /// sweep of the whole grid, which is nothing once and far too much per
+    /// frame.
+    pub shadow: ShadowMap,
     /// The seed it was generated from.
     pub seed: u32,
 }
@@ -512,6 +519,14 @@ impl City {
         self.elev.ground(x, y)
     }
 
+    /// Recast the shadows for a new light direction.
+    ///
+    /// One pass over the whole grid.  Call it when the light moves; do not
+    /// call it per frame.
+    pub fn relight(&mut self, az: crate::trig::Ang, slope: crate::fixed::Fx) {
+        self.shadow = ShadowMap::cast(&self.elev, az, slope);
+    }
+
     /// The lot a cell belongs to, if any.
     #[inline(always)]
     pub fn lot_at(&self, x: i32, y: i32) -> Option<&Lot> {
@@ -617,7 +632,10 @@ impl City {
             cells[y as usize * SIZE + x as usize].kind
         });
 
-        City { cells, lots, plan, zones, elev, walk, seed }
+        // Pass 4: sweep the shadows for the default light.
+        let shadow = ShadowMap::cast(&elev, shadow::DEFAULT_AZ, shadow::DEFAULT_SLOPE);
+
+        City { cells, lots, plan, zones, elev, walk, shadow, seed }
     }
 }
 

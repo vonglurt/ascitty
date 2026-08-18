@@ -24,24 +24,28 @@ reusable part: whenever a quantity is constant over a surface the renderer
 can already identify, it belongs in a per-frame table and not in the inner
 loop.
 
-### Directional shadows from a horizon sweep — **now**
-Shadow rays double the cost of a renderer and bring a bias term that is a
-well-known source of artefacts. A height field with a directional light needs
-none of it: shadow is a horizon problem.
+### ~~Directional shadows from a horizon sweep~~ — **built**
+`shadow::ShadowMap`. One O(cells) sweep per light direction, O(1) per lookup,
+no shadow rays and no bias term. It stores the shadow line as a *height*, so
+a wall is dark at the bottom and lit above — a bit could not express a tower
+standing in the shade of a nearer tower.
 
-Sweep the grid once along the light's ground direction carrying
+Baked into `city_s[]` for the Plus/4, which therefore sweeps nothing: the
+line is a pure function of the height field and the light, and both are known
+at bake time. Measured free on both targets. See `raytracing.md` §2.3.
 
-```
-    horizon = max(horizon − slope_per_cell, height_here)
-```
+### Soft shadows from the same sweep — **now**
+The stored value is already a height, so how far a surface sits below the
+line is known. Grading the luminance offset by that distance rather than
+switching it gives the umbra/penumbra distinction that normally wants an area
+light and many shadow rays. It is a change to one comparison and it is the
+cheapest remaining item on this list.
 
-A cell is in shadow exactly when its height is under the running horizon.
-**O(cells) once per light direction, O(1) per lookup**, one byte per cell.
-
-Long shadows down the avenues and lit tower tops over a shaded street, for
-the price of one pass. Storing the height *difference* rather than a bit
-gives the penumbra for nothing, which is the soft-shadow effect that
-normally needs an area light and a great many shadow rays.
+### A light that moves — **soon**
+`City::relight` exists and recasting is one sweep, so a day/night cycle or a
+moon that tracks is a matter of calling it when the bearing changes by enough
+to matter. The thing to get right is *when*: a sweep is ~2 ms, which is
+nothing occasionally and eleven frames' worth if it happens every frame.
 
 ### Wet-road reflections as a vertical mirror — **soon**
 The ground is a horizontal plane, so a reflected ray is the incident one with

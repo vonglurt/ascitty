@@ -42,6 +42,7 @@ pub mod glyph;
 pub mod palette;
 pub mod raycast;
 pub mod rng;
+pub mod shadow;
 pub mod sim;
 pub mod sprite;
 pub mod tour;

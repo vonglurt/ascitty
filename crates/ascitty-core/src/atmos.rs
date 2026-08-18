@@ -40,7 +40,9 @@ impl Default for Atmos {
         Atmos {
             rain: 2,
             moon: true,
-            moon_az: trig::from_degrees(215.0),
+            // The same bearing the shadow sweep uses, so that the
+            // shadows and the thing casting them agree.
+            moon_az: crate::shadow::DEFAULT_AZ,
             moon_alt: 9,
             haze: 3,
             stars: 4,

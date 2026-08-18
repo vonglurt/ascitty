@@ -215,15 +215,18 @@ WALKING ITSELF
   --frames N        frames for --anim and --record   (default: 900, 30 s)
 
 CONTROLS
-  w s        forward, back            a d        turn
-  q e        strafe                   arrows     turn and look
-  shift+w    run
-  r f        rise, descend (copter)   c          walk / drive / copter
-  \\         hand the camera back to the autopilot
-  space      handbrake (drive)        w a s d    throttle, steer, brake
+  w s        forward, back            q e        rotate the camera
+  a d        strafe sideways          arrows     rotate and look
+  space      up                       z          down
+  c          walk / drive / copter    \\          back to the autopilot
+  t          ascii / unicode          m          moon
   1-9 0      rain                     h          haze
-  m          moon                     t          ascii / unicode
   esc        quit
+
+  Driving:   w throttle, s brake, a d or q e steer, space handbrake.
+
+  A terminal cannot see a bare Shift - it sends no bytes at all - so `z`
+  descends where you might expect Shift to.
 ";
 
 fn parse_args() -> Result<Opts, String> {
@@ -450,7 +453,7 @@ fn run(mut o: Opts) -> Result<(), String> {
             if autopilot
                 && matches!(
                     k,
-                    Key::Char('w' | 's' | 'a' | 'd' | 'q' | 'e' | 'r' | 'f' | 'c')
+                    Key::Char('w' | 's' | 'a' | 'd' | 'q' | 'e' | 'z' | ' ' | 'c')
                         | Key::Left
                         | Key::Right
                         | Key::Up
@@ -476,21 +479,33 @@ fn run(mut o: Opts) -> Result<(), String> {
                     fwd -= step;
                     pedals.brake.press();
                 }
-                Key::Char(' ') => pedals.hand.press(),
-                Key::Char('q') => side -= step,
-                Key::Char('e') => side += step,
-                Key::Char('a') | Key::Left => {
+                // Up, and the handbrake when there is a handbrake to pull.
+                Key::Char(' ') => {
+                    rise += step;
+                    pedals.hand.press();
+                }
+                Key::Char('z') => rise -= step,
+                // Rotate.  A car steers rather than rotating, so both pairs
+                // work at the wheel rather than making you guess which.
+                Key::Char('q') | Key::Left => {
                     cam.turn(-turn);
                     pedals.left.press();
                 }
-                Key::Char('d') | Key::Right => {
+                Key::Char('e') | Key::Right => {
                     cam.turn(turn);
+                    pedals.right.press();
+                }
+                // Strafe.
+                Key::Char('a') => {
+                    side -= step;
+                    pedals.left.press();
+                }
+                Key::Char('d') => {
+                    side += step;
                     pedals.right.press();
                 }
                 Key::Up => cam.look(-1, (f.h / 3) as i32),
                 Key::Down => cam.look(1, (f.h / 3) as i32),
-                Key::Char('r') => rise += step,
-                Key::Char('f') => rise -= step,
                 Key::Char('c') => {
                     view = view.next();
                     match view {

@@ -201,7 +201,7 @@ static void column(unsigned char sx)
     int sidex, sidey, dx, dy;
     int mx, my;
     signed char stepx, stepy;
-    unsigned char dist, ceiling, top, bot, y, h, tile, col, face;
+    unsigned char dist, ceiling, top, bot, y, h, tile, col, face, shade_y, shadecol;
     unsigned int p;
     unsigned char *scr, *clr;
 
@@ -353,6 +353,28 @@ static void column(unsigned char sx)
 
         tile = city_t[p];
         col = city_c[p];
+
+        /* The screen row where this wall passes out of shadow.
+        **
+        ** The shadow line is a height, not a flag, so a wall is dark at the
+        ** bottom and lit above it - which is what a tower standing behind a
+        ** nearer tower actually looks like.  Projecting that height uses the
+        ** same table the roofline does, so it is one multiply per hit and a
+        ** comparison per row.  The sweep that produced these numbers ran on
+        ** a laptop; see docs/raytracing.md. */
+        {
+            unsigned char sh = city_s[p];
+            if (sh == 0) {
+                /* Nothing upstream.  Not "shadowed up to the ground": the
+                ** test below darkens every row past `shade_y`, and the base
+                ** of a near wall is drawn *below* the horizon, so leaving
+                ** this at HORIZON blackens the foot of every building. */
+                shade_y = SCR_H;
+            } else {
+                unsigned int rows = ((unsigned int)sh * projtab[dist]) >> 4;
+                shade_y = (rows >= HORIZON) ? 0 : (unsigned char)(HORIZON - rows);
+            }
+        }
         {
             /* The building's own brightness, plus the diffuse term for the
             ** face the ray hit, less the distance fade.  One table index
@@ -366,6 +388,13 @@ static void column(unsigned char sx)
                 lum = 7;
             lum = (signed char)((lum > (signed char)fade) ? lum - fade : 0);
             col = (unsigned char)(((unsigned char)lum << 4) | (col & 0x0F));
+            /* ...and the same again two steps down, for the shaded part. */
+            {
+                signed char d2 = (signed char)(lum - 2);
+                if (d2 < 0)
+                    d2 = 0;
+                shadecol = (unsigned char)(((unsigned char)d2 << 4) | (col & 0x0F));
+            }
         }
 
         scr = SCREEN + (unsigned int)top * SCR_W + sx;
@@ -392,7 +421,7 @@ static void column(unsigned char sx)
                 n = (unsigned char)(n + 61);
                 if (n & 0x03) {
                     *scr = tile;
-                    *clr = col;
+                    *clr = (y > shade_y) ? shadecol : col;
                 } else {
                     *scr = G_DITHER;
                     *clr = (unsigned char)(0x10 | dark);

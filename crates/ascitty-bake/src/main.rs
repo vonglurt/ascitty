@@ -278,16 +278,30 @@ fn city(seed: u32) -> String {
     s.push_str("/* TED colour byte of the facade, at full luminance. */\n");
     s.push_str("extern const unsigned char city_c[CITY_SIZE * CITY_SIZE];\n");
     s.push_str("/* Catalogue index of the facade tile this lot is drawn in. */\n");
-    s.push_str("extern const unsigned char city_t[CITY_SIZE * CITY_SIZE];\n\n");
+    s.push_str("extern const unsigned char city_t[CITY_SIZE * CITY_SIZE];\n");
+    s.push_str("/* Height of the shadow line at this cell, in whole cells.\n");
+    s.push_str("**\n");
+    s.push_str("** Cast shadows, for nothing at all.  The shadow line is a pure\n");
+    s.push_str("** function of the height field and the light direction, and both are\n");
+    s.push_str("** known here - so the machine does not sweep anything at boot, it\n");
+    s.push_str("** reads an array.  A textbook renderer would trace a second ray per\n");
+    s.push_str("** light per hit; this one indexes. */\n");
+    s.push_str("extern const unsigned char city_s[CITY_SIZE * CITY_SIZE];\n\n");
 
     let mut heights = Vec::with_capacity(DISTRICT * DISTRICT);
     let mut colors = Vec::with_capacity(DISTRICT * DISTRICT);
     let mut tiles = Vec::with_capacity(DISTRICT * DISTRICT);
+    let mut shade = Vec::with_capacity(DISTRICT * DISTRICT);
     for y in 0..DISTRICT {
         for x in 0..DISTRICT {
             let (gx, gy) = ((x + off) as i32, (y + off) as i32);
             let cell = c.at(gx, gy);
             heights.push(c.height(gx, gy));
+            // Whole cells: the target's projection works in whole cells of
+            // height anyway, and a byte per cell of district is 4 KB.
+            shade.push(
+                ascitty_core::fixed::floor(c.shadow.line_at(gx, gy)).clamp(0, 255) as u8,
+            );
             match c.lot_at(gx, gy) {
                 Some(lot) => {
                     // The building's own brightness, not a constant: the
@@ -323,6 +337,7 @@ fn city(seed: u32) -> String {
     emit_bytes(&mut s, "city_h", &heights);
     emit_bytes(&mut s, "city_c", &colors);
     emit_bytes(&mut s, "city_t", &tiles);
+    emit_bytes(&mut s, "city_s", &shade);
     s.push_str("#endif\n\n#endif\n");
     s
 }

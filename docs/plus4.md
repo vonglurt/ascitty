@@ -114,6 +114,24 @@ span shares a normal.
 Cost: 342 bytes of program and no measurable frame time. A textbook renderer
 evaluates a dot product per fragment; there is nothing left of one here.
 
+## 5b. The shadows are baked
+
+Cast shadows, for nothing at all at runtime.
+
+The shadow line over a height field lit by a directional source is a pure
+function of the heights and the light bearing — see
+[`raytracing.md`](raytracing.md) §2.3 — and both are known when
+`ascitty-bake` runs. So the sweep happens on a laptop and the machine gets
+`city_s[]`, one byte per cell of district, alongside the heights and the
+colours.
+
+At render time it is one multiply per wall hit to project the shadow line to
+a screen row, and one comparison per row to decide which side of it a cell
+is on. The wall above the line is lit and the wall below it is not, which is
+what a tower standing behind a nearer tower looks like.
+
+Cost: 4 KB of baked data, and the program grew to 24 384 bytes.
+
 ## 6. What is next
 
 A hand-written `cast.s` for the DDA and the wall fill. The C is already
