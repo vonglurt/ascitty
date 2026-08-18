@@ -31,10 +31,20 @@
 **
 ** The copy has to happen before the register is changed, or the machine
 ** spends a frame drawing whatever happened to be at $7000. */
+/* Room for the character set plus enough slack to align it.  BSS, so it
+** costs nothing in the program file. */
+static unsigned char charset_ram[CHARSET_BYTES + CHARSET_ALIGN];
+
 static void install_charset(void)
 {
-    memcpy(CHARSET_RAM, charset, CHARSET_BYTES);
-    TED_CHARADDR = (unsigned char)((TED_CHARADDR & 0x03) | CHARSET_PAGE);
+    /* Round up to the 1K boundary $FF13 can address: the register holds
+    ** address bits 15..10, so anything finer than 1K is unrepresentable. */
+    unsigned int base = ((unsigned int)charset_ram + (CHARSET_ALIGN - 1))
+                        & ~(CHARSET_ALIGN - 1);
+
+    memcpy((unsigned char *)base, charset, CHARSET_BYTES);
+    TED_CHARADDR = (unsigned char)((TED_CHARADDR & 0x03)
+                                   | (unsigned char)((base >> 8) & 0xFC));
     TED_MISC &= (unsigned char)~TED_CHARS_FROM_RAM;
 }
 
@@ -57,7 +67,9 @@ static void spawn(void)
                 y = mid + dy;
                 if (x < 1 || y < 1 || x >= CITY_SIZE - 1 || y >= CITY_SIZE - 1)
                     continue;
-                if (city_h[((unsigned int)y << CITY_SHIFT) | (unsigned int)x] == 0) {
+                /* On the road, not merely on open ground: the middle of a
+                ** park is somewhere you can stand and nowhere to start. */
+                if (cast_on_road(x, y)) {
                     cam_x = (x << 8) + 128;
                     cam_y = (y << 8) + 128;
                     return;
@@ -87,9 +99,7 @@ static void face_the_street(void)
         for (n = 1; n < 24; ++n) {
             x = (cam_x >> 8) + (((int)COS(dir) * n) >> 8);
             y = (cam_y >> 8) + (((int)SIN(dir) * n) >> 8);
-            if (((unsigned int)x | (unsigned int)y) & ~(unsigned int)CITY_MASK)
-                break;
-            if (city_h[((unsigned int)y << CITY_SHIFT) | (unsigned int)x])
+            if (!cast_on_road(x, y))
                 break;
         }
         if (n > best_n) {
@@ -103,6 +113,7 @@ static void face_the_street(void)
 int main(void)
 {
     unsigned char k;
+    unsigned char demo = 1;
 
     clrscr();
     TED_BGCOLOR = CBYTE(0, HUE_BLACK);
@@ -111,11 +122,20 @@ int main(void)
     cast_init();
     spawn();
     face_the_street();
+    cast_demo_start();
 
     for (;;) {
+        /* Attract mode.  It drives until somebody touches the keyboard, and
+        ** then it stops and stays stopped - there is no way back to it
+        ** short of restarting, which is the right trade for a machine with
+        ** eleven keys' worth of program left. */
+        if (demo)
+            cast_demo();
+
         cast_frame();
 
         if (kbhit()) {
+            demo = 0;
             k = (unsigned char)cgetc();
             switch (k) {
             case 'w':

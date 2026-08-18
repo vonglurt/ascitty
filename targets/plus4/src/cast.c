@@ -179,6 +179,220 @@ static unsigned char height_at(int gx, int gy)
     return rowh[gy][gx];
 }
 
+void cast_strafe(int d)
+{
+    /* A quarter turn to the right of the heading. */
+    unsigned char a = (unsigned char)(cam_a + 64);
+    int nx = cam_x + (int)(((long)COS(a) * d) >> 8);
+    int ny = cam_y + (int)(((long)SIN(a) * d) >> 8);
+
+    if (!height_at(nx >> 8, cam_y >> 8))
+        cam_x = nx;
+    if (!height_at(cam_x >> 8, ny >> 8))
+        cam_y = ny;
+}
+
+/* ------------------------------------------------------------------------
+ * The attract mode.
+ *
+ * The same idea as the host's autopilot, cut down to what a 7501 can spare:
+ * walk until something is in the way, turn at the junction, and keep to the
+ * right of the road.  It reads the city rather than following a path,
+ * because a path baked for one district is wrong for every other seed.
+ *
+ * Everything here is whole-cell probing along a heading - no trigonometry
+ * beyond the two table reads the walk already does, and no state but a
+ * heading and a target.
+ * --------------------------------------------------------------------- */
+
+/* How far the walker looks before deciding the way is blocked, in cells. */
+#define DEMO_PROBE 5
+
+/* How far it looks sideways when choosing a turning. */
+#define DEMO_LOOK 8
+
+/* Turn rate, in units of turn per frame. */
+#define DEMO_TURN 5
+
+/* How far from the middle of the district the camera may wander, in cells.
+** Twelve is a short leash and it has to be: the district is sixty-four
+** cells square against a forty-cell draw distance, so the camera only has
+** to get a third of the way out before half the view is off the map. */
+#define DEMO_LEASH 12
+
+static unsigned char demo_target;
+static unsigned int demo_seed = 0x2317;
+
+/* A linear congruential generator, because the turnings have to be
+** unpredictable and nothing here is worth a better one. */
+static unsigned char demo_rand(void)
+{
+    demo_seed = demo_seed * 25173u + 13849u;
+    return (unsigned char)(demo_seed >> 8);
+}
+
+/* Whether a cell is carriageway.
+**
+** *Not* merely "nothing built on it".  Parks and plazas are open ground in
+** the middle of a block, and a walker that treats them as passable strolls
+** into one and spends the rest of the demo pressed against the back of a
+** building.  The district does not carry a cell kind, but it carries the
+** tile each cell is drawn with, and only the roadway is drawn in asphalt -
+** so the renderer's own data answers the question. */
+unsigned char cast_on_road(int x, int y)
+{
+    if (((unsigned int)x | (unsigned int)y) & ~(unsigned int)CITY_MASK)
+        return 0;
+    return (unsigned char)(rowh[y][x] == 0 && rowt[y][x] == ROAD_ASPHALT);
+}
+
+/* Whether the attract mode may be on a cell: carriageway, and inside the
+** leash.
+**
+** The leash is a *hard* constraint rather than a preference, and it has to
+** be.  Steering back towards the middle only works when there is a road
+** pointing that way; when there is not, the walk carries on outwards and
+** ends up at the edge of the district, where most of the view is off the
+** end of the world and renders as empty sky.  Refusing the move instead
+** makes the boundary behave exactly like a wall - the walk turns at it,
+** which is the behaviour that was wanted all along. */
+static unsigned char demo_ok(int x, int y)
+{
+    int dx = x - (CITY_SIZE / 2);
+    int dy = y - (CITY_SIZE / 2);
+
+    if (dx < 0)
+        dx = -dx;
+    if (dy < 0)
+        dy = -dy;
+    if (dx > DEMO_LEASH || dy > DEMO_LEASH)
+        return 0;
+    return cast_on_road(x, y);
+}
+
+/* How many whole cells of road lie along a heading, up to `max`. */
+static unsigned char run_ahead(unsigned char a, unsigned char max)
+{
+    unsigned char n;
+    int x, y;
+
+    for (n = 1; n <= max; ++n) {
+        x = (cam_x >> 8) + (((int)COS(a) * n) >> 8);
+        y = (cam_y >> 8) + (((int)SIN(a) * n) >> 8);
+        if (!demo_ok(x, y))
+            break;
+    }
+    return (unsigned char)(n - 1);
+}
+
+static unsigned char far_out(void)
+{
+    int dx = (cam_x >> 8) - (CITY_SIZE / 2);
+    int dy = (cam_y >> 8) - (CITY_SIZE / 2);
+
+    if (dx < 0)
+        dx = -dx;
+    if (dy < 0)
+        dy = -dy;
+    return (unsigned char)(dx > DEMO_LEASH || dy > DEMO_LEASH);
+}
+
+/* The cardinal heading that points most directly back at the middle. */
+static unsigned char toward_centre(void)
+{
+    int dx = (CITY_SIZE / 2) - (cam_x >> 8);
+    int dy = (CITY_SIZE / 2) - (cam_y >> 8);
+    int ax = (dx < 0) ? -dx : dx;
+    int ay = (dy < 0) ? -dy : dy;
+
+    if (ax >= ay)
+        return (unsigned char)((dx > 0) ? 0 : 128);
+    return (unsigned char)((dy > 0) ? 64 : 192);
+}
+
+void cast_demo_start(void)
+{
+    demo_target = cam_a;
+}
+
+/* Move along a heading, but only onto carriageway.
+**
+** `cast_walk` refuses buildings, which is the right test for somebody
+** driving and the wrong one for the attract mode: the district is only
+** sixty-four cells square and off the edge of it reads as open ground, so a
+** walk that only avoids buildings eventually drives out of the city and
+** spends the rest of the demo looking at nothing. */
+static void demo_move(unsigned char a, int d)
+{
+    int nx = cam_x + (int)(((long)COS(a) * d) >> 8);
+    int ny = cam_y + (int)(((long)SIN(a) * d) >> 8);
+
+    if (demo_ok(nx >> 8, cam_y >> 8))
+        cam_x = nx;
+    if (demo_ok(cam_x >> 8, ny >> 8))
+        cam_y = ny;
+}
+
+void cast_demo(void)
+{
+    unsigned char ahead = run_ahead(cam_a, DEMO_PROBE);
+    unsigned char l, r;
+    signed char da;
+
+    if (ahead < 2) {
+        /* Blocked.  Take whichever way is clearer, and toss a coin when
+        ** they are the same - otherwise the walk finds a circuit and does
+        ** it forever. */
+        l = run_ahead((unsigned char)(cam_a - 64), DEMO_LOOK);
+        r = run_ahead((unsigned char)(cam_a + 64), DEMO_LOOK);
+        if (l > r || (l == r && (demo_rand() & 1)))
+            demo_target = (unsigned char)(cam_a - 64);
+        else
+            demo_target = (unsigned char)(cam_a + 64);
+    } else if (far_out()) {
+        /* Head back towards the middle.
+        **
+        ** The district is sixty-four cells square and the draw distance is
+        ** forty, so from anywhere near its edge half the view is off the
+        ** end of the world and renders as empty sky.  Twelve cells is a
+        ** short leash and it has to be: the camera only has to get a third
+        ** of the way out before it is looking at nothing. */
+        unsigned char home = toward_centre();
+        if (run_ahead(home, 4) >= 3)
+            demo_target = home;
+    } else if (ahead >= DEMO_PROBE && demo_rand() < 4) {
+        /* Occasionally take a turning even with a clear road, so the route
+        ** wanders the grid instead of running one avenue end to end. */
+        l = run_ahead((unsigned char)(cam_a - 64), DEMO_LOOK);
+        r = run_ahead((unsigned char)(cam_a + 64), DEMO_LOOK);
+        if (r >= 6)
+            demo_target = (unsigned char)(cam_a + 64);
+        else if (l >= 6)
+            demo_target = (unsigned char)(cam_a - 64);
+    }
+
+    /* Ease round rather than snapping, so a turning reads as a turning. */
+    da = (signed char)(demo_target - cam_a);
+    if (da > DEMO_TURN)
+        cam_a += DEMO_TURN;
+    else if (da < -DEMO_TURN)
+        cam_a -= DEMO_TURN;
+    else
+        cam_a = demo_target;
+
+    /* Keep right.  Probe both flanks and lean towards the kerb on the
+    ** right, which is the side traffic drives on and the side that puts the
+    ** far pavement across the street in shot. */
+    l = run_ahead((unsigned char)(cam_a - 64), 4);
+    r = run_ahead((unsigned char)(cam_a + 64), 4);
+    if (r > 1)
+        demo_move((unsigned char)(cam_a + 64), 24);
+    else if (l > r + 1)
+        demo_move((unsigned char)(cam_a - 64), 16);
+
+    demo_move(cam_a, 72);
+}
+
 void cast_walk(int d)
 {
     int nx, ny;

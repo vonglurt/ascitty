@@ -152,7 +152,11 @@ laptop and baked into the program.
 ```sh
 make disk
 make run4        # boots it in xplus4
+make demo4       # boots it and leaves it alone - it drives itself
 ```
+
+`demo4` is the attract mode: the program walks the streets on its own from
+boot and stops the moment you touch a key.
 
 It runs at about **1.3 frames a second** — measured, not estimated; the
 method is in [docs/plus4.md](docs/plus4.md). The next factor of three is a

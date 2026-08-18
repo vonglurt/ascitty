@@ -47,7 +47,7 @@ GENHDRS = $(GEN)/charset.h $(GEN)/trig.h $(GEN)/recip.h $(GEN)/glyphs.h $(GEN)/c
 T4SRC   = $(T4)/src/main.c $(T4)/src/cast.c
 T4HDRS  = $(T4)/src/plus4.h $(T4)/src/cast.h
 
-.PHONY: all host prg disk bake run run4 demo cast shot test check bench sheet clean help
+.PHONY: all host prg disk bake run run4 demo demo4 cast shot test check bench sheet clean help
 
 all: host prg disk
 
@@ -59,6 +59,7 @@ help:
 	@echo 'make demo    watch it walk itself'
 	@echo 'make cast    record the walk to build/tour.cast (asciinema)'
 	@echo 'make run4    play it in xplus4'
+	@echo 'make demo4   watch the Plus/4 build drive itself in xplus4'
 	@echo 'make test    every test in the workspace'
 	@echo 'make check   test, then verify both targets still build'
 	@echo 'make bench   how fast the host renderer is'
@@ -127,6 +128,17 @@ $(DISK): $(PRG)
 
 run4: $(DISK)
 	XDG_DATA_DIRS=$(BREW_PREFIX)/share:$$XDG_DATA_DIRS $(BREW_PREFIX)/bin/xplus4 -autostart $(DISK)
+
+# The attract mode, on the machine.  The program drives itself from boot and
+# stops the moment a key is touched, so `demo4` and `run4` load the same
+# thing - the difference is only whether you touch the keyboard.
+#
+# -autostartprgmode 1 injects the program instead of loading it through an
+# emulated 1541, which otherwise costs about ninety seconds of machine time
+# before anything appears.
+demo4: $(PRG)
+	XDG_DATA_DIRS=$(BREW_PREFIX)/share:$$XDG_DATA_DIRS $(BREW_PREFIX)/bin/xplus4 \
+	    -autostartprgmode 1 -autostart $(PRG)
 
 # --- checks ---------------------------------------------------------------
 

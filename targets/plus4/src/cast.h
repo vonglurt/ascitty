@@ -19,4 +19,16 @@ void cast_frame(void);
 /* Try to move `d` (Q8.8) along the heading; refuses to enter a building. */
 void cast_walk(int d);
 
+/* Sidestep `d` (Q8.8) to the right of the heading; refuses buildings too. */
+void cast_strafe(int d);
+
+/* Whether a cell is carriageway - open ground drawn in asphalt. */
+unsigned char cast_on_road(int x, int y);
+
+/* Start the attract mode from wherever the camera is now. */
+void cast_demo_start(void);
+
+/* One tick of the attract mode: walk the streets, unattended. */
+void cast_demo(void);
+
 #endif

@@ -36,8 +36,16 @@
 #define SCREEN          ((unsigned char *)0x0C00U)
 #define COLORMAP        ((unsigned char *)0x0800U)
 
-#define CHARSET_RAM     ((unsigned char *)0x7000U)
-#define CHARSET_PAGE    0x70            /* $7000 >> 10, in bits 7-2       */
+/* The character set is not at a fixed address any more.  It used to be at
+** $7000, which was above the program until the baked tables and the shadow
+** map pushed RODATA to $77E8 - and then the program and its own font
+** overwrote each other, which looks like the renderer failing rather than
+** like a memory collision.
+**
+** It is now a buffer the linker places, rounded up to the 1K boundary the
+** TED register requires.  Two kilobytes of BSS to guarantee 1K of alignment,
+** and the collision cannot happen again however far the program grows. */
+#define CHARSET_ALIGN   1024U
 
 #define TED_MISC        (*(volatile unsigned char *)0xFF12)
 #define TED_CHARADDR    (*(volatile unsigned char *)0xFF13)

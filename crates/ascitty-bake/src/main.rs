@@ -33,6 +33,57 @@ use ascitty_core::palette;
 use ascitty_core::trig;
 use ascitty_core::world::{Arch, City, Kind, SIZE};
 
+/// Pick the window of the city worth baking.
+///
+/// It used to be "the middle of the map", on the reasoning that downtown is
+/// in the middle.  Downtown *is* in the middle, and so is the crossing of
+/// the two arterials - which are twelve to sixteen cells wide each, so the
+/// middle of the map is a hundred metres of tarmac in both directions.  The
+/// baked district came out with a thirteen-row band of empty carriageway
+/// through it and the attract mode spent half its time looking at nothing.
+///
+/// So the window is chosen by *content*: the one with the most built ground
+/// in it.  A summed-area table makes that a constant-time score per
+/// candidate, so every offset can be tried rather than sampled.
+fn pick_district(c: &City) -> (usize, usize) {
+    let n = SIZE;
+    // Inclusive prefix sums of "is there a building here".
+    let mut sum = vec![0u32; (n + 1) * (n + 1)];
+    for y in 0..n {
+        for x in 0..n {
+            let built = u32::from(c.height(x as i32, y as i32) > 0);
+            sum[(y + 1) * (n + 1) + (x + 1)] =
+                built + sum[y * (n + 1) + (x + 1)] + sum[(y + 1) * (n + 1) + x]
+                    - sum[y * (n + 1) + x];
+        }
+    }
+    let area = |x0: usize, y0: usize| -> u32 {
+        let (x1, y1) = (x0 + DISTRICT, y0 + DISTRICT);
+        sum[y1 * (n + 1) + x1] + sum[y0 * (n + 1) + x0]
+            - sum[y0 * (n + 1) + x1]
+            - sum[y1 * (n + 1) + x0]
+    };
+
+    let mut best = (0usize, 0usize, 0u32);
+    for y in 0..=(n - DISTRICT) {
+        for x in 0..=(n - DISTRICT) {
+            let score = area(x, y);
+            if score > best.2 {
+                best = (x, y, score);
+            }
+        }
+    }
+    eprintln!(
+        "  district at {},{}: {} of {} cells built ({}%)",
+        best.0,
+        best.1,
+        best.2,
+        DISTRICT * DISTRICT,
+        best.2 as usize * 100 / (DISTRICT * DISTRICT)
+    );
+    (best.0, best.1)
+}
+
 /// Side of the district baked for the Plus/4, in cells.
 ///
 /// **64, and it must be a power of two.**  The 6502 has no multiply, so a
@@ -383,7 +434,7 @@ fn glyph_defines() -> String {
 /// multiply it does not have.
 fn city(seed: u32) -> String {
     let c = City::generate(seed);
-    let off = (SIZE - DISTRICT) / 2;
+    let (off_x, off_y) = pick_district(&c);
     let mut s = banner("city.h - a district of the generated city, as a height field");
     s.push_str("#ifndef ASCITTY_CITY_H\n#define ASCITTY_CITY_H\n\n");
     let _ = writeln!(s, "#define CITY_SIZE {DISTRICT}");
@@ -392,7 +443,8 @@ fn city(seed: u32) -> String {
     s.push_str("/* CITY_SIZE is a power of two so that a grid index is a shift.\n");
     s.push_str("** See the note in ascitty-bake; it is worth a factor of three. */\n");
     let _ = writeln!(s, "#define CITY_SEED {seed}U");
-    let _ = writeln!(s, "#define CITY_ORIGIN {off}\n");
+    let _ = writeln!(s, "#define CITY_ORIGIN_X {off_x}");
+    let _ = writeln!(s, "#define CITY_ORIGIN_Y {off_y}\n");
     s.push_str("/* Height in world units, 0 for anything you can drive on. */\n");
     s.push_str("extern const unsigned char city_h[CITY_SIZE * CITY_SIZE];\n");
     s.push_str("/* TED colour byte of the facade, at full luminance. */\n");
@@ -414,7 +466,7 @@ fn city(seed: u32) -> String {
     let mut shade = Vec::with_capacity(DISTRICT * DISTRICT);
     for y in 0..DISTRICT {
         for x in 0..DISTRICT {
-            let (gx, gy) = ((x + off) as i32, (y + off) as i32);
+            let (gx, gy) = ((x + off_x) as i32, (y + off_y) as i32);
             let cell = c.at(gx, gy);
             heights.push(c.height(gx, gy));
             // Whole cells: the target's projection works in whole cells of

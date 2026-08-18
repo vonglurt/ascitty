@@ -166,6 +166,53 @@ what a tower standing behind a nearer tower looks like.
 
 Cost: 4 KB of baked data, and the program grew to 24 384 bytes.
 
+## 5c. The attract mode
+
+`make demo4` boots the program in `xplus4` and leaves it alone. It drives
+itself from boot and stops the moment a key is touched.
+
+The autopilot is the host's idea cut down to what a 7501 can spare: walk
+until something is in the way, turn at the junction, keep to the right of
+the road. It reads the city rather than following a path, because a path
+baked for one district is wrong for every other seed. No trigonometry beyond
+the two table reads the walk already does, and no state but a heading and a
+target.
+
+Three things it had to learn, each of which showed up as "the demo is
+looking at nothing":
+
+**Follow roads, not open ground.** Parks and plazas are unbuilt cells in the
+middle of a block, and a walker that treats them as passable strolls into
+one and spends the rest of the demo pressed against the back of a building.
+The district carries no cell kind, but it carries the tile each cell is
+drawn with, and only carriageway is drawn in asphalt — so the renderer's own
+data answers the question.
+
+**The leash is a hard boundary, not a preference.** Steering back towards
+the middle only works when there is a road pointing that way. When there is
+not, the walk carries on outwards to the edge of the district, where most of
+the view is off the end of the world. Refusing the move instead makes the
+boundary behave like a wall, which is the behaviour that was wanted: the
+walk turns at it. This took three attempts — a preference, then a shorter
+preference, then a constraint — and only the constraint worked.
+
+**The district is chosen by content.** See below.
+
+## 5d. Which 64×64 to bake
+
+It used to be "the middle of the map", on the reasoning that downtown is in
+the middle. Downtown is in the middle — and so is the crossing of the two
+arterials, which are twelve to sixteen cells wide each. The baked district
+came out with a thirteen-row band of empty carriageway straight through it,
+33% built, and the attract mode spent half its time looking down it at
+nothing.
+
+The window is now chosen by *content*: a summed-area table over "is there a
+building here" makes scoring a candidate constant-time, so every offset is
+tried rather than sampled, and the best one wins. The district went from 33%
+built to 57%, and the attract mode from three frames in six with something
+in shot to six in six.
+
 ## 6. What is next
 
 A hand-written `cast.s` for the DDA and the wall fill. The C is already
@@ -176,8 +223,8 @@ and it is exactly the move this codebase's sibling made for the same reason.
 ## 7. Memory
 
 ```
-$1001   program, tables and the baked district      about 19 KB
-$7000   the character set, 1 KB, aligned            copied at boot
+$1001   program, tables and the baked district      about 27 KB
+BSS     the character set, aligned to 1 KB at boot
 $0C00   screen matrix
 $0800   colour matrix
         C stack grows down from HIMEM
