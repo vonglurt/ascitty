@@ -1,0 +1,10 @@
+[package]
+name = "ascitty-core"
+description = "Grid raycaster, procedural block font and glyph palettes for ASCITTY"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]

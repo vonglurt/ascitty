@@ -1,0 +1,15 @@
+[package]
+name = "ascitty-tty"
+description = "ASCITTY on a colour terminal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "ascitty"
+path = "src/main.rs"
+
+[dependencies]
+ascitty-core = { path = "../ascitty-core" }

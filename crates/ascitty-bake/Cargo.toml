@@ -1,0 +1,15 @@
+[package]
+name = "ascitty-bake"
+description = "Bakes the Rust core's tables, charset and city into 6502 C headers and a .d64"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "ascitty-bake"
+path = "src/main.rs"
+
+[dependencies]
+ascitty-core = { path = "../ascitty-core" }

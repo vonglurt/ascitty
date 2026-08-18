@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ascitty-core",
+    "crates/ascitty-tty",
+    "crates/ascitty-bake",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Paul Richeson", "Claude"]
+repository = "https://github.com/vonglurt/ascitty"
+rust-version = "1.70"
+
+# The renderer is the whole program.  Debug builds of a per-cell inner loop
+# are roughly 20x slower than release, which is the difference between a
+# playable 60 fps and a slideshow, so the dev profile is optimised too.
+[profile.dev]
+opt-level = 2
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
