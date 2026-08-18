@@ -177,7 +177,7 @@ pub fn facade(lot: &Lot, face: Face, along: Fx, z: Fx, local_h: Fx, lod: Lod) ->
             Arch::Deco => catalog::G_CORNICE + 2,
             _ => catalog::G_CORNICE + 3,
         };
-        return Surface { glyph: g, hue, luma: 5 };
+        return Surface { glyph: g, hue, luma: lot.luma };
     }
 
     // Ground floor: lit shopfront, with a sign band over it.
@@ -208,7 +208,7 @@ pub fn facade(lot: &Lot, face: Face, along: Fx, z: Fx, local_h: Fx, lod: Lod) ->
         _ => 0,
     };
     if pier_pitch != 0 && bay.rem_euclid(pier_pitch) == 0 {
-        return Surface { glyph: catalog::G_MULLION + 2, hue, luma: 4 };
+        return Surface { glyph: catalog::G_MULLION + 2, hue, luma: lot.luma.saturating_sub(1).max(1) };
     }
 
     // Every building expresses its corners, whatever it is made of - the
@@ -217,7 +217,7 @@ pub fn facade(lot: &Lot, face: Face, along: Fx, z: Fx, local_h: Fx, lod: Lod) ->
     let face_bays = span_bays(lot);
     let local_bay = bay.rem_euclid(face_bays.max(1));
     if local_bay == 0 || local_bay == face_bays - 1 {
-        return Surface { glyph: catalog::G_MULLION + 2, hue, luma: 4 };
+        return Surface { glyph: catalog::G_MULLION + 2, hue, luma: lot.luma.saturating_sub(1).max(1) };
     }
 
     // A spandrel course every few floors on the older buildings, which is
@@ -242,21 +242,26 @@ pub fn facade(lot: &Lot, face: Face, along: Fx, z: Fx, local_h: Fx, lod: Lod) ->
     let qb = bay / q;
     let h = hash3(lot.seed, f * 8192 + qf as u32, qb as u32);
     let occupied = (h >> 3) & 15;
-    let lit = match lot.arch {
-        Arch::CurtainWall => occupied < 11,
-        Arch::Slab => occupied < 9,
-        Arch::Prewar => occupied < 7,
-        Arch::Setback | Arch::Deco => occupied < 10,
-        Arch::LowRise => occupied < 6,
+
+    // How much of this building is lit is a property of *the building* -
+    // one tower works late and its neighbour is empty - with the archetype
+    // only nudging it.  A curtain-wall office block is lit later than a
+    // brick walk-up whatever else is true of either.
+    let bias: i32 = match lot.arch {
+        Arch::CurtainWall => 1,
+        Arch::Slab | Arch::Setback | Arch::Deco => 0,
+        Arch::Prewar => -2,
+        Arch::LowRise => -3,
     };
-    if !lit {
+    let threshold = (lot.lit as i32 + bias).clamp(1, 15) as u32;
+    if occupied >= threshold {
         // A dark window is not black - it still catches the sky.
-        return Surface { glyph: catalog::shade(1), hue, luma: 2 };
+        return Surface { glyph: catalog::shade(1), hue, luma: (lot.luma / 3).max(1) };
     }
     Surface {
         glyph: catalog::facade_tile(lod.cfg(), house_style(lot)),
         hue,
-        luma: 5 + (h >> 20) as u8 % 3,
+        luma: (lot.luma as u32 + (h >> 20) % 2).min(7) as u8,
     }
 }
 
@@ -349,7 +354,7 @@ mod tests {
     use crate::world::{Arch, City, Lot};
 
     fn lot(arch: Arch, height: u8) -> Lot {
-        Lot { x0: 10, y0: 10, x1: 13, y1: 13, height, arch, hue: 6, seed: 0x1234_5678 }
+        Lot { x0: 10, y0: 10, x1: 13, y1: 13, height, arch, hue: 6, luma: 6, lit: 10, seed: 0x1234_5678 }
     }
 
     #[test]

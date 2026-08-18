@@ -21,7 +21,7 @@ use ascitty_core::raycast;
 use ascitty_core::sim::{Event, Sim};
 use ascitty_core::tour::Tour;
 
-use ascitty_core::world::City;
+use ascitty_core::world::{City, SIZE};
 use paint::Depth;
 use term::{Key, Keys, Term};
 
@@ -309,7 +309,7 @@ fn ceiling_of(city: &City) -> Fx {
 
 fn run(mut o: Opts) -> Result<(), String> {
     let city = City::generate(o.seed);
-    let mut cam = Camera::spawn(&city, 48, 48);
+    let mut cam = Camera::spawn(&city, SIZE as i32 / 2, SIZE as i32 / 2);
     let mut sim = Sim::new(&city, o.seed);
     let mut view = o.view;
     match view {

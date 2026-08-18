@@ -18,27 +18,68 @@ Nothing is stored per floor. A sixty-storey tower is one lot record and a
 handful of cell heights; its windows are a hash of (lot, face, floor, bay),
 evaluated when a ray happens to land on one.
 
-## 2. The street grid
+## 2. The street system
 
-Avenues run north–south and are wide; streets run east–west and are narrow.
+It used to be arithmetic: an avenue wherever `x % 14 < 3`, a cross street
+wherever `y % 9 < 2`. That is one line of code, and it gives a city where
+every block is the same size, every road is the same width and every
+junction is the same junction. It reads as a diagram of a city.
 
-```
-AVE_PERIOD  14 cells        AVE_WIDTH  3
-ST_PERIOD    9 cells        ST_WIDTH   2
-```
+So the plan is **generated** instead, once per city, as two independent axes.
+Each is a list of roads with a class, a width and a gap after it:
 
-That asymmetry is the single most Manhattan thing in the file: it gives long
+| Class | Width | What it is |
+|---|---:|---|
+| `Alley` | 1 | service access between buildings — no pavement, no paint |
+| `Street` | 2 | one lane each way |
+| `Avenue` | 3 | |
+| `Boulevard` | 4–5 | the arterials, and the long views |
+
+The grid is still a grid — this is Manhattan, not Boston — but no two blocks
+are the same size and the roads have a **hierarchy**, which is what a street
+system actually is.
+
+### The two axes have different characters
+
+North–south carries the big roads: mostly avenues, a boulevard every so
+often, and long gaps after them. East–west is mostly streets with short
+gaps. That asymmetry is the most Manhattan thing in the file — it gives long
 sightlines one way and short ones the other, so turning ninety degrees
 changes what the city looks like instead of just rotating it.
 
-A cell is about six metres. An avenue is three cells — a real avenue, with
-parking. A lot is two to five — a real frontage.
+### The gap depends on what came before it
 
-Blocks are found by scanning for maximal runs of cells that are neither road
-nor sidewalk, rather than by stepping at the street period. That keeps the
-generator correct when the two periods are changed independently, and it
-guarantees forward progress on every iteration — which the arithmetic
-version did not, and which hung the whole test suite until it was found.
+A bigger road gets a bigger block after it, which is what makes the
+hierarchy visible from the ground: you can tell you have come out onto a
+boulevard because you can see a long way in both directions and the next
+crossing is a long way off. An alley gets a short gap, so it reads as a
+service road splitting one block rather than as a thin street.
+
+A cell is about six metres. So a boulevard is 24–30 m of carriageway, a lot
+is 18–30 m of frontage, and the blocks run 40–160 m.
+
+### What reads the plan
+
+Everything, and that is the point of storing a width and an offset-from-kerb
+per cell rather than recomputing them.
+
+`City::generate` uses it to place road, pavement and buildable ground. The
+renderer reads it directly for [markings](#7-street-markings), so widening a
+boulevard moves its centre line with it and there is no second definition of
+where the middle of a road is. The autopilot asks it whether it is standing
+in a junction.
+
+### Blocks
+
+A block is a maximal run of buildable cells in both directions, found by
+scanning rather than by stepping at a fixed period — which is what lets the
+roads be irregular in the first place.
+
+Each block is reached exactly once, at its **top row**: a run is only filled
+when the cell above its left end is not buildable. Without that test a block
+is refilled once per row it spans, and the symptom is subtle — buildings
+quietly reroll their height and colour, and plazas turn into towers on the
+second pass.
 
 ## 3. Blocks, and what goes in them
 
@@ -48,9 +89,48 @@ in the neighbourhoods than in the middle of downtown.
 The rest are subdivided by recursive splitting of the longer axis until every
 piece is small enough to be one address, and a building goes on each.
 
-Height falls off from the middle of the map, and a big footprint can carry a
-taller building than a narrow one — which is why the tall things cluster and
-the gaps between them are filled with walk-ups.
+### How tall, and what colour
+
+Two fields decide what a block can carry, and they are added together
+because one on its own is not a city.
+
+A single falloff from the centre of the map gives a perfectly conical
+skyline: tallest in the middle, monotonically shorter in every direction.
+Real cities have a downtown *and* secondary clusters — a second business
+district, a tall patch around a station — with quiet ground between. So the
+falloff is two thirds of it and the rest is a smooth value-noise field,
+which puts the clusters somewhere different in every city. Both are
+integer-only: the generator has to be transcribable to a machine with no
+floating point.
+
+Height is then drawn from a **skewed** distribution, not a uniform one.
+Uniform gives a city where every height is equally common, and the eye reads
+that as noise — there is no general roofline for anything to stand above.
+Real heights are closer to a power law, so four bands approximate it:
+
+| Band | Share | What |
+|---|---:|---|
+| 2 – ceiling/5 | 52% | the fabric: walk-ups and low commercial |
+| ceiling/5 – ceiling/2 | 32% | mid-rise, the bulk of a real skyline |
+| ceiling/2 – ceiling | 14.5% | towers |
+| ceiling – ceiling×1.5 | 1.5% | a landmark, gated on a footprint that could carry it |
+
+Measured on a generated district: median 9, ninetieth percentile 26,
+ninety-ninth 42, tallest 50.
+
+Colour is a **district palette**, not a per-building roll. Each district
+draws from a small set of hues that belong together — glass towers blue and
+cyan, prewar blocks brick and ochre, a strip of neon — because a flat list
+of sixteen hues picked at random per building reads as confetti whatever the
+individual colours are. The palette comes from the same noise lattice as the
+height, so it drifts across the map instead of changing at every kerb.
+
+On top of the hue, each building gets its own **brightness** and its own
+**occupancy** — how many of its windows are lit. Hue alone is not enough
+variety: a street of buildings differing only in colour reads as a colour
+chart, and what tells two real buildings apart at a glance is as often how
+bright one is. The occupancy spread is deliberately wide, because the towers
+that are nearly dark are what make the ones that are nearly full look full.
 
 ## 4. The six archetypes
 

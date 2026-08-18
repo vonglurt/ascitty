@@ -280,7 +280,7 @@ impl Car {
 /// Momentum is exchanged along the line between their centres, scaled by
 /// mass, which is the whole of it.  A taxi at speed sends a parked saloon
 /// spinning; a bus barely notices either.
-pub fn collide(a: &mut Car, b: &mut Car) -> Option<Fx> {
+pub fn collide(a: &mut Car, b: &mut Car, city: &City) -> Option<Fx> {
     let (dx, dy) = (b.x - a.x, b.y - a.y);
     let reach = a.kind.half_len() + b.kind.half_len();
     let (nx, ny, dist) = normalise(dx, dy);
@@ -328,12 +328,37 @@ pub fn collide(a: &mut Car, b: &mut Car) -> Option<Fx> {
     b.damage = b.damage.saturating_add(fixed::floor(sev).clamp(0, 12) as u8);
 
     // Push them apart so they do not stick together and re-collide forever.
+    //
+    // The push has to respect walls.  It is a *teleport* - it moves a car
+    // without going through `integrate` - so on a narrow street two cars
+    // meeting near a kerb will happily be shoved through the building
+    // behind it, and the car then spends the rest of the run inside the
+    // lobby.  Each half is applied only if it lands somewhere you could
+    // drive; if it does not, the other car takes the whole correction, and
+    // if neither can move they simply stay touching for another tick, which
+    // is harmless.
     let overlap = (reach - dist).max(0) / 2 + 1;
-    a.x -= fixed::mul(nx, overlap);
-    a.y -= fixed::mul(ny, overlap);
-    b.x += fixed::mul(nx, overlap);
-    b.y += fixed::mul(ny, overlap);
+    let a_ok = nudge(a, -fixed::mul(nx, overlap), -fixed::mul(ny, overlap), city);
+    let b_ok = nudge(b, fixed::mul(nx, overlap), fixed::mul(ny, overlap), city);
+    if !a_ok {
+        nudge(b, fixed::mul(nx, overlap), fixed::mul(ny, overlap), city);
+    }
+    if !b_ok {
+        nudge(a, -fixed::mul(nx, overlap), -fixed::mul(ny, overlap), city);
+    }
     Some(sev)
+}
+
+/// Move a car by a delta if that leaves it somewhere it could have driven.
+fn nudge(c: &mut Car, dx: Fx, dy: Fx, city: &City) -> bool {
+    let (nx, ny) = (c.x + dx, c.y + dy);
+    if city.walkable(fixed::floor(nx), fixed::floor(ny)) {
+        c.x = nx;
+        c.y = ny;
+        true
+    } else {
+        false
+    }
 }
 
 /// A unit vector in the direction of `(x, y)`, and its length.
@@ -366,10 +391,34 @@ mod tests {
     /// ends in a crash before anything can be measured.
     fn on_the_road() -> (City, Car) {
         let city = City::generate(21);
-        let x = fixed::from_int(1) + fixed::HALF; // avenues sit at x % 14 < 3
-        let y = fixed::from_int(20) + fixed::HALF;
-        assert!(city.walkable(1, 20), "the test avenue is not clear");
+        // Whichever column the plan happened to lay a wide road down.  It
+        // used to be hard-coded as "x % 14 < 3", which stopped being true
+        // the moment the street system became something generated rather
+        // than something computed.
+        let col = (0..crate::world::SIZE as i32)
+            .find(|x| {
+                let r = city.plan.cols.at(*x);
+                r.class >= crate::world::RoadClass::Avenue && r.across == 1
+            })
+            .expect("the plan laid no avenue at all");
+        let x = fixed::from_int(col) + fixed::HALF;
+        let y = fixed::from_int(6) + fixed::HALF;
+        assert!(city.walkable(col, 6), "the test avenue is not clear");
         (city, Car::new(CarKind::Taxi, x, y, trig::QUARTER, 7))
+    }
+
+    /// A city whose origin corner is open road, for collision tests that
+    /// place cars at the origin and care about nothing else.
+    fn open_ground() -> City {
+        let mut c = City::generate(21);
+        for y in 0..4 {
+            for x in 0..4 {
+                let i = y * crate::world::SIZE + x;
+                c.cells[i].height = 0;
+                c.cells[i].kind = crate::world::Kind::Road;
+            }
+        }
+        c
     }
 
     fn flat_out(car: &mut Car, city: &City, ticks: u32) {
@@ -493,7 +542,7 @@ mod tests {
             let mut a = Car::new(CarKind::Taxi, 0, 0, 0, 7);
             a.vx = fixed::from_int(6);
             let mut b = Car::new(kind, fixed::ratio(1, 3), 0, 0, 2);
-            collide(&mut a, &mut b).expect("no contact");
+            collide(&mut a, &mut b, &open_ground()).expect("no contact");
             b.speed()
         };
         let saloon = hit(CarKind::Traffic);
@@ -508,14 +557,14 @@ mod tests {
         a.vx = -fixed::from_int(4);
         let mut b = Car::new(CarKind::Traffic, fixed::ratio(1, 3), 0, 0, 2);
         b.vx = fixed::from_int(4);
-        assert!(collide(&mut a, &mut b).is_none());
+        assert!(collide(&mut a, &mut b, &open_ground()).is_none());
     }
 
     #[test]
     fn cars_far_apart_do_not_collide() {
         let mut a = Car::new(CarKind::Taxi, 0, 0, 0, 7);
         let mut b = Car::new(CarKind::Traffic, fixed::from_int(3), 0, 0, 2);
-        assert!(collide(&mut a, &mut b).is_none());
+        assert!(collide(&mut a, &mut b, &open_ground()).is_none());
     }
 
     #[test]
@@ -523,8 +572,9 @@ mod tests {
         let mut a = Car::new(CarKind::Taxi, 0, 0, 0, 7);
         a.vx = fixed::from_int(5);
         let mut b = Car::new(CarKind::Traffic, fixed::ratio(1, 8), 0, 0, 2);
-        assert!(collide(&mut a, &mut b).is_some());
+        let ground = open_ground();
+        assert!(collide(&mut a, &mut b, &ground).is_some());
         // Immediately after, they must be either apart or separating.
-        assert!(collide(&mut a, &mut b).is_none(), "the same collision fired twice");
+        assert!(collide(&mut a, &mut b, &ground).is_none(), "the same collision fired twice");
     }
 }

@@ -329,7 +329,7 @@ impl Tour {
         if city.at(x, y).kind != Kind::Road {
             return false;
         }
-        crate::world::on_avenue(x.max(0) as usize) && crate::world::on_street(y.max(0) as usize)
+        city.plan.is_junction(x, y)
     }
 
     /// The tallest building within a few blocks, as a bearing and the pitch

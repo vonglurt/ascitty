@@ -15,7 +15,16 @@
 use crate::rng::{hash3, Rng};
 
 /// The city is this many cells on a side.
-pub const SIZE: usize = 96;
+///
+/// 128, and it wants to stay a power of two under 256: the lot record stores
+/// its footprint corners as `u8`, and the Plus/4 build indexes its baked
+/// district with a shift.
+pub const SIZE: usize = 128;
+
+/// A cell is about this many metres across.  Not used in any calculation -
+/// the renderer works in cells throughout - but every dimension in this file
+/// was chosen against it, so it is written down.
+pub const METRES_PER_CELL: u32 = 6;
 
 /// What occupies a cell at ground level.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,13 +32,13 @@ pub const SIZE: usize = 96;
 pub enum Kind {
     /// Carriageway.  Cars go here.
     Road = 0,
-    /// Sidewalk, kerbed, with lamps and trees on it.
+    /// Pavement, kerbed, with lamps and trees on it.
     Sidewalk = 1,
     /// Built on.  `height` is above zero and `lot` names the building.
     Building = 2,
-    /// Open ground inside a block - a park or a plaza.
+    /// Open ground inside a block - a park.
     Park = 3,
-    /// Paved open ground.
+    /// Paved open ground - a plaza.
     Plaza = 4,
 }
 
@@ -110,7 +119,19 @@ pub struct Lot {
     pub arch: Arch,
     /// Hue of the facade, as a [`crate::palette`] hue index.
     pub hue: u8,
-    /// Everything else about it - which windows are lit, where the fire
+    /// Base luminance of the facade, 3 to 7.
+    ///
+    /// Hue alone is not enough variety.  A street of buildings that differ
+    /// only in colour reads as a colour chart; what tells two real buildings
+    /// apart at a glance is as often how *bright* one is - dark stone next
+    /// to pale glass next to a blazing tower.
+    pub luma: u8,
+    /// How many of this building's windows are lit, 0 to 15.
+    ///
+    /// Per building rather than per archetype, so one tower can be working
+    /// late and its neighbour empty.
+    pub lit: u8,
+    /// Everything else about it - which windows fall where, where the fire
     /// escape sits, what is on the roof.
     pub seed: u32,
 }
@@ -132,50 +153,262 @@ pub struct City {
     pub cells: Vec<Cell>,
     /// The buildings.
     pub lots: Vec<Lot>,
+    /// The street system.  The renderer reads this directly for markings, so
+    /// the paint on the road and the shape of the road come from one place.
+    pub plan: Plan,
     /// The seed it was generated from.
     pub seed: u32,
 }
 
-// --- street layout ---------------------------------------------------------
+// --- the street plan -------------------------------------------------------
 //
-// Avenues run north-south and are wide; streets run east-west and are
-// narrow.  That asymmetry is the single most Manhattan thing in the file:
-// it gives long sightlines one way and short ones the other, so turning
-// ninety degrees changes what the city looks like instead of just rotating
-// it.
+// The streets used to be arithmetic: an avenue wherever `x % 14 < 3`, a
+// cross street wherever `y % 9 < 2`.  That is one line of code and it gives
+// a city where every block is the same size, every road is the same width,
+// and every junction is the same junction.  It reads as a diagram.
+//
+// So the plan is *generated* instead, once per city, as two independent
+// axes: a list of roads with varying class, width and spacing.  The grid is
+// still a grid - this is Manhattan, not Boston - but no two blocks are the
+// same and the roads have a hierarchy, which is what a street system
+// actually is.
 
-/// Spacing of avenues, in cells.
-pub const AVE_PERIOD: usize = 14;
-/// Width of an avenue carriageway.
-pub const AVE_WIDTH: usize = 3;
-/// Spacing of cross streets.
-pub const ST_PERIOD: usize = 9;
-/// Width of a cross street carriageway.
-pub const ST_WIDTH: usize = 2;
-
-/// Whether a column is inside an avenue.
-#[inline]
-pub fn on_avenue(x: usize) -> bool {
-    x % AVE_PERIOD < AVE_WIDTH
+/// What kind of road a cell belongs to.
+///
+/// Ordered by size, so `class >= RoadClass::Street` is a meaningful test -
+/// it is the line below which a road gets no markings, no sidewalk and no
+/// crosswalks, because it is not a street, it is a gap between buildings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u8)]
+pub enum RoadClass {
+    /// Not a road at all.
+    None = 0,
+    /// One cell.  Service access between buildings; no pavement, no paint.
+    Alley = 1,
+    /// Two cells - one lane each way.
+    Street = 2,
+    /// Three cells.
+    Avenue = 3,
+    /// Four or five cells.  The arterials, and the long views.
+    Boulevard = 4,
 }
 
-/// Whether a row is inside a cross street.
-#[inline]
-pub fn on_street(y: usize) -> bool {
-    y % ST_PERIOD < ST_WIDTH
+impl RoadClass {
+    fn from_u8(v: u8) -> RoadClass {
+        match v {
+            1 => RoadClass::Alley,
+            2 => RoadClass::Street,
+            3 => RoadClass::Avenue,
+            4 => RoadClass::Boulevard,
+            _ => RoadClass::None,
+        }
+    }
+
+    /// Whether this road is paved for traffic rather than being a gap.
+    pub fn is_street(self) -> bool {
+        self >= RoadClass::Street
+    }
 }
 
-/// Whether a column is deep enough inside a block to be built on - not in
-/// the avenue, and not on the sidewalk that flanks it.
-#[inline]
-pub fn interior_x(x: usize) -> bool {
-    !on_avenue(x) && !on_avenue(x.wrapping_sub(1)) && !on_avenue(x + 1)
+/// One coordinate's worth of the plan, along one axis.
+#[derive(Clone, Copy, Debug)]
+pub struct RoadCell {
+    /// What kind of road.
+    pub class: RoadClass,
+    /// How many cells in from the near kerb this one is.
+    pub across: u8,
+    /// How wide the whole carriageway is.
+    pub width: u8,
 }
 
-/// The same test for a row and its cross street.
-#[inline]
-pub fn interior_y(y: usize) -> bool {
-    !on_street(y) && !on_street(y.wrapping_sub(1)) && !on_street(y + 1)
+impl RoadCell {
+    /// Not a road.
+    pub const NONE: RoadCell = RoadCell { class: RoadClass::None, across: 0, width: 0 };
+
+    /// Whether this is a road at all.
+    pub fn is_road(&self) -> bool {
+        self.class != RoadClass::None
+    }
+}
+
+/// The roads along one axis of the map.
+///
+/// Three parallel byte arrays rather than an array of structs, because every
+/// lookup on the render path wants exactly one of the three.
+#[derive(Clone)]
+pub struct Axis {
+    class: Vec<u8>,
+    across: Vec<u8>,
+    width: Vec<u8>,
+}
+
+impl Axis {
+    /// What is at this coordinate.  Off the map is not a road.
+    #[inline(always)]
+    pub fn at(&self, i: i32) -> RoadCell {
+        if i < 0 || i as usize >= self.class.len() {
+            return RoadCell::NONE;
+        }
+        let i = i as usize;
+        RoadCell {
+            class: RoadClass::from_u8(self.class[i]),
+            across: self.across[i],
+            width: self.width[i],
+        }
+    }
+
+    /// Whether this coordinate is on a road of any kind.
+    #[inline(always)]
+    pub fn is_road(&self, i: i32) -> bool {
+        i >= 0 && (i as usize) < self.class.len() && self.class[i as usize] != 0
+    }
+
+    /// Whether this coordinate is on a road that has pavement beside it.
+    #[inline(always)]
+    pub fn is_street(&self, i: i32) -> bool {
+        self.at(i).class.is_street()
+    }
+
+    /// Lay out one axis.
+    ///
+    /// `long` is the axis the big roads run down.  The two axes are given
+    /// different characters on purpose: long sightlines one way and short
+    /// ones the other is the single most Manhattan thing about this city,
+    /// and it means turning ninety degrees changes what you are looking at
+    /// rather than just rotating it.
+    fn generate(rng: &mut Rng, long: bool) -> Axis {
+        let mut class = vec![0u8; SIZE];
+        let mut across = vec![0u8; SIZE];
+        let mut width = vec![0u8; SIZE];
+
+        // Start part way in, so the edge of the map is never a kerb.
+        let mut i = rng.range(3, 11) as usize;
+        while i < SIZE {
+            let c = pick_class(rng, long);
+            let w = road_width(rng, c);
+            if i + w >= SIZE {
+                break;
+            }
+            for k in 0..w {
+                class[i + k] = c as u8;
+                across[i + k] = k as u8;
+                width[i + k] = w as u8;
+            }
+            i += w + gap_after(rng, c, long);
+        }
+        Axis { class, across, width }
+    }
+}
+
+/// Which kind of road comes next.
+///
+/// The weights are the whole character of the city.  On the long axis it is
+/// mostly avenues with the occasional boulevard; on the short axis mostly
+/// streets.  Alleys turn up on both, and they are what stop a block from
+/// always being a single undivided slab.
+fn pick_class(rng: &mut Rng, long: bool) -> RoadClass {
+    let r = rng.below(100);
+    if long {
+        match r {
+            0..=14 => RoadClass::Boulevard,
+            15..=64 => RoadClass::Avenue,
+            65..=86 => RoadClass::Street,
+            _ => RoadClass::Alley,
+        }
+    } else {
+        match r {
+            0..=5 => RoadClass::Boulevard,
+            6..=25 => RoadClass::Avenue,
+            26..=87 => RoadClass::Street,
+            _ => RoadClass::Alley,
+        }
+    }
+}
+
+/// How wide a road of this class is, in cells.
+fn road_width(rng: &mut Rng, c: RoadClass) -> usize {
+    match c {
+        RoadClass::None => 0,
+        RoadClass::Alley => 1,
+        RoadClass::Street => 2,
+        RoadClass::Avenue => 3,
+        RoadClass::Boulevard => 4 + rng.below(2) as usize,
+    }
+}
+
+/// How much buildable ground follows a road of this class.
+///
+/// Bigger roads get bigger blocks after them, which is what makes the
+/// hierarchy visible from the ground: you can tell you have come out onto a
+/// boulevard because you can see a long way in both directions and the next
+/// crossing is a long way off.  An alley gets a short gap, so it reads as a
+/// service road splitting one block rather than as a thin street.
+fn gap_after(rng: &mut Rng, c: RoadClass, long: bool) -> usize {
+    let (lo, hi) = match (c, long) {
+        (RoadClass::Alley, _) => (4, 8),
+        (RoadClass::Street, true) => (10, 16),
+        (RoadClass::Street, false) => (7, 12),
+        (RoadClass::Avenue, true) => (12, 20),
+        (RoadClass::Avenue, false) => (8, 14),
+        (RoadClass::Boulevard, true) => (16, 26),
+        (RoadClass::Boulevard, false) => (10, 17),
+        (RoadClass::None, _) => (8, 12),
+    };
+    rng.range(lo, hi) as usize
+}
+
+/// The street system: the roads on both axes.
+#[derive(Clone)]
+pub struct Plan {
+    /// Roads running north-south, indexed by column.
+    pub cols: Axis,
+    /// Roads running east-west, indexed by row.
+    pub rows: Axis,
+}
+
+impl Plan {
+    /// Generate a street system.
+    pub fn generate(rng: &mut Rng) -> Plan {
+        Plan { cols: Axis::generate(rng, true), rows: Axis::generate(rng, false) }
+    }
+
+    /// Whether a cell is carriageway.
+    #[inline(always)]
+    pub fn is_road(&self, x: i32, y: i32) -> bool {
+        self.cols.is_road(x) || self.rows.is_road(y)
+    }
+
+    /// Whether a cell is a junction of two proper streets.
+    #[inline(always)]
+    pub fn is_junction(&self, x: i32, y: i32) -> bool {
+        self.cols.is_street(x) && self.rows.is_street(y)
+    }
+
+    /// Whether a cell has pavement on it: not carriageway, but beside one.
+    ///
+    /// Only proper streets get a pavement.  An alley has buildings coming
+    /// straight down to it, which is what an alley is.
+    #[inline(always)]
+    pub fn is_sidewalk(&self, x: i32, y: i32) -> bool {
+        if self.is_road(x, y) {
+            return false;
+        }
+        self.cols.is_street(x - 1)
+            || self.cols.is_street(x + 1)
+            || self.rows.is_street(y - 1)
+            || self.rows.is_street(y + 1)
+    }
+
+    /// Whether a cell can be built on.
+    #[inline(always)]
+    pub fn is_buildable(&self, x: i32, y: i32) -> bool {
+        x >= 0
+            && y >= 0
+            && (x as usize) < SIZE
+            && (y as usize) < SIZE
+            && !self.is_road(x, y)
+            && !self.is_sidewalk(x, y)
+    }
 }
 
 impl City {
@@ -215,83 +448,83 @@ impl City {
     /// Generate a city from a seed.
     pub fn generate(seed: u32) -> City {
         let mut rng = Rng::new(seed);
+        let plan = Plan::generate(&mut rng);
         let mut cells = vec![
             Cell { kind: Kind::Road, height: 0, lot: NO_LOT, seed: 0 };
             SIZE * SIZE
         ];
         let mut lots: Vec<Lot> = Vec::new();
 
-        // Pass 1: the street grid, and the sidewalk that rings every block.
-        for y in 0..SIZE {
-            for x in 0..SIZE {
-                let road = on_avenue(x) || on_street(y);
-                let near = on_avenue(x.wrapping_sub(1)) || on_avenue(x + 1)
-                    || on_street(y.wrapping_sub(1)) || on_street(y + 1);
-                cells[y * SIZE + x].kind = if road {
+        // Pass 1: lay the plan onto the grid.
+        for y in 0..SIZE as i32 {
+            for x in 0..SIZE as i32 {
+                let i = y as usize * SIZE + x as usize;
+                cells[i].kind = if plan.is_road(x, y) {
                     Kind::Road
-                } else if near {
+                } else if plan.is_sidewalk(x, y) {
                     Kind::Sidewalk
                 } else {
                     Kind::Plaza // provisional: block interior, built on below
                 };
-                cells[y * SIZE + x].seed = rng.next_u32() as u8;
+                cells[i].seed = rng.next_u32() as u8;
             }
         }
 
-        // Pass 2: find each block interior and fill it.
+        // Pass 2: find each block and fill it.
         //
-        // A block interior is a maximal run of cells that is neither road nor
-        // sidewalk.  Scanning for maximal runs - rather than stepping by the
-        // street period - is what keeps this correct when the two periods are
-        // changed independently, and it guarantees forward progress on every
-        // iteration, which the arithmetic version did not.
-        let mut y = 0;
-        while y < SIZE {
-            if !interior_y(y) {
-                y += 1;
-                continue;
-            }
-            let y0 = y;
-            while y < SIZE && interior_y(y) {
-                y += 1;
-            }
-            let y1 = y - 1;
-
-            let mut x = 0;
-            while x < SIZE {
-                if !interior_x(x) {
+        // A block is a maximal run of buildable cells in both directions.
+        // Scanning for runs - rather than stepping by a street period - is
+        // what lets the plan have roads of different widths at irregular
+        // spacing.
+        //
+        // Each block is reached exactly once, at its **top row**: a run is
+        // only filled when the cell above its left end is not buildable.
+        // Without that test a block gets refilled once per row it spans, and
+        // the symptom is subtle - buildings quietly reroll their height and
+        // colour, plazas turn into towers on the second pass, and the city
+        // is different depending on how tall its blocks happen to be.
+        for y in 0..SIZE as i32 {
+            let mut x = 0i32;
+            while x < SIZE as i32 {
+                if !plan.is_buildable(x, y) {
                     x += 1;
                     continue;
                 }
                 let x0 = x;
-                while x < SIZE && interior_x(x) {
+                while x + 1 < SIZE as i32 && plan.is_buildable(x + 1, y) {
                     x += 1;
                 }
-                let x1 = x - 1;
-                fill_block(&mut cells, &mut lots, &mut rng, Rect { x0, y0, x1, y1 });
+                let x1 = x;
+                if !plan.is_buildable(x0, y - 1) {
+                    let mut y1 = y;
+                    while y1 + 1 < SIZE as i32 && plan.is_buildable(x0, y1 + 1) {
+                        y1 += 1;
+                    }
+                    fill_block(
+                        &mut cells,
+                        &mut lots,
+                        &mut rng,
+                        seed,
+                        Rect {
+                            x0: x0 as usize,
+                            y0: y as usize,
+                            x1: x1 as usize,
+                            y1: y1 as usize,
+                        },
+                    );
+                }
+                x = x1 + 1;
             }
         }
 
-        City { cells, lots, seed }
+        City { cells, lots, plan, seed }
     }
-}
-
-/// Distance from the middle of the map, 0 at the centre and 255 at the
-/// corners.  Downtown is in the middle, which is what gives the skyline a
-/// shape instead of a uniform carpet of towers.
-fn downtown(x: usize, y: usize) -> u32 {
-    let c = SIZE as i32 / 2;
-    let (dx, dy) = ((x as i32 - c).abs(), (y as i32 - c).abs());
-    let d = dx.max(dy) as u32;
-    (d * 255 / (SIZE as u32 / 2)).min(255)
 }
 
 /// A rectangle of cells, inclusive at both ends.
 ///
-/// Introduced because the two helpers below took the four corners as loose
-/// arguments and it was never obvious at a call site which pair was which.
-/// A lot is a rectangle; saying so once is cheaper than saying `x0, y0, x1,
-/// y1` at every boundary.
+/// A lot is a rectangle; saying so once is cheaper than passing `x0, y0,
+/// x1, y1` at every boundary and never being sure which pair is which.
 #[derive(Clone, Copy, Debug)]
 struct Rect {
     x0: usize,
@@ -314,15 +547,63 @@ impl Rect {
     }
 }
 
+/// How built-up a place is, 0 (outskirts) to 255 (the middle of downtown).
+///
+/// Two things added together, because one on its own is not a city.
+///
+/// A single falloff from the centre of the map gives a perfectly conical
+/// skyline: tallest in the middle, shorter in every direction, monotonic
+/// from everywhere. Real cities have a downtown *and* secondary clusters -
+/// a second business district, a tall patch around a station - with quiet
+/// ground in between. So the falloff is only two thirds of it; the rest is
+/// a smooth noise field, which puts the clusters somewhere different in
+/// every city.
+fn intensity(x: usize, y: usize, seed: u32) -> u32 {
+    let c = SIZE as i32 / 2;
+    let (dx, dy) = ((x as i32 - c).abs(), (y as i32 - c).abs());
+    let d = dx.max(dy) as u32;
+    let core = 255u32.saturating_sub(d * 255 / (SIZE as u32 / 2));
+    (core * 2 + field(x, y, seed)) / 3
+}
+
+/// Side of the noise lattice, in cells.  Sixteen puts a cluster about every
+/// hundred metres, which is the scale a district changes on.
+const FIELD_CELL: usize = 16;
+
+/// A smooth value noise field, 0 to 255.
+///
+/// Bilinear interpolation over a lattice of hashed corners. Integer
+/// throughout - the whole point of the fixed-point discipline is that the
+/// city generator can be transcribed, and a generator that needs floating
+/// point cannot be.
+fn field(x: usize, y: usize, seed: u32) -> u32 {
+    let (gx, gy) = (x / FIELD_CELL, y / FIELD_CELL);
+    let (fx, fy) = ((x % FIELD_CELL) as u32, (y % FIELD_CELL) as u32);
+    let corner = |ix: usize, iy: usize| hash3(ix as u32, iy as u32, seed ^ 0x_D157_0000) & 255;
+    let n = FIELD_CELL as u32;
+    let top = corner(gx, gy) * (n - fx) + corner(gx + 1, gy) * fx;
+    let bot = corner(gx, gy + 1) * (n - fx) + corner(gx + 1, gy + 1) * fx;
+    (top * (n - fy) + bot * fy) / (n * n)
+}
+
+/// Fill one block interior: either open it as a park, or subdivide it into
 /// Fill one block interior: either open it as a park, or subdivide it into
 /// lots and raise a building on each.
-fn fill_block(cells: &mut [Cell], lots: &mut Vec<Lot>, rng: &mut Rng, block: Rect) {
+fn fill_block(
+    cells: &mut [Cell],
+    lots: &mut Vec<Lot>,
+    rng: &mut Rng,
+    seed: u32,
+    block: Rect,
+) {
     let Rect { x0, y0, x1, y1 } = block;
-    let far = downtown((x0 + x1) / 2, (y0 + y1) / 2);
+    let mid = ((x0 + x1) / 2, (y0 + y1) / 2);
+    let built = intensity(mid.0, mid.1, seed);
 
-    // One block in nine is left open, and it is likelier out in the
-    // neighbourhoods than it is in the middle of downtown.
-    if rng.chance(1 + far / 40, 12) {
+    // Open ground.  Likelier out in the neighbourhoods than downtown, and
+    // likelier on a big block than a small one - a square needs room.
+    let open_odds = 1 + (255 - built) / 45 + (block.w() * block.h() / 40) as u32;
+    if rng.chance(open_odds, 16) {
         let park = rng.chance(2, 3);
         for y in y0..=y1 {
             for x in x0..=x1 {
@@ -333,13 +614,15 @@ fn fill_block(cells: &mut [Cell], lots: &mut Vec<Lot>, rng: &mut Rng, block: Rec
     }
 
     // Subdivide.  Split the longer axis until every piece is small enough to
-    // be one address.
+    // be one address.  Downtown lots are bigger, because downtown buildings
+    // are - a tower needs a footprint and a walk-up does not.
+    let min_lot = if built > 170 { 4 } else { 3 };
     let mut queue = vec![(x0, y0, x1, y1)];
     let mut out = Vec::new();
     while let Some((ax, ay, bx, by)) = queue.pop() {
         let (w, h) = (bx - ax + 1, by - ay + 1);
         let big = w.max(h);
-        if big <= 3 || (big <= 5 && rng.chance(1, 3)) {
+        if big <= min_lot || (big <= min_lot + 2 && rng.chance(1, 3)) {
             out.push((ax, ay, bx, by));
             continue;
         }
@@ -354,43 +637,151 @@ fn fill_block(cells: &mut [Cell], lots: &mut Vec<Lot>, rng: &mut Rng, block: Rec
         }
     }
 
+    // One palette for the whole block, so a street reads as a street rather
+    // than as a shuffled deck.  Neighbouring blocks draw from neighbouring
+    // lattice cells, so the palette drifts across the map instead of
+    // changing at every kerb.
+    let palette_id = (field(mid.0, mid.1, seed ^ 0x_9A11_E77E) / 32) as usize;
+
     for (ax, ay, bx, by) in out {
-        raise(cells, lots, rng, far, Rect { x0: ax, y0: ay, x1: bx, y1: by });
+        raise(
+            cells,
+            lots,
+            rng,
+            built,
+            palette_id,
+            Rect { x0: ax, y0: ay, x1: bx, y1: by },
+        );
     }
 }
 
-/// Palette of facade hues.  Deliberately narrow: a night city is mostly two
-/// or three colours of glass with the odd lit brick face, and a wider
-/// palette reads as confetti rather than as a place.
-const FACADE_HUES: [u8; 8] = [
-    crate::palette::H_BLUE,
-    crate::palette::H_LIGHT_BLUE,
-    crate::palette::H_DARK_BLUE,
-    crate::palette::H_CYAN,
-    crate::palette::H_YELLOW,
-    crate::palette::H_ORANGE,
-    crate::palette::H_RED,
-    crate::palette::H_BLUE_GREEN,
+/// Facade palettes, one per district.
+///
+/// Each is a small set of hues that belong together, because a real
+/// neighbourhood does have a colour: the glass towers are blue and cyan, the
+/// prewar blocks are brick and ochre, the strip near the water is neon.  A
+/// single flat list of hues picked at random per building reads as confetti,
+/// whatever the individual colours are.
+const PALETTES: [&[u8]; 8] = [
+    // Glass downtown
+    &[crate::palette::H_BLUE, crate::palette::H_LIGHT_BLUE, crate::palette::H_CYAN],
+    // Brick and stone
+    &[crate::palette::H_BROWN, crate::palette::H_ORANGE, crate::palette::H_RED],
+    // Pale offices
+    &[crate::palette::H_WHITE, crate::palette::H_LIGHT_BLUE, crate::palette::H_YELLOW],
+    // Deep glass
+    &[crate::palette::H_DARK_BLUE, crate::palette::H_BLUE, crate::palette::H_BLUE_GREEN],
+    // A sodium-lit older quarter
+    &[crate::palette::H_YELLOW, crate::palette::H_ORANGE, crate::palette::H_BROWN],
+    // Green glass and copper
+    &[crate::palette::H_BLUE_GREEN, crate::palette::H_LIGHT_GREEN, crate::palette::H_CYAN],
+    // Mixed midtown
+    &[
+        crate::palette::H_BLUE,
+        crate::palette::H_ORANGE,
+        crate::palette::H_WHITE,
+        crate::palette::H_RED,
+    ],
+    // A neon strip
+    &[crate::palette::H_PINK, crate::palette::H_PURPLE, crate::palette::H_CYAN],
 ];
 
 /// Put a building on one lot.
-fn raise(cells: &mut [Cell], lots: &mut Vec<Lot>, rng: &mut Rng, far: u32, lot: Rect) {
-    let Rect { x0, y0, x1, y1 } = lot;
-    let footprint = lot.w() * lot.h();
+fn raise(
+    cells: &mut [Cell],
+    lots: &mut Vec<Lot>,
+    rng: &mut Rng,
+    built: u32,
+    palette_id: usize,
+    lot: Rect,
+) {
+    let footprint = (lot.w() * lot.h()) as u32;
 
-    // Height falls off from downtown, and a big footprint can carry a taller
-    // building than a narrow one - which is why the tall things cluster and
-    // the gaps between them are filled with walk-ups.
-    let ceiling = (56u32.saturating_sub(far * 46 / 255)).max(4);
-    let base = 2 + rng.below(ceiling.max(1));
-    let bonus = if footprint >= 9 && rng.chance(1, 3) { rng.below(ceiling) } else { 0 };
-    let height = (base + bonus).clamp(2, 60) as u8;
+    // The tallest thing this ground could carry.  Downtown ground carries
+    // more, and a big footprint carries more than a narrow one - which is
+    // why the tall things cluster and the gaps between them fill with
+    // walk-ups.
+    let ceiling = (6 + built * 54 / 255 + footprint.min(30)).clamp(6, 84);
 
-    let arch = if height <= 3 {
+    // Height is drawn from a skewed distribution, not a uniform one.
+    //
+    // Uniform gives a city where every height is equally common, and the eye
+    // reads that as noise - no general roofline for anything to stand above.
+    // Real building heights are closer to a power law: a great many short
+    // ones, progressively fewer tall ones, and the occasional landmark far
+    // above everything near it.  Four bands approximate that closely enough
+    // and are legible.
+    let roll = rng.below(1000);
+    let low = (ceiling / 5).max(4) as i32;
+    let mid = (ceiling / 2).max(low as u32 + 2) as i32;
+    let height = if roll < 520 {
+        rng.range(2, low) // the fabric: walk-ups and low commercial
+    } else if roll < 840 {
+        rng.range(low, mid) // mid-rise, the bulk of a real skyline
+    } else if roll < 985 {
+        rng.range(mid, ceiling as i32) // towers
+    } else {
+        // A landmark, allowed to break the local roofline.  Rare enough that
+        // finding one is an event, and gated on a footprint that could
+        // actually carry it.
+        let over = if footprint >= 9 { ceiling * 3 / 2 } else { ceiling + 4 };
+        rng.range(ceiling as i32, over as i32)
+    }
+    .clamp(2, 90) as u8;
+
+    let arch = pick_arch(rng, height);
+
+    let palette = PALETTES[palette_id.min(PALETTES.len() - 1)];
+    let hue = palette[rng.below(palette.len() as u32) as usize];
+
+    // Brightness, biased by how built-up the area is: downtown glass is lit
+    // late and the outskirts are not.
+    let luma = (3 + rng.below(3) + u32::from(built > 160)).min(7) as u8;
+
+    // Occupancy.  A wide spread on purpose: the towers that are nearly dark
+    // are what make the ones that are nearly full look full.
+    let lit = match rng.below(10) {
+        0 => rng.range(1, 4),
+        1..=2 => rng.range(4, 8),
+        3..=7 => rng.range(8, 12),
+        _ => rng.range(11, 15),
+    } as u8;
+
+    let idx = lots.len() as u16;
+    lots.push(Lot {
+        x0: lot.x0 as u8,
+        y0: lot.y0 as u8,
+        x1: lot.x1 as u8,
+        y1: lot.y1 as u8,
+        height,
+        arch,
+        hue,
+        luma,
+        lit,
+        seed: rng.next_u32(),
+    });
+
+    for y in lot.y0..=lot.y1 {
+        for x in lot.x0..=lot.x1 {
+            let c = &mut cells[y * SIZE + x];
+            c.kind = Kind::Building;
+            c.lot = idx;
+            c.height = cell_height(height, arch, lot, x, y);
+        }
+    }
+}
+
+/// What a building of a given height is likely to be built as.
+fn pick_arch(rng: &mut Rng, height: u8) -> Arch {
+    if height <= 3 {
         Arch::LowRise
-    } else if height <= 9 {
-        if rng.chance(3, 4) { Arch::Prewar } else { Arch::LowRise }
-    } else if height >= 28 {
+    } else if height <= 10 {
+        if rng.chance(3, 4) {
+            Arch::Prewar
+        } else {
+            Arch::LowRise
+        }
+    } else if height >= 34 {
         match rng.below(3) {
             0 => Arch::Setback,
             1 => Arch::Deco,
@@ -402,28 +793,6 @@ fn raise(cells: &mut [Cell], lots: &mut Vec<Lot>, rng: &mut Rng, far: u32, lot: 
             1 => Arch::CurtainWall,
             2 => Arch::Setback,
             _ => Arch::Prewar,
-        }
-    };
-
-    let hue = FACADE_HUES[rng.below(FACADE_HUES.len() as u32) as usize];
-    let idx = lots.len() as u16;
-    lots.push(Lot {
-        x0: x0 as u8,
-        y0: y0 as u8,
-        x1: x1 as u8,
-        y1: y1 as u8,
-        height,
-        arch,
-        hue,
-        seed: rng.next_u32(),
-    });
-
-    for y in y0..=y1 {
-        for x in x0..=x1 {
-            let c = &mut cells[y * SIZE + x];
-            c.kind = Kind::Building;
-            c.lot = idx;
-            c.height = cell_height(height, arch, lot, x, y);
         }
     }
 }
@@ -493,24 +862,120 @@ mod tests {
     #[test]
     fn roads_are_always_walkable() {
         let c = city();
-        for y in 0..SIZE {
-            for x in 0..SIZE {
-                if on_avenue(x) || on_street(y) {
-                    assert_eq!(c.at(x as i32, y as i32).height, 0, "a building stands in the road at {x},{y}");
+        for y in 0..SIZE as i32 {
+            for x in 0..SIZE as i32 {
+                if c.plan.is_road(x, y) {
+                    assert_eq!(c.at(x, y).height, 0, "a building stands in the road at {x},{y}");
                 }
             }
         }
     }
 
     #[test]
+    fn the_plan_lays_roads_of_more_than_one_width() {
+        // The whole point of generating a street system rather than
+        // computing one: if every road comes out the same width, nothing has
+        // been gained over `x % 14 < 3`.
+        let c = city();
+        let widths: std::collections::HashSet<u8> = (0..SIZE as i32)
+            .filter_map(|i| {
+                let r = c.plan.cols.at(i);
+                r.is_road().then_some(r.width)
+            })
+            .chain((0..SIZE as i32).filter_map(|i| {
+                let r = c.plan.rows.at(i);
+                r.is_road().then_some(r.width)
+            }))
+            .collect();
+        assert!(widths.len() >= 3, "the plan only has widths {widths:?}");
+    }
+
+    #[test]
+    fn the_plan_lays_roads_of_more_than_one_class() {
+        let c = city();
+        let classes: std::collections::HashSet<RoadClass> = (0..SIZE as i32)
+            .map(|i| c.plan.cols.at(i).class)
+            .chain((0..SIZE as i32).map(|i| c.plan.rows.at(i).class))
+            .filter(|k| *k != RoadClass::None)
+            .collect();
+        assert!(classes.len() >= 3, "the plan only has classes {classes:?}");
+    }
+
+    #[test]
+    fn roads_never_run_straight_into_each_other() {
+        // Two roads with no block between them are one wide road with a
+        // seam down it, and the marking code would paint two centre lines
+        // three metres apart.
+        for seed in [1u32, 2, 3, 4, 5] {
+            let c = City::generate(seed);
+            for axis in [&c.plan.cols, &c.plan.rows] {
+                let mut run = 0;
+                for i in 0..SIZE as i32 {
+                    if axis.is_road(i) {
+                        run += 1;
+                        assert!(run <= 5, "seed {seed}: a {run}-cell run of road");
+                    } else {
+                        run = 0;
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_alley_has_no_pavement_beside_it() {
+        // An alley is a gap between buildings, not a small street.
+        let c = City::generate(7);
+        for x in 0..SIZE as i32 {
+            if c.plan.cols.at(x).class != RoadClass::Alley {
+                continue;
+            }
+            for y in 0..SIZE as i32 {
+                if c.plan.rows.is_road(y) {
+                    continue;
+                }
+                for dx in [-1i32, 1] {
+                    if c.plan.is_road(x + dx, y) {
+                        continue;
+                    }
+                    assert_ne!(
+                        c.at(x + dx, y).kind,
+                        Kind::Sidewalk,
+                        "an alley at {x} grew a pavement at {},{y}",
+                        x + dx
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn blocks_come_in_more_than_one_size() {
+        let c = city();
+        let mut widths = std::collections::HashSet::new();
+        let mut run = 0u32;
+        let y = (0..SIZE as i32)
+            .find(|y| (0..SIZE as i32).all(|x| !c.plan.rows.is_road(*y) || !c.plan.cols.is_road(x)))
+            .unwrap_or(SIZE as i32 / 2);
+        for x in 0..SIZE as i32 {
+            if c.plan.is_buildable(x, y) {
+                run += 1;
+            } else if run > 0 {
+                widths.insert(run);
+                run = 0;
+            }
+        }
+        assert!(widths.len() >= 3, "every block along the row is one of {widths:?} wide");
+    }
+
+    #[test]
     fn the_grid_is_connected_enough_to_walk() {
-        // Every avenue must be reachable along every cross street: the two
-        // families of road have to actually intersect.
+        // The two families of road have to actually intersect.
         let c = city();
         let mut crossings = 0;
-        for y in 0..SIZE {
-            for x in 0..SIZE {
-                if on_avenue(x) && on_street(y) && c.walkable(x as i32, y as i32) {
+        for y in 0..SIZE as i32 {
+            for x in 0..SIZE as i32 {
+                if c.plan.is_junction(x, y) && c.walkable(x, y) {
                     crossings += 1;
                 }
             }
@@ -578,6 +1043,70 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn heights_are_skewed_rather_than_uniform() {
+        // The distribution is the point.  Uniform heights read as noise -
+        // no general roofline for anything to stand above - so the shape is
+        // checked, not just the range.
+        let c = city();
+        let mut h: Vec<u32> = c.lots.iter().map(|l| l.height as u32).collect();
+        h.sort_unstable();
+        let median = h[h.len() / 2];
+        let p90 = h[h.len() * 9 / 10];
+        let max = *h.last().unwrap();
+        assert!(median * 2 < p90, "median {median} and p90 {p90} - that is a uniform spread");
+        assert!(p90 * 3 / 2 < max, "p90 {p90} and tallest {max} - nothing stands above the rest");
+        assert!(max > 30, "the tallest building is only {max}");
+        let short = h.iter().filter(|v| **v <= 6).count();
+        assert!(short * 4 > h.len(), "only {short} of {} buildings are low-rise", h.len());
+    }
+
+    #[test]
+    fn buildings_vary_in_colour_and_in_brightness() {
+        let c = city();
+        let hues: std::collections::HashSet<u8> = c.lots.iter().map(|l| l.hue).collect();
+        let lumas: std::collections::HashSet<u8> = c.lots.iter().map(|l| l.luma).collect();
+        let lits: std::collections::HashSet<u8> = c.lots.iter().map(|l| l.lit).collect();
+        assert!(hues.len() >= 8, "only {} hues in the whole city", hues.len());
+        assert!(lumas.len() >= 3, "only {} brightnesses", lumas.len());
+        assert!(lits.len() >= 6, "only {} occupancy levels", lits.len());
+    }
+
+    #[test]
+    fn colour_is_coherent_across_a_neighbourhood() {
+        // The property that matters is not "this lot got its block's
+        // palette" - a lot is a subdivision of a block and its midpoint can
+        // fall in a different lattice cell than the block's did, so that
+        // test would be checking an implementation detail and getting it
+        // wrong.  What matters visually is that two buildings near each
+        // other are much likelier to share a colour than two far apart.
+        // That is what makes a city read as neighbourhoods rather than as
+        // confetti, and it is measurable.
+        let c = city();
+        let (mut near_same, mut near, mut far_same, mut far) = (0u32, 0u32, 0u32, 0u32);
+        for (i, a) in c.lots.iter().enumerate() {
+            for b in c.lots.iter().skip(i + 1) {
+                let d = (a.x0 as i32 - b.x0 as i32).abs() + (a.y0 as i32 - b.y0 as i32).abs();
+                if d <= 8 {
+                    near += 1;
+                    near_same += u32::from(a.hue == b.hue);
+                } else if d >= 48 {
+                    far += 1;
+                    far_same += u32::from(a.hue == b.hue);
+                }
+            }
+        }
+        assert!(near > 200 && far > 200, "not enough pairs to measure: {near} near, {far} far");
+        // Percentages, to keep the comparison readable in a failure message.
+        let p_near = near_same * 100 / near;
+        let p_far = far_same * 100 / far;
+        assert!(
+            p_near > p_far * 3 / 2,
+            "neighbours share a hue {p_near}% of the time and strangers {p_far}% - \
+             colour is not tied to place"
+        );
     }
 
     #[test]

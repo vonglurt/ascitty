@@ -50,7 +50,7 @@ What changed:
 | Q16.16 | Q8.8 | a 64-cell district needs 8 bits of integer; the camera fits in `int` |
 | fixed-point divide | `reciptab[n]`, 512 entries | no divide instruction |
 | Q16.16 projection | **Q4.4** projection | a 60-unit tower one cell away is 900 rows; at Q8.8 that product overflows `int` and the tower draws upside down |
-| 96×96 city | **64×64** district, baked | 12 KB fits; 27 KB does not |
+| 128×128 city | **64×64** district, baked | 12 KB fits; 48 KB does not |
 | any grid size | a **power of two** grid | `(y << 6) \| x` instead of a software multiply on every DDA step |
 | floor casting | ground drawn as shaded bands | roughly halved the frame rate |
 | sprites | none yet | there is no frame rate to spend |

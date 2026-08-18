@@ -43,7 +43,7 @@ use ascitty_core::world::{Arch, City, Kind, SIZE};
 /// the index is `(y << 6) | x`, which is free.
 ///
 /// The cost is size: 64x64 at three bytes a cell is 12 KB against 6.75 KB,
-/// which the machine can afford.  The whole 96x96 city would be 27 KB and
+/// which the machine can afford.  The whole 128x128 city would be 48 KB and
 /// could not.  The district is taken from the middle of the map, where the
 /// tall buildings are.
 const DISTRICT: usize = 64;
@@ -290,7 +290,9 @@ fn city(seed: u32) -> String {
             heights.push(cell.height);
             match c.lot_at(gx, gy) {
                 Some(lot) => {
-                    colors.push(palette::rgb_index(lot.hue, 6));
+                    // The building's own brightness, not a constant: the
+                    // Plus/4 gets the same variety the host does.
+                    colors.push(palette::rgb_index(lot.hue, lot.luma));
                     // The tile the whole building is drawn in - the same
                     // per-lot choice the host makes, resolved once here so
                     // the 6502 never has to hash anything.

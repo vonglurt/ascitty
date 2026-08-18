@@ -50,6 +50,15 @@ verifying it needs the ROM in front of you.
 
 ## The city
 
+### Diagonal streets — **later**
+The plan is two independent axes, so every road is north–south or east–west.
+A Broadway cutting across the grid would be the single most characterful
+thing that could be added to it, and it is also the one thing the current
+representation cannot express at all: a diagonal is not a column or a row.
+It would want a third structure — a list of line segments rasterised over
+the grid after the two axes are laid — plus a marking path that can follow
+it, and blocks that come out as triangles.
+
 ### Traffic that follows the road — **soon**
 Traffic currently drives in a straight line at a constant throttle and is
 recycled when it falls behind. It is scenery with momentum. Giving it lane
@@ -156,7 +165,7 @@ The physics is fixed point already and would transcribe. It needs the frame
 rate first: a car at 1.3 fps is not a car.
 
 ### Streaming a larger city — **later**
-A 64x64 district is baked; the host generates 96x96. Streaming from disk
+A 64x64 district is baked; the host generates 128x128. Streaming from disk
 would give the whole map, and the `.d64` has room. The generator is
 deterministic from a seed, so an alternative is to *generate* on the machine
 rather than bake — much slower, and much smaller.

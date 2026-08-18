@@ -380,7 +380,7 @@ impl Sim {
 
             // Against the taxi.
             let (mut a, mut b) = (self.taxi, self.traffic[i]);
-            if let Some(sev) = drive::collide(&mut a, &mut b) {
+            if let Some(sev) = drive::collide(&mut a, &mut b, city) {
                 self.taxi = a;
                 self.traffic[i] = b;
                 if sev > ONE {

@@ -67,6 +67,37 @@ static void spawn(void)
     cam_y = (mid << 8) + 128;
 }
 
+/* Face down whichever street is longest from here.
+**
+** The spawn search only guarantees you are standing somewhere you could
+** stand; it says nothing about what is in front of you, and facing east
+** regardless means about one boot in four opens on a wall three metres
+** away.  Four probes at boot is nothing and it is the first thing anybody
+** sees. */
+static void face_the_street(void)
+{
+    unsigned char a, best_a = 0;
+    unsigned char n, best_n = 0;
+    int x, y;
+
+    for (a = 0; a < 4; ++a) {
+        unsigned char dir = (unsigned char)(a << 6);
+        for (n = 1; n < 24; ++n) {
+            x = (cam_x >> 8) + (((int)COS(dir) * n) >> 8);
+            y = (cam_y >> 8) + (((int)SIN(dir) * n) >> 8);
+            if (((unsigned int)x | (unsigned int)y) & ~(unsigned int)CITY_MASK)
+                break;
+            if (city_h[((unsigned int)y << CITY_SHIFT) | (unsigned int)x])
+                break;
+        }
+        if (n > best_n) {
+            best_n = n;
+            best_a = dir;
+        }
+    }
+    cam_a = best_a;
+}
+
 int main(void)
 {
     unsigned char k;
@@ -77,7 +108,7 @@ int main(void)
     install_charset();
     cast_init();
     spawn();
-    cam_a = 0;
+    face_the_street();
 
     for (;;) {
         cast_frame();

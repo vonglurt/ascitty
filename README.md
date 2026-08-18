@@ -4,29 +4,29 @@ A city built entirely out of typeable characters, rendered in real time, on a
 colour terminal and on a **Commodore Plus/4**.
 
 ```
-%%%%.----------..--.--.!.!X...!!::!!..+.!M       W!X::!!%%%%%%%%%%%%%%%%##.....!!!!.....!!!!
-%%%%.----------.....--.!.!XXX:!!::!!.~~.!M       W!..:!!%%%%%%%%%%%%%%%%##.....!!!!.....!!!!
-%%%%.----------.....--.!.!XXX:!!::!!.=..!M .     W!...!!%%%%%%%%%%%%%%%%##.....!!!!.....!!!!
-%%...------------...--.!.!XXX:!!::!!..+n!.       W!X:.%%::!%%%%%%%%%%%!###..###!!!!.....!!!!
-%%--.---------------.-.!.!XXX.!!..!!..+n!.   '   W!X:%%%%:!%%%%%%%%%%%!#..#####!!!!.....!!!!
-%%------------------.--!.!XXX.!!..!!X..n!.       W!X%%%%%%!%%%%%%%%%%%!...#####!!!!.....!!!!
-!!-------------...--.--!.!X..:!!::!!Xx+.!.       W!X%%%%%%!.!||.#|||!!!...#####!!!!.....!!!!
-!!-------------....----!-!X..:!!::!!Xx+.!.    .  .!X:%%%%.!#!||.#|||!!!...#####!!!!.....!!!8
-!!-------------....----!-!X..:!!::!!Xx~.!.       .!X::||..!#!#.||##.!!!...##HHHHH88888888888
-HHHHHHHHHHHHH##HHHH#HH-!-!XXX.!!::!!....!M '.    .!X::!!..!#!H#||##HHHHHHHHHHHHHH88888888888
-HHHHHHHHHHHHH##HHHH#HHHH#HXXXXXXXXXXXXXMMM       M#XXX__XXXHHH#||##HHHHHHHHHHHHHH88888888888
-HHHHHHHHHHHHH##HHH~#~~~~#~....---..........|||||||---....--~~_______HHHHHHHHHHHHH88888888888
-~~~~~~~~~~~~~+++++++++++__..................=====....___+++++_______~~~~~~~~~~~~~88888888888
-++++++++++++____...........................=======.......____++++++++++++++++~~~~~~~~~~~~~~~
-+_____------------------------------------=========---------_____++++++++++++++++++++++~~~~~
-.........................................===========..........._______++++++++++++++++++++++
-----------------------------------------=============--------------________+++++++++++++++++
-.......................................===============................_________+++++++++++++
-......................................=================..................___________++++++++
-.....................................====================....................____________+++
+.M...          __             =====nn        ____                     .xxxxxxxXXX!!.......\\
+.M...         !.M.  mm!_      ..m!mm.      !!!!!!!          ' .        xxxxxxxXXX!!.......//
+.M...        .!.MM  mm!m.     .~~!~m.      !!!!!!!            ___      xxxxxxxXXX!!.......|\
+MM...        .!.MM  .m!m      ...!...__ .  !!!!!!!`       . =.!W.      x..xxxxXXX!!~~~~~~~||
+MM...        M!.MM  mm!m      .~~!~_____   !!!!!!!          WW!W.      xxx..==XXX!!~~:::../|
+M__MM        M!MMM .mm!m      mm.!!M!.!M   !!!!!===       .!!!!!W    =======..XXX!!:::::..\\
+M!.!!!!.._.  M!MMM  mm!m      m~~!!M!.!.. ====/!+..!+==   .!!!!!W! =///!......XXX!!:::::..//
+M_______.!   M!...  mm!m   .' mm.!!M!.!=.M!X.\\!+++!.+.   .!!!!!.! .\\\!+.....XXX!!:::::..\\
+MMMMMM!!MM.  M!...  mm!m      m~~!!M!.!..M!..|=!~~~!.+.   M!!!!!!! +///!+.....XXX!!~~~~~~~||
+.MMMMM!!MM.  M%%..' mm!=..!MM=..m!!M!.!~~~!~.//!++.!++.=====!!!!!! ~\\\!~~~~~~XXX!!:::::..||
+.MMMMM!!MM.. %%%%.  mm!!MM!.....==!.!M!..M!X+|=!+.+!+++!....!!!!!! .///!......XXX!!:::::..\\
+MMMMMM!!MMM!%%%%%% 'mm!!M~!%%/...W!.!=W..M!X~\\!~~~!~~~!....!!!!M! .\\\!......XXX!%%::::..//
+==%MMM!!MMM=%%%%%%` mm!!M.=%%/...~%%!\~~MM!X./=!++.!.+.!....!!!!M!=.///!......XXX!%%::~~~~\\
+.%%M..!!MMM!.%%%%.  mm.!~~%%%%.m.%%%%\.MMM!X.//!++.!+.+!....!!!!.!=~\\\!~~~~~~XXX%%%%~~~~~||
+.!%M..!!MMM!.W||..  m..!..!%%/.m..%%!\~~~~!~~\\!~~~!~~~==~~~!!!!M!W.///!......XXX!%%......||
+.!..MM!!..M!...!.. =m..!MM!mm/m.W.!M!=.MM.!X.|=!+++!+++.!MMM!!!!M!n+###!......XXX!!:::::..##
+MM#MMMMMM#MMMM__MM@MMMMMMMMMMMMMMMMMM###MM##XXXX#XX#XXXXMMMM##MMMMMXXXXXXXXXXXXXXXXXXXXX##XX
+...||....--__++++++++""""""""""""""""""""""""""""""w""""""""""""""""""""""""""""""""w"wwwwww
+...---..............--____++++++++++++++"""""""""""""""""""www""ww"""w""""wwwww"""""""""""""
+..........------....................---______+++++++++++++++++++++""""""""""""""""""""""""""
 ```
 
-*Street level, 7-bit ASCII, no colour — `ascitty --shot --mode ascii --seed 99`.
+*Street level, 7-bit ASCII, no colour — `ascitty --shot 450 --tour --mode ascii --seed 99`.
 The same frame in block elements and colour is what you actually get.*
 
 ## What it is
@@ -195,6 +195,15 @@ Every cell carries one height; a building is a run of cells sharing a lot.
 That makes the walk cheap, and it makes **setbacks free**: a tower that steps
 in as it rises is just a lot whose edge cells are shorter than its middle.
 The wedding-cake silhouette of a 1920s tower is four lines of code.
+
+The street system on top of it is *generated*, not computed. Roads come in
+four classes — alley, street, avenue, boulevard — at varying widths and
+irregular spacing, with bigger roads getting bigger blocks after them, so the
+hierarchy is visible from the ground. Building heights are drawn from a
+skewed distribution rather than a uniform one, because uniform heights read
+as noise: there is no general roofline for anything to stand above. Colour
+comes from a district palette that drifts across the map, so a
+neighbourhood has a colour instead of the city having confetti.
 
 ### The font is generated, not drawn
 
