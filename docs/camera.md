@@ -118,7 +118,17 @@ Blockage is re-checked **every tick**, not only when a behaviour ends,
 because a behaviour that outlasts the pavement walks you into a wall and
 leaves you grinding against it for the rest of the take.
 
-### Keeping to the middle of the street
+### Keeping to a lane
+
+Both flanks are probed and the walker eases towards the open side — but not
+to dead centre. It settles half a cell over, which is the middle of a lane.
+
+Dead centre is the obvious target and the wrong one: it puts the camera
+directly on top of the double yellow, so the nearest few rows of every frame
+are a wall of centre line. Half a cell over, the line converges away from
+you down the street instead of out from under you.
+
+### Why it keeps off the walls at all
 
 Both flanks are probed and the walker eases towards the open side. Without
 it, it ends up hugging whichever wall it drifted onto — and a camera at eye
@@ -129,6 +139,21 @@ The centring force is slightly *faster* than the walking pace, which looks
 wrong written down and is right: it only reaches full strength with one
 shoulder against a wall and eight clear cells on the other side, and below
 that it is a nudge.
+
+Two other numbers were tuned by looking at frames rather than at code.
+
+**It looks three and a half cells ahead**, and that is not a "bigger is
+safer" dial. Too short and it turns with its nose already against a
+forty-storey facade, so the frame is one wall and nothing else. Too long and
+it reacts to buildings it was never going to reach, which in a narrow street
+means turning, turning back, and oscillating into the kerb — at four and a
+half cells, four times as many frames were pressed against a wall as at
+three and a half.
+
+**It will not stop to admire anything closer than four cells.** A tower
+twenty-five metres away is not something you crane your neck at, it is
+something you are about to walk into, and framing it fills the screen with
+windows and no sky.
 
 ### It is reproducible
 

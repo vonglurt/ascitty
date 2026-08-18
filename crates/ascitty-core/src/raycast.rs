@@ -371,40 +371,40 @@ fn ground(city: &City, atmos: &Atmos, wx: Fx, wy: Fx, dist: Fx) -> Cel {
 }
 
 /// Road surface markings.
+///
+/// Worked out in *continuous* coordinates across the carriageway rather than
+/// per cell. A cell is six metres; a painted line is not, and the previous
+/// version - which asked "is this the middle cell of the avenue" - could only
+/// ever put the centre line down the middle of a whole cell. On a two-cell
+/// cross street the true centre is the *boundary* between its two cells, so
+/// there was no cell to put it in and the line sat off to one side.
+///
+/// Measuring across the road instead makes it correct for any width, and it
+/// is the same arithmetic for avenues and cross streets.
 fn road(gx: i32, gy: i32, fx: Fx, fy: Fx) -> (catalog::GlyphId, u8, u8) {
-    let ave = crate::world::on_avenue(gx as usize);
-    let st = crate::world::on_street(gy as usize);
+    let ax_cell = gx.rem_euclid(AVE_PERIOD as i32);
+    let sy_cell = gy.rem_euclid(ST_PERIOD as i32);
+    let on_ave = ax_cell < AVE_WIDTH as i32;
+    let on_st = sy_cell < ST_WIDTH as i32;
 
-    // An intersection is where the two families of road cross; it gets
-    // crosswalks on its approaches and no lane markings inside it.
-    if ave && st {
-        let near_edge = fx < fixed::ratio(1, 6)
-            || fx > fixed::ratio(5, 6)
-            || fy < fixed::ratio(1, 6)
-            || fy > fixed::ratio(5, 6);
-        if near_edge && (gx + gy) % 2 == 0 {
-            return (catalog::ROAD_CROSSING, palette::H_WHITE, 5);
-        }
-        return (catalog::ROAD_ASPHALT, palette::H_WHITE, 1);
-    }
+    // Where this point is across each family of road, in cells, and how far
+    // along it. `across` drives the lines; `along` drives the dashes.
+    let across_ave = fixed::from_int(ax_cell) + fx;
+    let across_st = fixed::from_int(sy_cell) + fy;
+    let world_x = fixed::from_int(gx) + fx;
+    let world_y = fixed::from_int(gy) + fy;
 
-    if ave {
-        // The centre line runs up the middle lane of the avenue.
-        let lane = gx as usize % AVE_PERIOD;
-        if lane == AVE_WIDTH / 2 && fx > fixed::ratio(1, 3) && fx < fixed::ratio(2, 3) {
-            return (catalog::ROAD_CENTRE, palette::H_YELLOW, 5);
+    if on_ave && on_st {
+        if let Some(m) = crossing(across_ave, across_st, world_x, world_y) {
+            return m;
         }
-        // Lane dashes between lanes, broken along the direction of travel.
-        if fy < fixed::ratio(2, 5) {
-            return (catalog::ROAD_DASH, palette::H_WHITE, 4);
+    } else if on_ave {
+        if let Some(m) = lines(across_ave, AVE_W, world_y) {
+            return m;
         }
-    } else if st {
-        let lane = gy as usize % ST_PERIOD;
-        if lane == ST_WIDTH / 2 && fy > fixed::ratio(1, 3) && fy < fixed::ratio(2, 3) {
-            return (catalog::ROAD_CENTRE, palette::H_YELLOW, 5);
-        }
-        if fx < fixed::ratio(2, 5) {
-            return (catalog::ROAD_DASH, palette::H_WHITE, 4);
+    } else if on_st {
+        if let Some(m) = lines(across_st, ST_W, world_x) {
+            return m;
         }
     }
 
@@ -415,16 +415,290 @@ fn road(gx: i32, gy: i32, fx: Fx, fy: Fx) -> (catalog::GlyphId, u8, u8) {
     (catalog::ROAD_ASPHALT, palette::H_WHITE, 1)
 }
 
+/// Width of an avenue's carriageway, in cells.
+const AVE_W: Fx = fixed::from_int(AVE_WIDTH as i32);
+/// Width of a cross street's carriageway.
+const ST_W: Fx = fixed::from_int(ST_WIDTH as i32);
+
+/// Half-width of the painted centre line.
+///
+/// A real double yellow is about a third of a metre, which at six metres to
+/// the cell would be a twentieth of a cell - and a twentieth of a cell is
+/// narrower than the ground sampler can hold on to. Past a few cells the
+/// line would fall between samples and flicker in and out as the camera
+/// moved. A sixth of a cell is wide enough to survive the sampling and still
+/// reads as a line rather than as a stripe of paint.
+const CENTRE_HALF: Fx = fixed::ratio(1, 6);
+/// Half-width of a dashed lane divider.
+const LANE_HALF: Fx = fixed::ratio(1, 10);
+/// Width of the solid white line along the kerb.
+const EDGE_W: Fx = fixed::ratio(1, 8);
+/// Lane dividers are only painted on roads at least this wide; a two-cell
+/// street has one lane each way and nothing to divide.
+const LANE_MIN_W: Fx = fixed::from_int(3);
+/// How far apart crosswalk stripes are, in cells.
+const ZEBRA_PITCH: Fx = fixed::ratio(1, 2);
+/// How much of that pitch is painted.
+const ZEBRA_DUTY: Fx = fixed::ratio(11, 20);
+/// How far into the junction the crosswalk band reaches from each edge.
+const ZEBRA_BAND: Fx = fixed::ratio(2, 5);
+
+/// The lines along an ordinary stretch of road.
+///
+/// `across` is the distance from the near kerb in cells, `width` the
+/// carriageway, `along` the world coordinate running down the road - which
+/// is what breaks the lane dividers into dashes.
+fn lines(across: Fx, width: Fx, along: Fx) -> Option<(catalog::GlyphId, u8, u8)> {
+    let centre = width / 2;
+    if fixed::abs(across - centre) < CENTRE_HALF {
+        // ROAD_CENTRE is two rules with a gap, so the double yellow is the
+        // glyph rather than two passes.
+        return Some((catalog::ROAD_CENTRE, palette::H_YELLOW, 6));
+    }
+
+    if width >= LANE_MIN_W {
+        for q in [fixed::ratio(1, 4), fixed::ratio(3, 4)] {
+            if fixed::abs(across - fixed::mul(width, q)) < LANE_HALF {
+                // On for a cell, off for a cell, measured along the road, so
+                // the dashes stay put as the camera moves rather than
+                // crawling with it.
+                return if fixed::frac(fixed::mul(along, fixed::HALF)) < fixed::HALF {
+                    Some((catalog::ROAD_DASH, palette::H_WHITE, 5))
+                } else {
+                    None
+                };
+            }
+        }
+    }
+
+    if !(EDGE_W..=width - EDGE_W).contains(&across) {
+        return Some((catalog::ROAD_DASH, palette::H_WHITE, 3));
+    }
+    None
+}
+
+/// The markings inside a junction.
+///
+/// No centre line and no lane dividers - a real junction has bare tarmac in
+/// the middle, and painting through it is the single quickest way to make a
+/// street grid look like a diagram of a street grid. What it does have is a
+/// crosswalk across each of the four approaches, laid just inside the edge
+/// of the box.
+///
+/// The stripes run *with* the traffic and repeat *across* it, which is the
+/// way round they are painted: a pedestrian walking north over an avenue
+/// crosses a ladder of north-south bars.
+fn crossing(across_ave: Fx, across_st: Fx, world_x: Fx, world_y: Fx) -> Option<(catalog::GlyphId, u8, u8)> {
+    // The two crosswalks over the avenue, at the north and south edges.
+    if !(ZEBRA_BAND..=ST_W - ZEBRA_BAND).contains(&across_st) {
+        return zebra(world_x);
+    }
+    // ...and the two over the cross street, at the east and west edges.
+    if !(ZEBRA_BAND..=AVE_W - ZEBRA_BAND).contains(&across_ave) {
+        return zebra(world_y);
+    }
+    None
+}
+
+/// One stripe of a crosswalk, or bare tarmac between stripes.
+fn zebra(along: Fx) -> Option<(catalog::GlyphId, u8, u8)> {
+    let t = fixed::frac(fixed::div(along, ZEBRA_PITCH));
+    if t < ZEBRA_DUTY {
+        Some((catalog::ROAD_CROSSING, palette::H_WHITE, 6))
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::camera::Camera;
-    use crate::world::City;
+    use crate::world::{City, SIZE};
 
     fn scene() -> (City, Camera, Atmos) {
         let city = City::generate(2024);
         let cam = Camera::spawn(&city, 48, 48);
         (city, cam, Atmos::default())
+    }
+
+    /// Sample the markings straight down the cross-section of a road, from
+    /// one kerb to the other, at a fixed point along it.
+    fn cross_section(ave: bool, along_cell: i32, steps: i32) -> Vec<(catalog::GlyphId, u8)> {
+        (0..steps)
+            .map(|i| {
+                let t = fixed::div(fixed::from_int(i), fixed::from_int(steps));
+                let width = if ave { AVE_WIDTH } else { ST_WIDTH } as i32;
+                let across = fixed::mul(t, fixed::from_int(width));
+                let cell = fixed::floor(across);
+                let frac = fixed::frac(across);
+                let (g, hue, _) = if ave {
+                    road(cell, along_cell, frac, fixed::HALF)
+                } else {
+                    road(along_cell, cell, fixed::HALF, frac)
+                };
+                (g, hue)
+            })
+            .collect()
+    }
+
+    /// A cell that is on an avenue but not at a junction.
+    fn mid_avenue_row() -> i32 {
+        (0..SIZE as i32)
+            .find(|y| !crate::world::on_street(*y as usize))
+            .expect("no cross-street-free row")
+    }
+
+    /// A cell that is on a cross street but not at a junction.
+    fn mid_street_col() -> i32 {
+        (0..SIZE as i32)
+            .find(|x| !crate::world::on_avenue(*x as usize))
+            .expect("no avenue-free column")
+    }
+
+    #[test]
+    fn every_road_has_a_yellow_centre_line_down_the_middle() {
+        for (ave, along) in [(true, mid_avenue_row()), (false, mid_street_col())] {
+            let strip = cross_section(ave, along, 60);
+            let yellow: Vec<usize> = strip
+                .iter()
+                .enumerate()
+                .filter(|(_, (g, h))| *g == catalog::ROAD_CENTRE && *h == palette::H_YELLOW)
+                .map(|(i, _)| i)
+                .collect();
+            assert!(
+                !yellow.is_empty(),
+                "{} has no yellow centre line",
+                if ave { "the avenue" } else { "the cross street" }
+            );
+            // ...and it is in the middle, not off to one side.
+            let mid = yellow.iter().sum::<usize>() / yellow.len();
+            assert!(
+                (mid as i32 - 30).abs() < 6,
+                "the centre line sits at {mid}/60 across, which is not the middle"
+            );
+        }
+    }
+
+    #[test]
+    fn the_centre_line_is_a_line_and_not_a_stripe() {
+        // It has to be narrow enough to read as paint and wide enough to
+        // survive point sampling; a third of the carriageway is neither.
+        let strip = cross_section(true, mid_avenue_row(), 90);
+        let painted = strip.iter().filter(|(g, _)| *g == catalog::ROAD_CENTRE).count();
+        assert!(painted > 2, "the centre line is only {painted}/90 wide - it will flicker");
+        assert!(painted < 18, "the centre line is {painted}/90 wide - that is a stripe");
+    }
+
+    #[test]
+    fn a_narrow_street_gets_no_lane_dividers() {
+        // Two cells is one lane each way; painting a divider inside each
+        // lane is three lines across twelve metres of road.  The edge lines
+        // share the dash glyph, so this is checked by *position*: any white
+        // paint on a narrow street has to be within a kerb's width of one
+        // side or the other.
+        let along = fixed::ratio(3, 2);
+        for i in 0..120 {
+            let across = fixed::div(fixed::mul(ST_W, fixed::from_int(i)), fixed::from_int(120));
+            if let Some((g, _, _)) = lines(across, ST_W, along) {
+                if g == catalog::ROAD_DASH {
+                    assert!(
+                        !(EDGE_W..=ST_W - EDGE_W).contains(&across),
+                        "a two-cell street has white paint {} cells from the kerb",
+                        fixed::to_f32(across)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_wide_road_does_get_lane_dividers() {
+        // The other half of the rule, so that widening a street silently
+        // losing its lanes would fail rather than pass.
+        let along = fixed::HALF;
+        let divider = (0..120).any(|i| {
+            let across = fixed::div(fixed::mul(AVE_W, fixed::from_int(i)), fixed::from_int(120));
+            let inboard = across > EDGE_W * 2 && across < AVE_W - EDGE_W * 2;
+            inboard
+                && matches!(lines(across, AVE_W, along), Some((g, _, _)) if g == catalog::ROAD_DASH)
+        });
+        assert!(divider, "a three-cell avenue has no lane divider");
+    }
+
+    #[test]
+    fn lane_dividers_are_actually_dashed() {
+        // Walk down the avenue at the quarter-width divider and check the
+        // paint comes and goes.
+        let x = fixed::mul(AVE_W, fixed::ratio(1, 4));
+        let y0 = mid_avenue_row();
+        let (mut on, mut off) = (0, 0);
+        for i in 0..80 {
+            let along = fixed::div(fixed::from_int(i), fixed::from_int(8));
+            let cell = y0 + fixed::floor(along);
+            if crate::world::on_street(cell.max(0) as usize) {
+                continue;
+            }
+            match lines(x, AVE_W, fixed::from_int(cell) + fixed::frac(along)) {
+                Some((g, _, _)) if g == catalog::ROAD_DASH => on += 1,
+                _ => off += 1,
+            }
+        }
+        assert!(on > 4 && off > 4, "not a dashed line: {on} painted, {off} bare");
+    }
+
+    #[test]
+    fn junctions_have_crosswalks_and_no_centre_line() {
+        let (jx, jy) = (0..SIZE as i32)
+            .flat_map(|y| (0..SIZE as i32).map(move |x| (x, y)))
+            .find(|&(x, y)| {
+                crate::world::on_avenue(x as usize) && crate::world::on_street(y as usize)
+            })
+            .expect("no junction on this grid");
+
+        let mut stripes = 0;
+        let mut centre = 0;
+        for i in 0..24 {
+            for j in 0..24 {
+                let fx = fixed::div(fixed::from_int(i), fixed::from_int(24));
+                let fy = fixed::div(fixed::from_int(j), fixed::from_int(24));
+                for dx in 0..AVE_WIDTH as i32 {
+                    for dy in 0..ST_WIDTH as i32 {
+                        match road(jx + dx, jy + dy, fx, fy).0 {
+                            g if g == catalog::ROAD_CROSSING => stripes += 1,
+                            g if g == catalog::ROAD_CENTRE => centre += 1,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        assert!(stripes > 100, "only {stripes} crosswalk samples inside the junction");
+        assert_eq!(centre, 0, "the centre line was painted straight through the junction");
+    }
+
+    #[test]
+    fn crosswalks_are_striped_rather_than_solid() {
+        let (jx, jy) = (0..SIZE as i32)
+            .flat_map(|y| (0..SIZE as i32).map(move |x| (x, y)))
+            .find(|&(x, y)| {
+                crate::world::on_avenue(x as usize) && crate::world::on_street(y as usize)
+            })
+            .unwrap();
+        // Walk across the north crosswalk of the junction and count the bars.
+        let mut runs = 0;
+        let mut was_paint = false;
+        for i in 0..(AVE_WIDTH as i32 * 24) {
+            let across = fixed::div(fixed::from_int(i), fixed::from_int(24));
+            let cell = jx + fixed::floor(across);
+            let paint = road(cell, jy, fixed::frac(across), fixed::ratio(1, 8)).0
+                == catalog::ROAD_CROSSING;
+            if paint && !was_paint {
+                runs += 1;
+            }
+            was_paint = paint;
+        }
+        assert!(runs >= 3, "the crosswalk has only {runs} bars - it is a solid block");
     }
 
     #[test]

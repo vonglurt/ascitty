@@ -135,7 +135,43 @@ bottom. It stops below the cornice.
 
 Only `Prewar` and `LowRise` carry one. A curtain wall has nowhere to bolt it.
 
-## 7. The colours
+## 7. Street markings
+
+Worked out in **continuous coordinates across the carriageway**, not per
+cell. A cell is six metres and a painted line is not, so asking "is this the
+middle cell of the avenue" can only ever put the centre line down the middle
+of a whole cell — and on a two-cell cross street the true centre is the
+*boundary* between its two cells, where there is no cell to put it in. The
+line ended up off to one side. Measuring across the road instead is correct
+for any width, and it is the same arithmetic for both families of street.
+
+| Marking | Where | Glyph |
+|---|---|---|
+| Double yellow centre line | the middle of the carriageway | `ROAD_CENTRE` |
+| White dashed lane divider | a quarter and three quarters across, roads three cells and wider | `ROAD_DASH` |
+| White edge line | an eighth of a cell from each kerb | `ROAD_DASH` |
+| Crosswalk | just inside each of a junction's four edges | `ROAD_CROSSING` |
+
+Three details are deliberate.
+
+**The centre line is a sixth of a cell wide**, which is a metre — about three
+times a real double yellow. It has to be: the ground is point-sampled once
+per screen cell, and a line a twentieth of a cell across would fall between
+samples past a few cells and flicker in and out as the camera moved.
+
+**Lane dividers only appear on roads three cells and wider.** A two-cell
+cross street is one lane each way; painting a divider inside each lane is
+three lines across twelve metres of road.
+
+**Junctions have no centre line and no dividers at all** — bare tarmac in the
+middle, which is what a real junction has, and painting through one is the
+quickest way to make a street grid look like a diagram of a street grid.
+What a junction does have is a crosswalk on each of its four approaches, laid
+just inside the edge of the box. The stripes run *with* the traffic and
+repeat *across* it, which is the way round they are painted: a pedestrian
+walking north over an avenue crosses a ladder of north–south bars.
+
+## 8. The colours
 
 Eight facade hues, deliberately narrow: a night city is mostly two or three
 colours of glass with the odd lit brick face, and a wider palette reads as

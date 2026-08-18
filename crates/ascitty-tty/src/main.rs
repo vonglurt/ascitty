@@ -196,7 +196,7 @@ USAGE: ascitty [options]
   --color D         true | 16 | none          (default: from $COLORTERM)
   --size WxH        override the terminal size
   --fps N           frame rate cap            (default: 30)
-  --rain N          0 dry .. 8 torrential     (default: 3)
+  --rain N          0 dry .. 8 torrential     (default: 2)
   --haze N          0 clear .. 8 soup         (default: 3)
   --stars N         0 .. 8                    (default: 4)
   --no-moon         moonless night

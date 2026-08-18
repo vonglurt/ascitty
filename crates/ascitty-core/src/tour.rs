@@ -40,7 +40,15 @@ pub enum Doing {
 }
 
 /// How far ahead the walker looks before deciding the way is blocked.
-const PROBE: Fx = fixed::ratio(9, 4);
+///
+/// Three and a half cells, and it is not a "bigger is safer" dial.  Too
+/// short and the walker turns with its nose already against a forty-storey
+/// facade, so the frame is one wall and nothing else.  Too long and it
+/// starts reacting to buildings it was never going to reach, which in a
+/// narrow street means turning, turning back, and oscillating into the
+/// kerb - measured at four and a half cells, four times as many frames were
+/// pressed against a wall as at three and a half.
+const PROBE: Fx = fixed::ratio(7, 2);
 
 /// How far it steps between probe samples.
 const PROBE_STEP: Fx = fixed::ratio(1, 4);
@@ -58,6 +66,20 @@ pub const PACE: Fx = fixed::ratio(9, 4);
 /// a block to come off a wall it had drifted onto, which is most of a block
 /// of looking at one facade.
 const CENTRING: Fx = fixed::ratio(5, 2);
+
+/// How far to one side of the crown of the road the walker settles, in
+/// quarter-cell probe steps.
+///
+/// Dead centre is the obvious target and the wrong one: it puts the camera
+/// directly on top of the double yellow, so the nearest few rows of every
+/// frame are a wall of centre line.  Half a cell over is the middle of a
+/// lane, which is where a vehicle would be and where the line converges
+/// away from you down the street instead of out from under you.
+const LANE_BIAS: i32 = 4;
+
+/// The nearest a building may be for the walker to stop and look up at it,
+/// in cells.
+const MIN_ADMIRE: i32 = 4;
 
 /// The most the camera will tilt up, in screen rows.
 ///
@@ -155,7 +177,8 @@ impl Tour {
         let lateral = {
             let left = self.heading.wrapping_sub(trig::QUARTER);
             let right = self.heading.wrapping_add(trig::QUARTER);
-            let bias = self.clearance(city, left) - self.clearance(city, right);
+            let bias =
+                self.clearance(city, left) - self.clearance(city, right) - LANE_BIAS;
             fixed::mul(fixed::ratio(bias.clamp(-8, 8), 8), CENTRING)
         };
 
@@ -326,8 +349,16 @@ impl Tour {
                 if h < 12 {
                     continue;
                 }
-                let dist = dx.abs().max(dy.abs()).max(1);
-                // Tall and close beats tall and far.
+                let dist = dx.abs().max(dy.abs());
+                // Nothing under four cells.  A tower nine metres away is not
+                // something you crane your neck at, it is something you are
+                // about to walk into, and framing it fills the screen with a
+                // wall of windows and no sky.  The shot is the tower down
+                // the block.
+                if dist < MIN_ADMIRE {
+                    continue;
+                }
+                // Tall and close beats tall and far - within reason.
                 let score = h * 8 / dist;
                 if best.is_none_or(|(b, _, _)| score > b) {
                     let ang = crate::sim::atan2_approx(
@@ -477,6 +508,41 @@ mod tests {
                 t.cam.pitch
             );
         }
+    }
+
+    #[test]
+    fn the_walk_mostly_has_somewhere_to_look() {
+        // The complaint this exists for: the walker turning too late and
+        // spending frames with its nose against a facade, so the whole
+        // screen is one building.
+        //
+        // Measured as the distance to the nearest wall dead ahead, which the
+        // renderer already reports.  Counting blank cells instead looks like
+        // the same question and is not: a frame looking slightly downwards
+        // along a street is mostly road, has almost no sky in it, and is a
+        // perfectly good frame.
+        use crate::atmos::Atmos;
+        use crate::frame::Frame;
+
+        let city = City::generate(99);
+        let mut t = Tour::new(&city, 99);
+        let atmos = Atmos { rain: 0, haze: 2, ..Default::default() };
+        let mut f = Frame::new(80, 24);
+        let mut boxed_in = 0;
+        let samples = 40;
+        for _ in 0..samples {
+            for _ in 0..30 {
+                t.step(&city, HZ);
+            }
+            let st = crate::raycast::render(&city, &t.cam, &atmos, &mut f);
+            if st.nearest < 1.5 {
+                boxed_in += 1;
+            }
+        }
+        assert!(
+            boxed_in * 4 < samples,
+            "{boxed_in} of {samples} frames had a wall inside a cell and a half"
+        );
     }
 
     #[test]

@@ -37,7 +37,7 @@ pub struct Atmos {
 impl Default for Atmos {
     fn default() -> Self {
         Atmos {
-            rain: 3,
+            rain: 2,
             moon: true,
             moon_az: trig::from_degrees(215.0),
             moon_alt: 9,
@@ -184,28 +184,40 @@ impl Atmos {
 
     /// Lay rain over the finished frame.
     ///
-    /// Rain is in front of everything, so it goes on last, and it leans with
-    /// the camera's heading so that turning into the weather looks like
-    /// turning into the weather.
+    /// Rain goes on last, because it is in front of everything - but it is
+    /// *not* laid on evenly.
+    ///
+    /// Against the night sky a streak is the only thing in the cell and
+    /// reads immediately. Against a facade it is competing with the window
+    /// grid that carries the whole picture, and at any density that shows up
+    /// there it stops looking like weather and starts looking like the
+    /// screen needs cleaning. So the sky gets the full fall and anything
+    /// already drawn gets a fifth of it - enough that the rain is plainly
+    /// passing in front of the buildings, not enough to eat them.
+    ///
+    /// "Already drawn" is a blank glyph or a colour that has faded to black,
+    /// so distant buildings the haze has taken count as sky, which is what
+    /// they look like.
     pub fn rain_over(&self, f: &mut Frame, cam: &Camera) {
         if self.rain == 0 {
             return;
         }
-        let density = self.rain as u32 * 5;
+        let sky_density = self.rain as u32 * 3;
+        let over_density = (sky_density / 5).max(1);
         let lean = (trig::sin(cam.yaw) >> 14) as i32; // -4..4 cells of drift
         let scroll = (self.tick as i32 * 3) as u32;
         for y in 0..f.h as i32 {
             for x in 0..f.w as i32 {
+                let behind = f.get(x, y);
+                let on_sky =
+                    behind.glyph == catalog::G_BLANK || palette::luma_of(behind.color) == 0;
+                let density = if on_sky { sky_density } else { over_density };
                 let sx = (x + (y * lean) / 8) as u32;
                 let h = hash3(sx, (y as u32).wrapping_add(scroll / 2), 0x_4241_4E00);
                 if (h & 255) >= density {
                     continue;
                 }
-                // Rain in front of a lit window is brighter than rain in
-                // front of the sky, which is what makes it read as falling
-                // through the light rather than as screen dirt.
-                let behind = f.get(x, y);
-                let luma = if behind.glyph == catalog::G_BLANK { 2 } else { 4 };
+                let luma = if on_sky { 3 } else { 2 };
                 let phase = ((y as u32).wrapping_add(scroll) & 7) as u8;
                 f.put(
                     x,
@@ -302,5 +314,65 @@ mod tests {
         let wet = f.cels.iter().filter(|c| **c != Cel::EMPTY).count();
         assert!(wet > 50, "only {wet} cells of rain");
         assert!(wet < f.cels.len() / 2, "{wet} cells - that is a wall of water");
+    }
+
+    #[test]
+    fn rain_falls_mostly_against_the_sky_and_not_over_the_buildings() {
+        // Left half is a lit facade, right half is night sky.
+        let mut f = Frame::new(80, 60);
+        for y in 0..60 {
+            for x in 0..40 {
+                f.put(x, y, Cel { glyph: catalog::G_SOLID, color: rgb_index(palette::H_BLUE, 6) });
+            }
+        }
+        let a = Atmos { rain: 8, ..Default::default() };
+        a.rain_over(&mut f, &Camera { yaw: 0, ..Default::default() });
+
+        let is_rain = |c: Cel| (catalog::G_RAIN..catalog::G_MOON).contains(&c.glyph);
+        let built: usize = (0..60)
+            .flat_map(|y| (0..40).map(move |x| (x, y)))
+            .filter(|&(x, y)| is_rain(f.get(x, y)))
+            .count();
+        let sky: usize = (0..60)
+            .flat_map(|y| (40..80).map(move |x| (x, y)))
+            .filter(|&(x, y)| is_rain(f.get(x, y)))
+            .count();
+
+        assert!(sky > 100, "the sky is barely raining ({sky} cells)");
+        assert!(
+            sky > built * 3,
+            "rain over the buildings ({built}) is not far enough below the sky ({sky})"
+        );
+        assert!(built > 0, "no rain at all in front of the buildings");
+    }
+
+    #[test]
+    fn a_faded_out_building_counts_as_sky() {
+        // Something the haze has taken to black should get the full fall,
+        // because that is what it looks like.
+        let mut f = Frame::new(60, 40);
+        for c in f.cels.iter_mut() {
+            *c = Cel { glyph: catalog::G_SOLID, color: rgb_index(palette::H_BLUE, 0) };
+        }
+        let a = Atmos { rain: 8, ..Default::default() };
+        a.rain_over(&mut f, &Camera::default());
+        let wet = f
+            .cels
+            .iter()
+            .filter(|c| (catalog::G_RAIN..catalog::G_MOON).contains(&c.glyph))
+            .count();
+        assert!(wet > 100, "only {wet} cells fell on the faded-out wall");
+    }
+
+    #[test]
+    fn the_default_is_a_drizzle_rather_than_a_downpour() {
+        let mut f = Frame::new(100, 40);
+        Atmos::default().rain_over(&mut f, &Camera::default());
+        let wet = f.cels.iter().filter(|c| **c != Cel::EMPTY).count();
+        assert!(
+            wet * 10 < f.cels.len(),
+            "the default weather wets {wet} of {} cells",
+            f.cels.len()
+        );
     }
 }
