@@ -139,7 +139,9 @@ shaft and a triangle — and it is drawn last, after the sprites and the
 weather. A decal on the road would disappear under the car at exactly the
 moment the car is what you are looking at.
 
-The squash is a constant rather than the real projection, because the arrow
+It is drawn three times wider than it is deep, which is a card laid most of
+the way down towards the floor rather than one standing up facing you. That
+squash is a constant rather than the real projection, because the arrow
 belongs to the screen: it has to read at any pitch, including the ones where
 the road under the car is not on screen at all.
 
