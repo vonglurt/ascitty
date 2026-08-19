@@ -588,7 +588,7 @@ exists for any structure to exceed.
 
 ### D. Verification
 
-222 assertions execute in approximately 0.1 s. The acceptance gate
+279 assertions execute in approximately 0.2 s. The acceptance gate
 additionally rebuilds both targets, regenerates the baked headers, renders a
 host frame, and boots the target program in an emulator to confirm
 non-trivial output. A target program that compiles is not evidence that it
@@ -690,6 +690,82 @@ noise is a visibly incorrect glyph, and one re-sampled per frame crawls. The
 single component worth retaining, soft shadows, is obtainable from the
 horizon sweep without sampling by grading the offset by depth below the line.
 
+### E. A controller defect that was not in the controller
+
+The autopilot's preference for the right-hand lane was measured at between 25
+and 63 per cent of travelling ticks across four cities and did not respond to
+any change in the lane target. Three targets were tried - the middle of the
+right-hand half of the carriageway, the kerbside lane, and one cell past the
+crown - and each was clearly best on some cities and clearly worst on others.
+Raising the cross-track gain to full authority made one city *worse*, 357
+ticks correct against 1,209, which is the signature of a sign inversion
+rather than of an under-tuned gain. The sign conventions were checked by hand
+against all four combinations of axis and direction and were correct.
+
+The defect was in neither the target nor the gains. The lane controller
+regulates against a single lane line and therefore declines to act where
+there is no single line: inside a junction, where both axes are streets. The
+fallback in that case steered at the fare marker directly. On a grid whose
+two arterials are twelve to sixteen cells wide, their crossing is a junction
+box on the order of two hundred cells, and a car inside it was steering at a point
+twenty cells away on the far side of a block, arriving on whatever side of
+whatever street the geometry produced. Steering instead at a point a few
+cells along the already-planned route raised the split to 70-88 per cent and,
+on one city, took completed fares in five minutes from one to eight.  Giving
+the engine an acceleration curve subsequently moved the figures a second time
+- the car spends longer at low speed, where the cross-track term is divided
+by a smaller number - and the gain was raised by half to settle them at 83,
+79, 77 and 81.
+
+The general form is the same as Section X-C. Three lane targets and a gain
+were tuned in the agent when the defect was in the one case the agent
+declines to handle at all. A
+controller that is correct wherever it acts can still be wrong for most of a
+run if the conditions under which it does not act are common and its
+behaviour there is unconsidered.
+
+### F. Input the byte stream could not express
+
+A terminal reports a key going down and nothing at all when it comes up, and
+autorepeats the most recently pressed key only. Two keys held at once is
+therefore not a state the input can represent: pressing the second one stops
+the first from arriving. For a driving mode this excludes accelerating
+through a corner, which is not an edge case but the ordinary way a car is
+driven.
+
+The workaround in place was a decay - a press stayed live for five frames and
+autorepeat renewed it - which addresses the first half of the problem and
+cannot address the second at any setting.
+
+Two changes were made. The controls became analogue axes that wind on while
+held and off when not, which is worth doing on its own: an arcade throttle is
+a thing you lean on. And the terminal is now *asked*, at startup, whether it
+speaks the progressive keyboard protocol, which reports press, repeat and
+release as distinct events; where it does, a held key is held and two are
+two. The handshake is a single round trip and is decidable rather than
+timed: the flags query is followed by a primary device attributes request,
+which every terminal answers, so a terminal that has answered the second
+without answering the first has given a definite no.
+
+Where the answer is no, the decay remains and its window was set from the
+system autorepeat parameters rather than by feel: half a second, because that
+is the delay before the first repeat, and a shorter window is a dip in the
+first half second of every hold. Measured against an emulated terminal at the
+defaults - 500 ms to first repeat, then 33 ms - a quarter-second window read
+43 and 52 mph at the two moments where half a second read 58 and 84.
+
+### G. A stuck check that only knew one kind of stuck
+
+The same autopilot detects being wedged by measuring speed: below half a cell
+per second for half a second, it reverses with opposite lock. A car that has
+climbed a kerb and is grinding along a shop front travels at about one cell
+per second and passes that test indefinitely - measured at 1,000 ticks of a
+3,000-tick run, a third of it, with the speed never once falling far enough
+to trip the check. The remedy is a second predicate over a different
+quantity: a second spent with the car's centre off the carriageway is also
+stuck. Clipping a kerb on the way round a junction lasts a few ticks and is
+not.
+
 ---
 
 ## XI. Limitations
@@ -726,14 +802,18 @@ backlog. Neither the kerb nor the verge reaches the Plus/4: the bake carries
 building heights only, and the target has no terrain array to raise.
 
 An unattended mode driving a vehicle rather than walking is implemented and
-is now what `--demo` runs: the cab takes a randomly chosen fare, plans a
-route over the carriageway, drives to it and stops inside the painted circle,
-at which point the simulation hands over the passenger and issues another.
-Two limitations are noted and both are in the backlog. Its preference for the
-right-hand lane is measured at between 25 and 63 per cent of travelling ticks
-across four cities, which is a preference on three of them and an inversion
-on the fourth; and about 40 per cent of travelling ticks have the car's
-centre on a cell that is not carriageway.
+is now what the program does when it is started and left alone: the cab takes
+a randomly chosen fare, plans a route over the carriageway, drives to it and
+pulls up at the kerb beside the circle, at which point the simulation hands
+over the passenger and issues another. Both of the limitations previously
+recorded here have been closed - see Section X-E - and the figures are now 70
+to 88 per cent of travelling ticks on the correct side of the crown, and 0 to
+2 per cent with the car's centre off the carriageway.
+
+What remains is that the other traffic does not turn. It keeps its lane,
+gives way to what is ahead and to what crosses from its right, and is
+recycled when it falls behind, but it goes only where the street it was put
+down on goes.
 
 ---
 

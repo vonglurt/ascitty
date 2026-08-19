@@ -115,36 +115,56 @@ enough to point it back at the empty sky. It may tilt as far as its aim, and
 one frame further; past that there is nothing new to see, only the same
 ground stretched.
 
-### A terminal cannot tell you a key was released
+### The driver's head
 
-It sends a byte when a key goes *down* and nothing at all when it comes up.
-So movement is edge-triggered: one step per press, repeating at the
-terminal's own autorepeat rate, which is close enough to feel continuous.
+The driving camera's pitch is not fixed. It carries a spring-damped head that
+leans back under power and is thrown forward under braking, and that sits
+still at any constant speed, because what it answers to is acceleration. It
+is worth three rows of horizon under power and four under braking on a
+forty-row frame, and it is underdamped on purpose so that lifting off swings
+the view past level and back. The numbers and the reasoning are in
+[driving.md](driving.md).
 
-Driving needs a held pedal rather than a nudge, so `Pedals` gives each
-control a five-frame decay. Longer than the autorepeat interval and the car
-stutters; much longer and it will not stop.
+### Holding a key down
+
+Every control is an analogue axis rather than a flag: a press winds the level
+on over a fifth of a second, letting go winds it off over an eighth. That is
+what makes a held key a pedal rather than a bit, and it is the same mechanism
+walking, flying and driving — turning, strafing, tilting the head and the
+throttle all read a level.
+
+Whether a key is *down* is the harder half. A terminal sends a byte when a
+key goes down, nothing when it comes up, and autorepeats the most recently
+pressed key only — so two keys at once is not something the byte stream can
+express. Terminals that speak the progressive keyboard protocol report
+releases, this asks yours at startup, and where the answer is yes a held key
+is genuinely held. Where it is no, a press stays live for half a second and
+autorepeat renews it. The handshake and the trade-off are in
+[driving.md](driving.md).
 
 ## The autopilot
 
-`--demo` (or `--tour`), and `\` at any time, hands over to something that
-reads the city and drives itself. Any movement key takes it back off — there
-is no mode to leave, you just start driving.
+It is on when the program starts, and `\` at any time hands it back. Any
+movement key takes it off again — there is no mode to leave, you just start
+driving. `--demo` and `--tour` ask for it explicitly, which is what it does
+anyway; `--play` is the one that turns it off.
 
-There are two of them, and which you get is what `--demo` means:
+There are two of them, and which you get is which view you are in:
 
 | | what it does | where |
 |---|---|---|
-| `--demo` | the cab takes fares | `cabbie.rs` |
-| `--demo --walk` | the camera walks the streets | `tour.rs` |
+| driving, the default | the cab takes fares | `cabbie.rs` |
+| `--walk` | the camera walks the streets | `tour.rs` |
 
 ### The cabbie
 
 The default, because it is what the thing is for and a camera walking past
 parked cars does not show it. It picks up whatever fare the simulation is
-offering, plans a route over the carriageway, drives it, and stops inside the
-painted circle at the far end — at which point the simulation hands over the
-passenger and issues another, so it runs indefinitely.
+offering, plans a route over the carriageway, drives it, and pulls up at the
+kerb beside the circle at the far end — at which point the simulation hands
+over the passenger and issues another, so it runs indefinitely. The circle
+itself is on the pavement, because that is where the passenger is standing;
+the cab stops beside it and the passenger walks the last step.
 
 Two layers, and the split is the design. `City::drive_route` is a
 breadth-first search over road cells, run **once per fare**: far too
@@ -158,14 +178,30 @@ both. Aiming at a point some cells down the road, which is the obvious way to
 follow one, has no term for lateral offset at all: a car parallel to its lane
 but a lane and a half wide of it reports almost no error and stays there.
 
-Two things about it do not work well yet and are in the backlog: its
-preference for the right-hand lane measures between 25 and 63 per cent across
-four cities, and about 40 per cent of travelling ticks have the car's centre
-on a cell that is not carriageway.
+Both of those were measured for a long time and both were poor: the
+right-hand lane about half the time, and a third of travelling ticks with the
+car's centre off the carriageway. The fix was not in the lane target, which
+is where the effort went, but in **what the car aims at when there is no lane
+to hold**. Inside a junction — and the crossing of two arterials is fourteen
+cells of junction — the controller had nothing to say, and the fallback
+steered at the marker, so every junction was a stretch of driving at a point
+on the far side of a block. Aiming a few cells up the route instead took the
+lane split to 70–88 per cent, and the same change took one city from one fare
+in five minutes to eight. Giving the engine an acceleration curve moved the
+figures again — a car that takes a second and three quarters to get back up
+to speed spends longer at the speeds where the cross-track term is divided by
+a smaller number — and raising that gain by half settled them at 83, 79, 77
+and 81.
+
+The other half of it is a second stuck check. Wedged is not always
+*stopped*: a car that has climbed a kerb and is grinding along a shop front
+at a cell a second passes every speed test there is, and can do it for a
+minute. Being off the carriageway for more than a second now backs the car
+out the same way a stall does.
 
 ### The walking tour
 
-`--demo --walk`. It is in
+`--walk`, which is also how you get out of the cab. It is in
 [`crates/ascitty-core/src/tour.rs`](../crates/ascitty-core/src/tour.rs), and
 it is not a scripted path: a path baked for one city is wrong for every
 other seed. This one probes ahead, turns at junctions, keeps to the middle of

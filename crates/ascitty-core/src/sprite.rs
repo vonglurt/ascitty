@@ -204,7 +204,6 @@ const METER_ART: [&str; 8] = [
     "  ==    ",
 ];
 
-#[rustfmt::skip]
 /// A boxy four-wheel-drive, seen from the side: upright glass, no overhang
 /// worth speaking of, wheels at the corners.
 #[rustfmt::skip]

@@ -17,38 +17,52 @@
 //! this grid is full of U-shaped blocks - a park, a plaza and a tower with a
 //! service road round three sides all read as one.
 //!
-//! The steering is then a pure function of the plan and the car's state:
-//! find where on the route the car is, look a few cells further along, aim
-//! at that point, and convert the bearing error into a wheel angle.  No
-//! search, no memory, one pass over a short window of the route.
+//! The steering is then a pure function of the plan and the car's state.
+//! There are two of them, for two different problems, and knowing which is
+//! in charge is most of understanding this file:
+//!
+//! - **On a street, hold the lane.**  A lane is a statement about where the
+//!   car is *and* which way it is pointing, so the controller regulates
+//!   both.  Aiming at a point down the road has no term for lateral offset
+//!   at all: a car parallel to its lane but a lane and a half wide of it
+//!   reports almost no error and stays there.
+//! - **Anywhere else, aim up the route.**  Junctions have no single lane
+//!   line - both axes are streets - so the first controller has nothing to
+//!   say inside one, and the crossing of two arterials is fourteen cells of
+//!   nothing to say.  What it steers at there is the route a few cells
+//!   ahead, and getting *that* wrong was worth more than every lane-target
+//!   experiment put together.
 //!
 //! # Right-hand traffic
 //!
-//! The aim point is not the middle of the road.  It is offset to the right
-//! of the route by a quarter of the carriageway, measured perpendicular to
-//! the direction the route is going at that point, so the taxi runs down the
-//! right-hand lane and meets oncoming traffic on its left.  The offset is
-//! taken from the road's own width, so it is right on an alley and on a
-//! six-lane arterial without a special case for either.
+//! Which side of the road is right is not decided here.  [`crate::road`]
+//! answers it from the road plan, and the traffic reads the same answer, so
+//! the cab and the cars it is driving among cannot disagree about which half
+//! of a street is theirs.
 //!
 //! # Arriving is a separate behaviour from driving
 //!
-//! [`crate::sim::Sim`] hands over the fare when the taxi is inside
-//! [`crate::sim::STOP_RADIUS`] of the marker *and* under
+//! [`crate::sim::Sim`] hands over the fare when the taxi is pulled up at the
+//! marker - see [`crate::sim::Fare::at_stop`] - *and* under
 //! [`crate::sim::STOP_SPEED`].  Both conditions, which is the interesting
 //! part: arriving fast is not arriving.  So the cabbie stops following the
-//! route once the marker is close, aims straight at it, and brakes on a
-//! ramp that reaches walking pace at the edge of the circle.  Braking is
-//! begun from far enough out that the car is already slow when it gets
-//! there, because an arcade car with the handbrake culture this one has
-//! cannot stop in its own length.
+//! route once the stop is close, aims straight at it, and brakes on a ramp
+//! that reaches walking pace at the edge of the circle.  Braking is begun
+//! from far enough out that the car is already slow when it gets there,
+//! because an arcade car with the handbrake culture this one has cannot stop
+//! in its own length.
+//!
+//! What it aims at is the *kerb* beside the marker, not the marker: the
+//! passenger is standing on the pavement, and driving onto the pavement to
+//! collect them is both wrong and slower.
 
 use crate::drive::{Car, Controls};
 use crate::fixed::{self, Fx, ONE};
+use crate::road::{centre, lane};
 use crate::sim::{self, Sim};
 use crate::trig::{self, Ang};
 
-use crate::world::City;
+use crate::world::{City, Kind};
 
 /// How many cells of searching a route may cost before it is given up on.
 ///
@@ -80,14 +94,18 @@ const LOCK_RANGE: i32 = 8;
 ///
 /// Divided by speed in use, so this is the gain at the bottom of the range.
 ///
-/// Doubled when the car stopped being a boat.  The division by speed was
-/// written against a physics where the wheel bought the same yaw at every
-/// speed above a crawl; it now buys less the faster you go (see
-/// [`crate::drive`]), so the same command moves the car a good deal less at
-/// cruising pace and the gain has to make it up.  Measured over four
-/// five-minute runs, at the old gain: 500 ticks on the correct side of the
-/// road against 600 on the wrong one, which is a cab with no opinion.
-const CROSS: Fx = fixed::ratio(1, 1);
+/// Doubled when the car stopped being a boat, and raised again by half when
+/// the engine got a curve.  Both changes are the same change: the division
+/// by speed was written against a physics where the wheel bought the same
+/// yaw at every speed above a crawl, and where the car was at its cruising
+/// speed a quarter of a second after any junction.  It now buys less the
+/// faster you go (see [`crate::drive`]) and takes over a second to get back
+/// up to speed, so the same command moves the car a good deal less and the
+/// gain has to make it up.  Measured over four five-minute runs: at the
+/// original gain, 500 ticks on the correct side of the road against 600 on
+/// the wrong one, which is a cab with no opinion; at two thirds of this
+/// one, 75, 71, 51 and 81 per cent; here, 83, 79, 77 and 81.
+const CROSS: Fx = fixed::ratio(3, 2);
 
 /// The most lock the cross-track term alone may ask for.
 ///
@@ -217,6 +235,8 @@ pub struct Cabbie {
     planned_for: Option<(Fx, Fx)>,
     /// Ticks the car has spent going nowhere, for the stuck check.
     stalled: u32,
+    /// Ticks it has spent off the carriageway, for the other stuck check.
+    beached: u32,
     /// Whether the last tick was spent reversing out of trouble.
     backing: u32,
     /// Which way the wheel is committed while the car is turned right
@@ -241,6 +261,7 @@ impl Cabbie {
             at: 0,
             planned_for: None,
             stalled: 0,
+            beached: 0,
             backing: 0,
             committed: 0,
             wriggle: 1,
@@ -261,7 +282,9 @@ impl Cabbie {
     ///
     /// Call it before [`Sim::step`] and hand the result straight to it.
     pub fn drive(&mut self, city: &City, sim: &Sim, hz: i32) -> Controls {
-        let Some(goal) = sim.target() else {
+        // The kerb beside the marker, not the marker: the passenger is on
+        // the pavement and the cab is not allowed there.
+        let Some(goal) = sim.drive_target() else {
             // No fare and nothing to do: sit still rather than idle forward
             // into whatever is in front.  The sim hails a new one on its
             // next tick, so this lasts one frame.
@@ -290,7 +313,7 @@ impl Cabbie {
             };
         }
 
-        self.unstick(sim, hz);
+        self.unstick(city, sim, hz);
         if self.backing > 0 {
             // Reverse, wheel over, so the nose swings off the wall rather
             // than grinding along it.
@@ -322,8 +345,17 @@ impl Cabbie {
                 (psi, self.hold_lane(psi, t.right_of_lane, taxi.speed()), CRUISE_MAX)
             }
             _ => {
-                let e = bearing_error(taxi, goal.0, goal.1);
-                (e, self.steer_for(e, to_goal), to_goal)
+                let (ax, ay) = self.aim(goal);
+                // The lock band is set by how far away the point being
+                // steered at is, which is what makes this a pursuit rather
+                // than a bearing hold: the same lateral error needs more
+                // lock to correct over three cells than over thirty.  Using
+                // the range to the marker instead was tried and costs both
+                // measurements - the car understeers out of junctions
+                // because the marker is still a long way off.
+                let range = dist(taxi.x, taxi.y, ax, ay);
+                let e = bearing_error(taxi, ax, ay);
+                (e, self.steer_for(e, range), range)
             }
         };
         let _ = range;
@@ -342,6 +374,45 @@ impl Cabbie {
             // rather than as fast.
             handbrake: err.abs() > HARD && vf > CRUISE_MAX,
         }
+    }
+
+    /// Where to aim when there is no lane line to hold.
+    ///
+    /// A few cells up the route, not the marker.  Aiming at the marker is
+    /// the obvious thing and is only right when the two are the same
+    /// direction, which they are not the moment the route has to go round
+    /// anything.  The case that made this unmissable is the crossing of two
+    /// arterials: that junction is fourteen cells square, no cell in it
+    /// belongs to a single street, so the lane controller has nothing to say
+    /// for the two seconds the car is inside it - and the car spent those
+    /// two seconds driving at a marker twenty cells away on the far side of
+    /// a block, arriving at the kerb of a street it had no route down.
+    /// Measured on one city: one fare in five minutes, against eight.
+    ///
+    /// Far enough ahead to be worth steering at, near enough to still be on
+    /// the road: the route is cells, and a point three of them up it is
+    /// about a car's length past the junction exit.
+    fn aim(&self, goal: (Fx, Fx)) -> (Fx, Fx) {
+        if self.route.is_empty() {
+            return goal;
+        }
+        let i = self.at + BASELINE;
+        // Past the end of the route is the goal itself, which is where the
+        // route was going: the last stretch is aimed at the stopping circle
+        // rather than at the cell it is painted in.
+        if i >= self.route.len() {
+            return goal;
+        }
+        // The middle of that cell, and not the middle of the lane it is in.
+        // Aiming at the lane was tried, on the reasoning that a junction is
+        // where a car picks which side of the next street to come out on,
+        // and it is worse: the route through a junction staircases, so the
+        // local heading a lane offset would be taken perpendicular to is as
+        // often across the road as along it, and the aim point jumps a lane
+        // and a half from tick to tick.  On one city it cost five fares out
+        // of six.  The lane is regulated by `hold_lane` a moment later, from
+        // the road under the car, where the heading is not a guess.
+        centre(self.route[i].0, self.route[i].1)
     }
 
     /// Steer to sit on the lane line and point along it.
@@ -557,7 +628,7 @@ impl Cabbie {
     /// into it; and a completed attempt throws the route away, because a
     /// plan made before the car was pointing into a wall is not a plan for
     /// getting out of one.
-    fn unstick(&mut self, sim: &Sim, hz: i32) {
+    fn unstick(&mut self, city: &City, sim: &Sim, hz: i32) {
         let hz = hz.max(1) as u32;
         if self.backing > 0 {
             self.backing -= 1;
@@ -573,8 +644,22 @@ impl Cabbie {
         } else {
             self.stalled = 0;
         }
-        if self.stalled > hz / 2 {
+        // Nor is crawling along a pavement.  Wedged is not always *stopped*:
+        // a car that has climbed a kerb and is grinding down a shop front at
+        // a cell a second passes every speed test there is, and it can do it
+        // for a minute - measured, 1,000 ticks of one run, which is a third
+        // of it, and the speed never once fell far enough to trip the check
+        // above.  Being off the carriageway at all is only worth noticing
+        // after a second or so, because clipping a corner on the way round a
+        // junction is normal and is over in a few ticks.
+        if city.at(fixed::floor(sim.taxi.x), fixed::floor(sim.taxi.y)).kind == Kind::Road {
+            self.beached = 0;
+        } else {
+            self.beached += 1;
+        }
+        if self.stalled > hz / 2 || self.beached > hz {
             self.stalled = 0;
+            self.beached = 0;
             self.backing = hz;
             self.wriggle = -self.wriggle;
         }
@@ -657,88 +742,6 @@ fn pace(vf: Fx, speed: Fx, want: Fx) -> Fx {
     } else {
         0
     }
-}
-
-/// The middle of the right-hand lane, at a cell, for a car travelling
-/// `(rx, ry)`.
-///
-/// Measured from the carriageway rather than from the route.  The obvious
-/// version - take the route cell and step half a cell to the right - is
-/// wrong wherever the route itself is not down the middle of the road, and
-/// a breadth-first search has no reason to prefer the middle of anything:
-/// it returns whichever lane it reached first.  Offsetting from that put the
-/// cab a lane further out than intended and, on a two-cell street, on the
-/// pavement.  Measured: off the carriageway for 1,212 ticks in 3,000.
-///
-/// The road plan knows where the kerbs are - each cell records how far in
-/// from the near kerb it is and how wide the whole carriageway is - so the
-/// centre of the road, and hence the centre of each half of it, is exact.
-///
-/// Which axis to read is decided by the direction of travel: a car heading
-/// north is on one of the north-south columns, and the width that matters is
-/// that column's, not that of the row it happens to be crossing.
-fn lane(city: &City, x: i32, y: i32, (rx, ry): (i32, i32)) -> (Fx, Fx) {
-    let row = city.plan.rows.at(y);
-    let col = city.plan.cols.at(x);
-    // *The road* decides which axis is the length of the street; the route
-    // only decides which way along it the car is going.  Deciding both from
-    // the route does not work, because a route crossing a wide avenue
-    // staircases and its local direction is as often across the road as
-    // along it.
-    let along_x = match (row.class.is_street(), col.class.is_street()) {
-        (true, false) => true,
-        (false, true) => false,
-        // A junction, where both are streets, or neither - there is no
-        // single street axis, so fall back on where the route is heading.
-        _ => rx.abs() > ry.abs(),
-    };
-    let cell = if along_x { row } else { col };
-    let dir = if along_x { rx } else { ry };
-    // Not a road along this axis, or the route is not making progress along
-    // it.  There is no lane to be in; the middle of the cell will do until
-    // the route is going somewhere again.
-    if !cell.class.is_street() || dir == 0 {
-        return centre(x, y);
-    }
-
-    let w = fixed::from_int(cell.width.max(2) as i32);
-    // The low-coordinate kerb of this carriageway, and its crown.
-    let kerb = fixed::from_int(if along_x { y } else { x } - cell.across as i32);
-    let mid = kerb + w / 2;
-
-    // How far past the crown to sit: the first lane on the correct side, and
-    // no further.
-    //
-    // Two other targets were tried and both are worse on this grid.  The
-    // middle of the right-hand *half* is the textbook answer and is three
-    // and a half cells out on a fourteen-cell arterial, which the car cannot
-    // hold through junctions that interrupt every few seconds.  The kerbside
-    // lane is where a taxi belongs and is thirteen cells out on the same
-    // road, so the cab spends most of its life crossing the carriageway to
-    // reach it - measured at 185 ticks on the correct side against 752 on
-    // the wrong one, because a transit counts as being on the wrong side for
-    // every tick of it.
-    //
-    // One cell past the crown is the same target as either of those on a
-    // two-cell street, is reached in a car's length from anywhere on any
-    // street, and is unambiguously the correct side of the road, which is
-    // the whole of what was asked for.
-    let off = ONE.min(w / 4);
-
-    if along_x {
-        // Travelling east, the right-hand side is south - increasing y.
-        let lane = if dir > 0 { mid + off } else { mid - off };
-        (fixed::from_int(x) + fixed::HALF, lane)
-    } else {
-        // Travelling south, the right-hand side is west - decreasing x.
-        let lane = if dir > 0 { mid - off } else { mid + off };
-        (lane, fixed::from_int(y) + fixed::HALF)
-    }
-}
-
-/// The centre of a cell, in world units.
-fn centre(x: i32, y: i32) -> (Fx, Fx) {
-    (fixed::from_int(x) + fixed::HALF, fixed::from_int(y) + fixed::HALF)
 }
 
 /// Straight-line distance between two points.
@@ -914,31 +917,32 @@ mod tests {
         }
     }
 
-    /// How strongly the cab prefers the right-hand lane.
+    /// The cab keeps right.
     ///
-    /// **This does not currently work and the test says so.**  It reports
-    /// the measurement and asserts only that the cab is on a road with a
-    /// side often enough for the figure to mean anything.
+    /// Measured only while travelling, on cells where exactly one axis is a
+    /// street - inside a junction there is no right-hand side to be on - and
+    /// only when the car is moving along the road rather than across it.
     ///
-    /// Measured across four cities the split is about even, and it moves
-    /// unpredictably with the lane target: the middle of the right-hand
-    /// half, the kerbside lane and the first lane past the crown were each
-    /// clearly best on some cities and clearly worst on others, and turning
-    /// the cross-track gain up to full authority made one city *worse* -
-    /// 357 ticks on the correct side against 1,209 - which is the signature
-    /// of a sign that inverts somewhere rather than of a gain that is too
-    /// small.
+    /// It was a coin toss for a long time and the test said so.  What fixed
+    /// it was not the lane target, which is where the effort went: it was
+    /// the *aim point* when there is no lane to hold.  The car fell back to
+    /// steering at the marker, so every junction - and the crossing of two
+    /// arterials is fourteen cells of junction - was a stretch of driving at
+    /// a point on the far side of a block, arriving at whatever lane the
+    /// geometry happened to produce.  Aiming up the route instead, in
+    /// [`Cabbie::aim`], took the split from 68, 55, 79 and 65 per cent to
+    /// 70, 84, 88 and 82.  The engine's acceleration curve then moved them
+    /// again, because a car that takes a second and three quarters to get
+    /// back up to speed spends longer at the speeds where the cross-track
+    /// term is divided by a smaller number, and [`CROSS`] was raised by half
+    /// to settle them at 83, 79, 77 and 81.
     ///
-    /// Ruled out so far: the sign conventions in [`lane`], [`Cabbie::track`]
-    /// and this measurement all agree when checked by hand against all four
-    /// combinations of axis and direction; `across` measures from the
-    /// low-coordinate kerb on every road in every city, which
-    /// `across_is_measured_from_the_low_coordinate_kerb` now asserts; and
-    /// the controller reads the road under the car rather than the road its
-    /// route thinks it is on, which was a genuine bug and fixing it did not
-    /// fix this.
+    /// The bar is three ticks on the right for every two on the wrong side.
+    /// It is deliberately well below the measurement: what is being defended
+    /// is that the car has a side and holds it, and the figure moves by a
+    /// few per cent whenever anything about the driving changes.
     #[test]
-    fn how_strongly_the_cab_prefers_the_right_hand_lane() {
+    fn the_cab_keeps_right() {
         for seed in [1u32, 7, 99, 4242] {
             let r = run(seed, 3_000);
             let total = r.right + r.wrong;
@@ -948,6 +952,12 @@ mod tests {
                 r.right,
                 r.wrong,
                 r.right * 100 / total.max(1)
+            );
+            assert!(
+                r.right * 2 > r.wrong * 3,
+                "seed {seed}: {} ticks on the right against {} on the wrong side",
+                r.right,
+                r.wrong
             );
         }
     }
@@ -1016,3 +1026,5 @@ mod tests {
         }
     }
 }
+
+

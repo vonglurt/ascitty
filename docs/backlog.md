@@ -207,22 +207,25 @@ It would want a third structure — a list of line segments rasterised over
 the grid after the two axes are laid — plus a marking path that can follow
 it, and blocks that come out as triangles.
 
-### The cabbie's lane keeping — **soon**
-Now 68, 55, 79 and 65 per cent of travelling ticks on the correct side of the
-crown across the four test cities, up from 52, 63, 55 and 25. Most of that
-came from the car rather than from the controller: when the physics stopped
-letting the wheel buy the same yaw at any speed, the cross-track gain had to
-double to move the car the same distance, and the inverted city that used to
-sit at 25 per cent - and that got *worse* when the gain was turned up, which
-looked like a sign error somewhere - came right along with the rest.
+### The cabbie's lane keeping — **done**
+Now 83, 79, 77 and 81 per cent of travelling ticks on the correct side of the
+crown across the four test cities, up from 68, 55, 79 and 65 - and from 52,
+63, 55 and 25 before that.
 
-What is left is the two-cell street against the fourteen-cell arterial. Three
-lane targets were tried - the middle of the right-hand half, the kerbside
-lane, and one cell past the crown - and each was clearly best on some cities
-and clearly worst on others, which suggests one set of gains cannot serve
-both. Scaling them by the width of the carriageway is the obvious next thing.
+The last of it was not in the lane target, which is where every previous
+attempt went. It was in the *fallback*: when there is no single lane line to
+hold - inside a junction, and the crossing of two arterials is fourteen cells
+of junction - the controller steered at the marker, twenty cells away on the
+far side of a block. Aiming a few cells up the planned route instead
+(`Cabbie::aim`) fixed both measurements at once and took one city from one
+completed fare in five minutes to eight.
 
-Ruled out along the way: the sign conventions in `cabbie::lane`,
+Three lane targets were tried along the way - the middle of the right-hand
+half, the kerbside lane, and one cell past the crown - and the last is what
+is in `road::lane` now. Scaling the gains by the width of the carriageway is
+still the obvious next thing if this needs to go further.
+
+Ruled out along the way: the sign conventions in `road::lane`,
 `Cabbie::track` and the measurement agree when checked by hand against all
 four combinations of axis and direction; `across` measures from the
 low-coordinate kerb on every road in every city, which is now asserted; and
@@ -243,12 +246,45 @@ car from ending up anywhere its centre can reach. Giving `integrate` the hull
 and resolving against it would close that and the wall-wedging in
 `Cabbie::unstick` at the same time.
 
-### Traffic that follows the road — **soon**
-Traffic currently drives in a straight line at a constant throttle and is
-recycled when it falls behind. It is scenery with momentum. Giving it lane
-following and a stop at signals would make the streets read as busy rather
-than as populated. Deliberately *not* a priority: the current behaviour makes
-traffic easy to hit, and hitting it is the point.
+What has been added in the meantime is a second stuck check. Wedged is not
+always *stopped*: a car that has climbed a kerb and is grinding along a shop
+front at a cell a second passes every speed test there is, and was measured
+doing it for 1,000 ticks of one run. A second off the carriageway now backs
+the car out the way a stall does.
+
+### Traffic that follows the road — **mostly done**
+Traffic keeps the right-hand lane, is put down facing the way that side of
+the road goes, eases off for whatever is ahead in its own corridor, gives way
+to anything crossing from its right, and collides with itself as well as with
+you. Measured: 98 to 100 per cent of car-ticks on the correct side of the
+crown, and deep overlaps between cars down from 366 car-ticks to 33 over the
+same 1,800.
+
+What is left is *routing*: a car still goes wherever the street it is on
+goes, so it never turns a corner - it is recycled when it falls behind
+instead. Turning at junctions, and stopping at the signals that are already
+modelled as street furniture, is the rest of this. Neither should be allowed
+to make traffic hard to hit, which is the reason the earlier version was
+scenery with momentum on purpose.
+
+### A gear indicator, and a reason to have gears — **maybe**
+The engine now has a torque curve, which is the half of a gearbox that
+changes how the car drives. The other half - a shift, a moment of no drive,
+and a curve that starts again - would be audible on a machine with sound and
+is invisible on one without. What it would buy here is a number on the status
+line and a reason for the top of the range to feel earned. Not obviously
+worth it; written down because the curve makes it possible for the first
+time.
+
+### Keys the terminal cannot send — **later**
+Two keys at once now works on terminals that speak the progressive keyboard
+protocol, and is approximated with a half-second grace on the rest. What no
+terminal will report is a *bare modifier*: Shift on its own sends nothing at
+all, which is why `z` descends rather than Shift. Nor is there any analogue
+axis - a key is down or it is not - so the ramp in `Axis` is standing in for
+a pedal's travel. A gamepad over a socket would give both, and would be a
+dependency and a daemon for a program whose whole point is that it runs in a
+terminal.
 
 ### Pedestrians that react — **soon**
 They walk in a straight line and ignore everything, including buildings and

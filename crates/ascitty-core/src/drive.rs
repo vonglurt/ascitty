@@ -41,8 +41,30 @@ use crate::world::City;
 /// real rate and scales, but the constants below are quoted at this one.
 pub const HZ: i32 = 60;
 
-/// Engine force, in units per second per second.
-const ACCEL: Fx = fixed::ratio(26, 1);
+/// Engine force at a standstill, in units per second per second.
+///
+/// It is not the force at every speed - see [`ENGINE_CEILING`].  A constant
+/// force is what this was, and it is why the car had no acceleration to
+/// speak of: at twenty-six units per second per second against a top speed
+/// of seven, the car was at the clamp in a quarter of a second, from any
+/// speed, in any gear it does not have.  There was nothing to hold the
+/// throttle *down* for, which is most of what driving one of these is.
+const ACCEL: Fx = fixed::ratio(10, 1);
+/// The speed at which the engine has nothing left to give, in units per
+/// second.
+///
+/// Force falls off linearly from [`ACCEL`] at a standstill to nothing here,
+/// which is the shape of a torque curve through a gearbox and, more to the
+/// point, the shape that makes speed something the car *builds*.  The
+/// approach is exponential, so what this really sets is a time constant:
+/// half of top speed in about half a second, top speed itself in about one
+/// and three quarters.
+///
+/// A quarter above [`VMAX`] rather than equal to it, because the engine has
+/// to out-pull the drag at the top of the range or the car never reaches
+/// the speed it is supposed to have.  With the ceiling at the top speed,
+/// force and drag balance a little under it and the clamp never binds.
+const ENGINE_CEILING: Fx = fixed::ratio(35, 4);
 /// Braking is stronger than the engine, as it is on every car.
 const BRAKE: Fx = fixed::ratio(44, 1);
 /// Reverse is weak, as it is on every car.
@@ -244,7 +266,12 @@ impl Car {
         // engage reverse - otherwise the car is undriveable.
         let t = c.throttle;
         let force = if t > 0 {
-            fixed::mul(t, ACCEL)
+            // The engine, on its curve: everything it has from a standstill,
+            // tapering to nothing at `ENGINE_CEILING`.  Never negative -
+            // past the ceiling the engine simply stops pushing, it does not
+            // start braking.
+            let left = (ONE - fixed::div(vf.max(0), ENGINE_CEILING)).max(0);
+            fixed::mul(fixed::mul(t, ACCEL), left)
         } else if vf > fixed::ratio(1, 4) {
             fixed::mul(t, BRAKE)
         } else {
@@ -563,6 +590,45 @@ mod tests {
         assert!(car.speed() > ONE, "half a second flat out and it is not moving");
     }
 
+    /// Speed is something the car builds, and the build tapers.
+    ///
+    /// Measured from a standstill on open ground, flat out: 47 mph after a
+    /// quarter of a second, 82 after half, 125 after a second, and the full
+    /// 154 at one and three quarters.  The version this replaced was at the
+    /// clamp in 0.27 s and every one of those figures was 154.
+    #[test]
+    fn the_engine_has_a_curve_rather_than_a_switch() {
+        let city = open_ground();
+        // Quarter-second samples of the speed, from a standstill, flat out.
+        let mut car = Car::new(CarKind::Taxi, fixed::HALF, fixed::HALF, 0, 7);
+        let mut speeds = Vec::new();
+        for _ in 0..8 {
+            for _ in 0..HZ / 4 {
+                car.step(&Controls { throttle: ONE, ..Default::default() }, &city, HZ);
+            }
+            speeds.push(car.speed());
+        }
+        // The first quarter second is worth more than the fourth, which is
+        // the whole of what a curve means.
+        let first = speeds[0];
+        let fourth = speeds[3] - speeds[2];
+        // Two and a half to one; measured at 2.16 units against 0.83, which
+        // is 2.6.  The bar is under the measurement because what is being
+        // defended is that the curve exists, not its exact shape.
+        assert!(
+            first * 2 > fourth * 5,
+            "no taper: {} in the first quarter second against {} in the fourth",
+            fixed::to_f32(first),
+            fixed::to_f32(fourth)
+        );
+        // And it still gets there: full speed within two seconds.
+        assert!(
+            speeds[7] >= VMAX - fixed::ratio(1, 20),
+            "two seconds flat out and it is only doing {}",
+            fixed::to_f32(speeds[7])
+        );
+    }
+
     #[test]
     fn it_does_not_exceed_its_top_speed() {
         let (city, mut car) = on_the_road();
@@ -761,3 +827,4 @@ mod tests {
         assert!(collide(&mut a, &mut b, &ground).is_none(), "the same collision fired twice");
     }
 }
+

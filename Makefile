@@ -55,8 +55,8 @@ help:
 	@echo 'make host    the terminal build'
 	@echo 'make prg     the Plus/4 build'
 	@echo 'make disk    the Plus/4 build, on a .d64'
-	@echo 'make run     play it in this terminal'
-	@echo 'make demo    watch the cab take fares on its own'
+	@echo 'make run     play it in this terminal - the cab drives until you do'
+	@echo 'make demo    the same thing; it is what run does'
 	@echo 'make walk    watch the camera walk the streets instead'
 	@echo 'make cast    record the walk to build/tour.cast (asciinema)'
 	@echo 'make gif     record the drive to docs/media/demo.gif'
@@ -77,11 +77,14 @@ $(HOST): $(shell find crates -name '*.rs' 2>/dev/null) Cargo.toml
 
 $(BAKE): $(HOST)
 
+# The game: behind the taxi, on the clock, with the cab taking fares on its
+# own until you touch a key.  No flags - the attract mode and the game are
+# the same program in the same mode, and which one you are watching depends
+# only on whether your hands are on the keyboard.
 run: $(HOST)
 	@$(HOST)
 
-# The attract mode: the camera walks the streets and looks around on its own.
-# Any movement key takes it over; backslash hands it back.
+# The same thing, named for what it does when you leave it alone.
 demo: $(HOST)
 	@$(HOST) --demo
 
@@ -179,12 +182,12 @@ check: test $(PRG)
 
 shot: $(HOST) $(PRG)
 	@mkdir -p docs/media
-	@$(HOST) --shot 1   --size 150x44 --mode ascii   --rain 0 > docs/media/walk-ascii.txt
-	@$(HOST) --shot 1   --size 150x44 --mode unicode --rain 3 > docs/media/walk-blocks.txt
+	@$(HOST) --shot 1   --size 150x44 --mode ascii   --rain 0 --walk > docs/media/walk-ascii.txt
+	@$(HOST) --shot 1   --size 150x44 --mode unicode --rain 3 --walk > docs/media/walk-blocks.txt
 	@$(HOST) --shot 200 --size 150x44 --mode ascii --drive     > docs/media/drive-ascii.txt
 	@$(HOST) --shot 1   --size 150x44 --mode unicode --copter  > docs/media/copter-blocks.txt
 	@$(HOST) --shot 520 --size 140x40 --seed 99 --tour --walk   --png docs/media/street.png
-	@$(HOST) --shot 600 --size 140x40 --seed 99 --demo --drive  --png docs/media/drive.png
+	@$(HOST) --shot 750 --size 140x40 --seed 99 --demo --drive  --png docs/media/drive.png
 	@$(HOST) --shot 1   --size 140x40 --seed 99 --copter --haze 1 --rain 0 \
 		--png docs/media/copter.png
 	@$(TOOLS)/strip.sh > docs/media/tour-strip.txt

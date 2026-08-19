@@ -66,11 +66,14 @@ lives in says why:
 | Mapping | [`zone`](../crates/ascitty-core/src/zone.rs) | what this ground is *for* |
 | Elevation | [`elevation`](../crates/ascitty-core/src/elevation.rs) | how high the ground is and what stands on it |
 | Walking | [`walk`](../crates/ascitty-core/src/walk.rs) | where a person on foot may be, and how they get about |
+| Driving | [`road`](../crates/ascitty-core/src/road.rs) | which half of the carriageway a car belongs on, and which way it goes |
 
 ### [`driving.md`](driving.md)
 The arcade physics: the five properties that are modelled, the three that
 deliberately are not, the update ordering that produces the drift, and the
-grip curve that keeps it to the top of the speed range.
+grip curve that keeps it to the top of the speed range. Then the traffic -
+which side of the road it drives on and how it gives way - and where a fare
+stands, which is the pavement and never the road.
 
 ### [`plus4.md`](plus4.md)
 The Commodore Plus/4 build. What the machine gives you, what it takes away,

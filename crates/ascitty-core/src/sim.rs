@@ -7,8 +7,15 @@
 //! - **Everything else on the pavement is not.**  Lamp posts, mailboxes,
 //!   hydrants, meters and signals go over when you hit them, take a
 //!   velocity and a lean, and stay down.  None of it stops the car.
-//! - **Traffic is skittles.**  Other cars take a full impulse exchange and
-//!   go spinning.  A bus does not.
+//! - **Traffic is skittles, but it is not scenery.**  Other cars take a full
+//!   impulse exchange and go spinning; a bus does not.  Between shunts they
+//!   keep the right-hand lane, ease off for what is in front of them, give
+//!   way to anything crossing from their right, and collide with each other
+//!   as well as with you - see [`crate::road`] for the lane rules, which the
+//!   autopilot reads from the same place.
+//! - **People are not on the road.**  A fare waits on the pavement, in a
+//!   plaza or in a park, and the circle is painted where they stand.  The
+//!   cab pulls up at the kerb beside it; the last step is theirs.
 //! - **The car never breaks.**  Damage accumulates and shows, and that is
 //!   all it does.  A run that ends because the vehicle failed is a run that
 //!   stopped being about pace.
@@ -33,6 +40,7 @@ use crate::frame::Frame;
 use crate::palette;
 use crate::raycast::Proj;
 use crate::rng::{hash3, Rng};
+use crate::road;
 use crate::sprite::{Billboard, Stamp};
 use crate::trig::{self, Ang};
 use crate::walk::Foot;
@@ -65,6 +73,51 @@ pub const PICKUP_TIME: i32 = 12;
 pub const STOP_RADIUS: Fx = fixed::ratio(3, 4);
 /// Above this speed the passenger will not get in or out.
 pub const STOP_SPEED: Fx = fixed::ratio(3, 2);
+/// How near the marker the cab has to be to pick up or set down.
+///
+/// Wider than [`STOP_RADIUS`], because the passenger stands on the pavement
+/// and the cab may not.  A car pulled up at the kerb is one cell from the
+/// person on it, and it may be up to a stopping circle's worth further out
+/// than that before it is not at the kerb any more, so the reach is the two
+/// added together.  The last step is the passenger's.
+pub const REACH: Fx = fixed::ratio(7, 4);
+
+/// How far ahead a driver in the traffic looks for a reason to lift off.
+///
+/// Six cells is about thirty-five metres, which at the speeds the traffic
+/// keeps is a couple of seconds - a following distance rather than a
+/// braking distance, which is the point: the car should be easing off long
+/// before it needs the brake.
+const LOOK: Fx = fixed::ratio(6, 1);
+/// Half the width of the corridor ahead that a driver treats as its own.
+///
+/// Just under a cell, so a car in the next lane is not something to brake
+/// for and a car in this one is.
+const CORRIDOR: Fx = fixed::ratio(9, 10);
+/// How far out a driver looks for something crossing its path from the
+/// right, which is the one that has priority.
+const JUNCTION: Fx = fixed::ratio(9, 2);
+/// Slower than this and a car is stopped rather than creeping.
+const ROLLING: Fx = fixed::ratio(1, 4);
+/// How much either side of the speed it wants a driver will tolerate before
+/// touching a pedal.  Without a dead band the throttle chatters between full
+/// and full brake every tick and the traffic bucks down the street.
+const SLACK: Fx = fixed::ratio(1, 5);
+/// The throttle a driver in the traffic uses.  Not full: this is a car going
+/// somewhere, not a car being raced.
+const CRUISE_THROTTLE: Fx = fixed::ratio(2, 5);
+/// How much of the city the coin trail's route search may look at.  The same
+/// figure the autopilot plans with, and for the same reason: a fare across
+/// the map is a long route and a search that gives up produces no trail.
+const COIN_BUDGET: usize = 40_000;
+/// The bearing error, in angle units, at which a traffic driver has the
+/// wheel on full lock.  A tenth of a turn: these cars are correcting a lane,
+/// not taking a hairpin.
+const LANE_LOCK: i32 = 6_500;
+/// How much lock the cross-track term may ask for on its own.  Bounded, so
+/// that a car knocked a long way off line rejoins its lane at an angle
+/// rather than turning across the road to get back to it.
+const LANE_CROSS: Fx = fixed::ratio(1, 2);
 
 /// A piece of street furniture.
 #[derive(Clone, Copy, Debug)]
@@ -108,18 +161,54 @@ pub struct Coin {
 }
 
 /// The current job.
+///
+/// Four places, not two.  The passenger waits on the pavement and is set
+/// down on one - that is where the marker and the circle go - and a car
+/// cannot be either of those places, so each end also carries the kerb the
+/// cab actually pulls up at.  Keeping both means the picture and the driving
+/// can each be right about a different thing: the circle is where somebody
+/// is standing, the stop is where a car fits.
 #[derive(Clone, Debug)]
 pub struct Fare {
-    /// Where the passenger is waiting.
+    /// Where the passenger is waiting, on foot.
     pub from: (Fx, Fx),
-    /// Where they are going.
+    /// Where they are going, on foot.
     pub to: (Fx, Fx),
+    /// The kerb beside `from`.
+    pub from_stop: (Fx, Fx),
+    /// The kerb beside `to`.
+    pub to_stop: (Fx, Fx),
     /// Whether they are in the car.
     pub aboard: bool,
     /// The coins between here and there.
     pub coins: Vec<Coin>,
     /// What the fare is worth, in whole units of money.
     pub value: u32,
+}
+
+impl Fare {
+    /// Where the passenger is - the end of the job that is drawn.
+    pub fn marker(&self) -> (Fx, Fx) {
+        if self.aboard { self.to } else { self.from }
+    }
+
+    /// Where a car stops to reach them.
+    pub fn stop(&self) -> (Fx, Fx) {
+        if self.aboard { self.to_stop } else { self.from_stop }
+    }
+
+    /// Whether a car is pulled up close enough to hand the passenger over.
+    ///
+    /// Either near the person or in the stopping circle at the kerb: the
+    /// first is what a player aims at, the second is what the autopilot
+    /// drives to, and a rule that only accepted one of them would fail
+    /// whichever of the two is at the wheel.
+    pub fn at_stop(&self, x: Fx, y: Fx) -> bool {
+        let (mx, my) = self.marker();
+        let (sx, sy) = self.stop();
+        (fixed::abs(mx - x) < REACH && fixed::abs(my - y) < REACH)
+            || (fixed::abs(sx - x) < STOP_RADIUS && fixed::abs(sy - y) < STOP_RADIUS)
+    }
 }
 
 /// Something that just happened and that the front end may want to say out
@@ -151,6 +240,9 @@ pub struct Sim {
     pub traffic: Vec<Car>,
     /// Steering for each of them.
     traffic_ctl: Vec<Controls>,
+    /// How fast each of them would like to be going with a clear road.
+    /// Varied per car, so a street is not a convoy at one speed.
+    traffic_cruise: Vec<Fx>,
     /// The street furniture.
     pub props: Vec<Prop>,
     /// The pedestrians.
@@ -182,6 +274,7 @@ impl Sim {
             taxi: Car::new(CarKind::Taxi, start.x, start.y, 0, palette::H_YELLOW),
             traffic: Vec::with_capacity(TRAFFIC),
             traffic_ctl: vec![Controls::default(); TRAFFIC],
+            traffic_cruise: vec![0; TRAFFIC],
             props: Vec::new(),
             peds: Vec::with_capacity(PEDS),
             fare: None,
@@ -195,9 +288,15 @@ impl Sim {
             boards: Vec::new(),
         };
         sim.furnish(city);
-        for _ in 0..TRAFFIC {
-            let c = sim.spawn_car(city);
+        // On a road before anything else happens.  The camera spawns on the
+        // pavement now - that is where a person stands - and everything
+        // below is placed relative to the cab, so a cab left on the paving
+        // would seed the traffic and the fare off the road as well.
+        sim.park_near(city, fixed::floor(start.x), fixed::floor(start.y));
+        for i in 0..TRAFFIC {
+            let (c, cruise) = sim.spawn_car(city);
             sim.traffic.push(c);
+            sim.traffic_cruise[i] = cruise;
         }
         for _ in 0..PEDS {
             let p = sim.spawn_ped(city);
@@ -308,7 +407,86 @@ impl Sim {
         None
     }
 
-    fn spawn_car(&mut self, city: &City) -> Car {
+    /// A carriageway cell near the taxi that has a side of the road to be
+    /// on, and the direction the traffic on that side is going.
+    ///
+    /// Junctions, alleys and the middle cell of an odd-width avenue all have
+    /// no answer - see [`road::flow`] - and a car put down on one of them
+    /// has to guess which way to face, which is what a street full of cars
+    /// driving at each other is made of.
+    fn lane_near(&mut self, city: &City, min: i32, max: i32) -> Option<((i32, i32), (i32, i32))> {
+        for _ in 0..24 {
+            let (x, y) = self.road_near(city, min, max)?;
+            if city.plan.is_junction(x, y) || !city.drivable(x, y) {
+                continue;
+            }
+            if let Some(dir) = road::flow(city, x, y) {
+                return Some(((x, y), dir));
+            }
+        }
+        None
+    }
+
+    /// A place on foot near the taxi where somebody could be standing, and
+    /// the kerb a cab pulls up at to reach them.
+    ///
+    /// The pedestrian network, so it is pavement, plaza or park and never
+    /// the carriageway - a passenger waits *beside* the road, and a marker
+    /// painted in the middle of an avenue asks the player to park in the
+    /// traffic.  Crossings are on the walking network too and are excluded
+    /// on purpose: they are road.
+    ///
+    /// The kerb comes back with it because a car cannot go where the marker
+    /// is.  Two cells of reach, which covers a passenger a step back from
+    /// the kerb without allowing one in the middle of a park a block away
+    /// from any road.
+    fn kerb_near(
+        &mut self,
+        city: &City,
+        min: i32,
+        max: i32,
+    ) -> Option<((i32, i32), (i32, i32))> {
+        let (tx, ty) = (fixed::floor(self.taxi.x), fixed::floor(self.taxi.y));
+        for _ in 0..400 {
+            let r = self.rng.range(min, max);
+            let a = self.rng.below(65536) as Ang;
+            let x = tx + fixed::floor(fixed::mul(trig::cos(a), fixed::from_int(r)));
+            let y = ty + fixed::floor(fixed::mul(trig::sin(a), fixed::from_int(r)));
+            if x < 1 || y < 1 || x >= SIZE as i32 - 1 || y >= SIZE as i32 - 1 {
+                continue;
+            }
+            // Snap to the nearest place a person could stand rather than
+            // insisting the dart landed on one: a random point in a city is
+            // usually inside a building, and 400 darts that each have to hit
+            // a pavement outright do miss - measured, often enough that the
+            // fallback below was placing dropoffs in the middle of avenues.
+            let Some((px, py)) = city.walk.nearest(x, y, 6) else { continue };
+            // On the walking network *and* off the carriageway.  The two are
+            // not the same test: an alley is road with no pavement beside
+            // it, so people walk down the middle of one and it is marked
+            // walkable - which makes it exactly the wrong place to stand
+            // waiting for a cab.
+            if city.walk.at(px, py) != Foot::Path || city.at(px, py).kind == Kind::Road {
+                continue;
+            }
+            if let Some(stop) = kerb_beside(city, px, py) {
+                return Some(((px, py), stop));
+            }
+        }
+        None
+    }
+
+    /// Put a car down in the traffic, facing the way that side of the road
+    /// goes.
+    ///
+    /// The direction comes from the lane rather than from a coin.  A car
+    /// used to be dropped on a road cell and pointed along it either way,
+    /// so half the traffic on any given side of the paint was oncoming, two
+    /// cars a lane apart drove head-on at each other, and there was no
+    /// stream for anyone - the player included - to join.  Reading the side
+    /// of the crown first and taking the heading from that is the whole
+    /// difference between a road and a car park with lines on it.
+    fn spawn_car(&mut self, city: &City) -> (Car, Fx) {
         const HUES: [u8; 6] = [
             palette::H_WHITE,
             palette::H_RED,
@@ -317,36 +495,28 @@ impl Sim {
             palette::H_ORANGE,
             palette::H_PURPLE,
         ];
-        // If no road turned up, put the car on top of the taxi rather than
+        let hue = HUES[self.rng.below(6) as usize];
+        let kind = if self.rng.chance(1, 8) { CarKind::Bus } else { CarKind::Traffic };
+        // A cruising speed per car, so the traffic has to overtake and give
+        // way to itself rather than moving as one block.
+        let cruise = fixed::ratio(self.rng.range(18, 32), 10);
+        // If no lane turned up, put the car on top of the taxi rather than
         // at the origin: it will be recycled on the next tick, whereas a
         // fallback in the corner of the map is a car that is instantly and
         // permanently a straggler.
-        let (x, y) = self.road_near(city, 8, RECYCLE).unwrap_or((
-            fixed::floor(self.taxi.x),
-            fixed::floor(self.taxi.y),
-        ));
-        let hue = HUES[self.rng.below(6) as usize];
-        let kind = if self.rng.chance(1, 8) { CarKind::Bus } else { CarKind::Traffic };
-        // Traffic drives along whichever axis its road runs on.
-        let along_x = city.at(x + 1, y).kind == Kind::Road && city.at(x - 1, y).kind == Kind::Road;
-        let yaw = if along_x {
-            if self.rng.chance(1, 2) { 0 } else { trig::HALF }
-        } else if self.rng.chance(1, 2) {
-            trig::QUARTER
-        } else {
-            trig::QUARTER.wrapping_add(trig::HALF)
+        let Some(((x, y), dir)) = self.lane_near(city, 8, RECYCLE) else {
+            let c = Car::new(kind, self.taxi.x, self.taxi.y, self.taxi.yaw, hue);
+            return (c, cruise);
         };
-        let mut c = Car::new(
-            kind,
-            fixed::from_int(x) + fixed::HALF,
-            fixed::from_int(y) + fixed::HALF,
-            yaw,
-            hue,
-        );
-        let cruise = fixed::ratio(self.rng.range(15, 30), 10);
+        let yaw = road::heading(dir.0, dir.1);
+        // On the lane line, not merely on the cell: a car that starts
+        // straddling the paint spends its first second steering back onto
+        // its own side, in front of whoever is behind it.
+        let (lx, ly) = road::lane(city, x, y, dir);
+        let mut c = Car::new(kind, lx, ly, yaw, hue);
         c.vx = fixed::mul(trig::cos(yaw), cruise);
         c.vy = fixed::mul(trig::sin(yaw), cruise);
-        c
+        (c, cruise)
     }
 
     /// Somewhere a person could plausibly be walking to, near the taxi.
@@ -433,28 +603,68 @@ impl Sim {
             }
         }
         let Some((px, py, _)) = best else { return };
-        self.taxi.x = fixed::from_int(px) + fixed::HALF;
-        self.taxi.y = fixed::from_int(py) + fixed::HALF;
         self.taxi.vx = 0;
         self.taxi.vy = 0;
         self.taxi.spin = 0;
-        // Point it down the road it is parked on.
-        self.taxi.yaw = if city.plan.cols.at(px).class.is_street() {
-            trig::QUARTER
-        } else {
-            0
-        };
+        // Facing the way this side of the road goes, and sitting in its
+        // lane.  A cab parked against the flow is a cab whose first move is
+        // a U-turn, and the shift now starts with the autopilot driving:
+        // whatever the car is pointing at is the first thing anybody sees.
+        match road::flow(city, px, py) {
+            Some(dir) => {
+                let (lx, ly) = road::lane(city, px, py, dir);
+                self.taxi.x = lx;
+                self.taxi.y = ly;
+                self.taxi.yaw = road::heading(dir.0, dir.1);
+            }
+            None => {
+                self.taxi.x = fixed::from_int(px) + fixed::HALF;
+                self.taxi.y = fixed::from_int(py) + fixed::HALF;
+                self.taxi.yaw = if city.plan.cols.at(px).class.is_street() {
+                    trig::QUARTER
+                } else {
+                    0
+                };
+            }
+        }
     }
 
     /// Find a new fare and string coins along the way to it.
+    ///
+    /// Both ends are on the pavement - or a plaza, or a park - and never on
+    /// the carriageway.  A marker in the middle of the road asks the player
+    /// to park in the traffic to earn it, and asks the autopilot to stop
+    /// dead on an avenue, which is where most of a shift used to be spent
+    /// being rear-ended.  Somebody hailing a cab stands at the kerb.
+    ///
+    /// The kerb beside each end comes back with it, because that is where a
+    /// car can actually be; the coins are strung between those two, since
+    /// they are collected by driving over them.
     pub fn hail(&mut self, city: &City) {
-        let Some(from) = self.road_near(city, 4, 14) else { return };
-        let Some(to) = self.road_near(city, 18, RECYCLE) else { return };
-        let coins = coin_trail(city, from, to);
+        let (from, from_stop) = match self.kerb_near(city, 4, 14) {
+            Some(v) => v,
+            // Nowhere to stand within reach: rather than leave the shift
+            // with no job at all, take any road cell.  The next tick tries
+            // again from wherever the cab has got to.
+            None => match self.road_near(city, 4, 14) {
+                Some(c) => (c, c),
+                None => return,
+            },
+        };
+        let (to, to_stop) = match self.kerb_near(city, 18, RECYCLE) {
+            Some(v) => v,
+            None => match self.road_near(city, 18, RECYCLE) {
+                Some(c) => (c, c),
+                None => return,
+            },
+        };
+        let coins = coin_trail(city, from_stop, to_stop);
         let dist = (from.0 - to.0).abs() + (from.1 - to.1).abs();
         self.fare = Some(Fare {
-            from: (fixed::from_int(from.0) + fixed::HALF, fixed::from_int(from.1) + fixed::HALF),
-            to: (fixed::from_int(to.0) + fixed::HALF, fixed::from_int(to.1) + fixed::HALF),
+            from: road::centre(from.0, from.1),
+            to: road::centre(to.0, to.1),
+            from_stop: road::centre(from_stop.0, from_stop.1),
+            to_stop: road::centre(to_stop.0, to_stop.1),
             aboard: false,
             coins,
             value: (dist as u32) * 3 + 10,
@@ -489,20 +699,27 @@ impl Sim {
         }
     }
 
+    /// Drive the traffic, and let it bump into itself.
+    ///
+    /// Each car is given the same three controls the player gets, worked out
+    /// from what is in front of it, and then everything is collided against
+    /// everything else.  It is not a route - the traffic still goes
+    /// wherever the street it is on goes - but it keeps its lane and it
+    /// lifts off for what is ahead, which is the difference between traffic
+    /// and a hazard that happens to be car-shaped.
     fn step_traffic(&mut self, city: &City, hz: i32, out: &mut Vec<Event>) {
         for i in 0..self.traffic.len() {
             // Recycle anything that has fallen too far behind.
             let far = fixed::abs(self.traffic[i].x - self.taxi.x)
                 + fixed::abs(self.traffic[i].y - self.taxi.y);
             if far > fixed::from_int(RECYCLE + 12) {
-                self.traffic[i] = self.spawn_car(city);
+                let (c, cruise) = self.spawn_car(city);
+                self.traffic[i] = c;
+                self.traffic_cruise[i] = cruise;
                 continue;
             }
-            // Traffic drives at a steady throttle and does not steer.  It is
-            // scenery with momentum, and giving it a route would only make
-            // it harder to hit.
-            self.traffic_ctl[i].throttle = fixed::ratio(2, 5);
-            let ctl = self.traffic_ctl[i];
+            let ctl = self.traffic_controls(city, i);
+            self.traffic_ctl[i] = ctl;
             self.traffic[i].step(&ctl, city, hz);
 
             // Against the taxi.
@@ -517,6 +734,110 @@ impl Sim {
                 }
             }
         }
+        // And against each other.  Traffic used to pass clean through
+        // itself, which is invisible until you are following a queue and two
+        // of them occupy the same six metres of road; giving way is also
+        // only half a rule if failing to give way costs nothing.  No event:
+        // the scoreboard is for what *you* hit.
+        for i in 0..self.traffic.len() {
+            for j in i + 1..self.traffic.len() {
+                let (mut a, mut b) = (self.traffic[i], self.traffic[j]);
+                if drive::collide(&mut a, &mut b, city).is_some() {
+                    self.traffic[i] = a;
+                    self.traffic[j] = b;
+                }
+            }
+        }
+    }
+
+    /// What the driver of traffic car `i` does this tick.
+    ///
+    /// Two jobs, and they are independent: keep the lane, and do not run
+    /// into anything.  Neither of them is a route - this car has no idea
+    /// where it is going and does not need one.
+    fn traffic_controls(&self, city: &City, i: usize) -> Controls {
+        let c = self.traffic[i];
+        let (fx, fy) = (trig::cos(c.yaw), trig::sin(c.yaw));
+        // The car's own right-hand side, which is the axis every offset
+        // below is measured on.
+        let (rx, ry) = (-fy, fx);
+        let vf = fixed::mul(c.vx, fx) + fixed::mul(c.vy, fy);
+
+        let dir = intent(city, &c);
+        let (cx, cy) = (fixed::floor(c.x), fixed::floor(c.y));
+        // The line to hold: the middle of the lane it is already in, unless
+        // that lane belongs to the traffic going the other way, in which
+        // case the first lane on the correct side of the crown.  Holding
+        // `road::lane` unconditionally would file every car on a
+        // fourteen-cell arterial into one lane and leave the rest of it
+        // empty.
+        let (lx, ly) = match road::flow(city, cx, cy) {
+            Some(f) if f == dir => road::centre(cx, cy),
+            _ => road::lane(city, cx, cy, dir),
+        };
+        // How far to the right of that line the car is, and how far its nose
+        // is off the way the street runs.
+        let off = fixed::mul(c.x - lx, rx) + fixed::mul(c.y - ly, ry);
+        let psi = road::heading(dir.0, dir.1).wrapping_sub(c.yaw) as i16 as i32;
+        // The same steering law the autopilot uses: an angle term to point
+        // it down the street and a cross-track term to walk it onto the
+        // line, the second divided by speed so that a correction that suits
+        // a crawl does not snake the car at speed.
+        let angle = fixed::ratio(psi, LANE_LOCK);
+        let pull = fixed::clamp(fixed::div(off, c.speed() + ONE), -LANE_CROSS, LANE_CROSS);
+        let steer = fixed::clamp(angle - pull, -ONE, ONE);
+
+        Controls { throttle: pace(vf, self.give_way(i)), steer, handbrake: false }
+    }
+
+    /// The fastest car `i` should be going, given what is in front of it.
+    ///
+    /// Two rules, which is as much traffic law as a car with no route can
+    /// use.  Do not close on the vehicle ahead in your own lane: the speed
+    /// falls off with the gap, so a queue settles rather than concertinas.
+    /// And give way to anything crossing from your right, which is the
+    /// junction rule everywhere that drives on the right, and is enough to
+    /// keep two cars arriving at the same crossroads from arriving in the
+    /// same place.
+    fn give_way(&self, i: usize) -> Fx {
+        let c = self.traffic[i];
+        let (fx, fy) = (trig::cos(c.yaw), trig::sin(c.yaw));
+        let (rx, ry) = (-fy, fx);
+        let mut want = self.traffic_cruise[i];
+
+        let others = self
+            .traffic
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != i)
+            .map(|(_, o)| o)
+            .chain(std::iter::once(&self.taxi));
+        for o in others {
+            let (dx, dy) = (o.x - c.x, o.y - c.y);
+            // Where it is in this car's own frame: how far up the road, and
+            // how far to the side.
+            let lon = fixed::mul(dx, fx) + fixed::mul(dy, fy);
+            if lon <= 0 {
+                continue;
+            }
+            let lat = fixed::mul(dx, rx) + fixed::mul(dy, ry);
+            // Bumper to bumper, so the gap is between the cars rather than
+            // between their middles - a bus is four cells long and closing
+            // to two of them is already a collision.
+            let gap = lon - c.kind.half_len() - o.kind.half_len();
+            if fixed::abs(lat) < CORRIDOR && lon < LOOK {
+                want = want.min(follow(gap));
+            } else if lat > 0
+                && lat < JUNCTION
+                && lon < JUNCTION
+                && crossing(c.yaw, o.yaw)
+                && o.speed() > ROLLING
+            {
+                // Somebody coming from the right, across the nose: wait.
+                want = 0;
+            }
+        }
+        want
     }
 
     fn step_props(&mut self, hz: i32, out: &mut Vec<Event>) {
@@ -615,10 +936,7 @@ impl Sim {
             }
         }
 
-        let target = if fare.aboard { fare.to } else { fare.from };
-        let close = fixed::abs(target.0 - self.taxi.x) < STOP_RADIUS
-            && fixed::abs(target.1 - self.taxi.y) < STOP_RADIUS;
-        if !close || speed > STOP_SPEED {
+        if !fare.at_stop(self.taxi.x, self.taxi.y) || speed > STOP_SPEED {
             return;
         }
         if fare.aboard {
@@ -639,9 +957,19 @@ impl Sim {
         self.ticks_left / drive::HZ
     }
 
-    /// Where the passenger or the destination is, for the compass.
+    /// Where the passenger or the destination is, for the compass and the
+    /// marker.  On the pavement, which is where people are.
     pub fn target(&self) -> Option<(Fx, Fx)> {
-        self.fare.as_ref().map(|f| if f.aboard { f.to } else { f.from })
+        self.fare.as_ref().map(Fare::marker)
+    }
+
+    /// Where a car goes to reach that: the kerb beside the marker.
+    ///
+    /// What the autopilot drives at.  Aiming a car at the marker itself
+    /// would aim it over the kerb and onto the paving, which is both wrong
+    /// and slower - the last cell is the passenger's to walk.
+    pub fn drive_target(&self) -> Option<(Fx, Fx)> {
+        self.fare.as_ref().map(Fare::stop)
     }
 
     /// Bearing from the taxi to the target, relative to where it is pointing.
@@ -658,12 +986,14 @@ impl Sim {
         let cull = fixed::from_int(crate::atmos::draw_distance(atmos.haze));
         let near = |x: Fx, y: Fx| fixed::abs(x - cam.x) + fixed::abs(y - cam.y) < cull;
 
-        // The stopping circle, painted on the road before anything is put in
-        // front of it.  It is drawn at exactly `STOP_RADIUS`, which is the
-        // radius the handover actually tests, so the rule and the picture of
-        // the rule cannot drift apart: inside the paint is inside the fare.
+        // The circle, painted on the pavement where the passenger is
+        // standing, before anything is put in front of it.  On the pavement
+        // and not on the road: it is a person's spot, not a parking space,
+        // and a circle painted across a carriageway reads as somewhere to
+        // stop *in*.  A cab that pulls up at the kerb beside it is within
+        // `REACH` of the person, which is the rule the handover tests.
         if let Some(fare) = &self.fare {
-            let (mx, my) = if fare.aboard { fare.to } else { fare.from };
+            let (mx, my) = fare.marker();
             if near(mx, my) {
                 crate::decal::ring(
                     f,
@@ -771,7 +1101,7 @@ impl Sim {
                 b.base = fixed::ratio(1, 3);
                 self.boards.push(b);
             }
-            let (mx, my) = if fare.aboard { fare.to } else { fare.from };
+            let (mx, my) = fare.marker();
             if near(mx, my) {
                 let mut b = Billboard::upright(
                     if fare.aboard { Stamp::Dropoff } else { Stamp::Pickup },
@@ -788,6 +1118,115 @@ impl Sim {
             }
         }
         crate::sprite::draw_all(f, depth, cam, atmos, p, &mut self.boards, &mut self.order);
+    }
+}
+
+/// The kerb a car would pull up at to reach a spot on foot.
+///
+/// The nearest carriageway cell that a cab can actually wait on: a street
+/// rather than a service alley, and outside the junction box.  A stop in a
+/// junction is a stop in the middle of a crossroads, and on the crossing of
+/// two arterials the box is fourteen cells square, so "the nearest road
+/// cell" can be a long way from any kerb.
+///
+/// Two cells of reach.  One covers a passenger on the pavement, which is
+/// most of them; two covers one a step back from it, on a plaza or the edge
+/// of a park.  Further than that and the marker stops being *beside* a road.
+fn kerb_beside(city: &City, x: i32, y: i32) -> Option<(i32, i32)> {
+    for r in 1..=2i32 {
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx.abs().max(dy.abs()) != r {
+                    continue;
+                }
+                let (px, py) = (x + dx, y + dy);
+                if !city.drivable(px, py) || city.plan.is_junction(px, py) {
+                    continue;
+                }
+                if city.plan.cols.at(px).class.is_street()
+                    || city.plan.rows.at(py).class.is_street()
+                {
+                    return Some((px, py));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Which way along the street a car in the traffic is trying to go.
+///
+/// Its own direction of travel, resolved onto the axis the street runs on -
+/// not the flow of the cell it is sitting in.  The distinction matters after
+/// a shunt: a car knocked into the oncoming lane is still going the way it
+/// was going, and what it needs is to cross back over, not to turn round.
+/// Only when it has been left pointing across the street entirely does the
+/// road get to say which way it should go.
+fn intent(city: &City, c: &Car) -> (i32, i32) {
+    let (cx, cy) = (fixed::floor(c.x), fixed::floor(c.y));
+    let (fx, fy) = (trig::cos(c.yaw), trig::sin(c.yaw));
+    let along = |v: Fx, f: Fx| if fixed::abs(v) > fixed::HALF { v } else { f };
+    match road::street_axis(city, cx, cy) {
+        Some(true) => {
+            let d = along(c.vx, fx);
+            if fixed::abs(d) > fixed::ratio(1, 8) {
+                return (if d > 0 { 1 } else { -1 }, 0);
+            }
+        }
+        Some(false) => {
+            let d = along(c.vy, fy);
+            if fixed::abs(d) > fixed::ratio(1, 8) {
+                return (0, if d > 0 { 1 } else { -1 });
+            }
+        }
+        // A junction, or not a street: carry straight on through it.
+        None => {}
+    }
+    if let Some(f) = road::flow(city, cx, cy) {
+        return f;
+    }
+    if fixed::abs(fx) >= fixed::abs(fy) {
+        (if fx > 0 { 1 } else { -1 }, 0)
+    } else {
+        (0, if fy > 0 { 1 } else { -1 })
+    }
+}
+
+/// The speed that keeps a given gap to the car in front.
+///
+/// Straight-line in the gap, so it is a following distance rather than a
+/// switch: the driver is off the throttle a good way back and only stopped
+/// when the gap is gone.
+fn follow(gap: Fx) -> Fx {
+    if gap <= 0 {
+        return 0;
+    }
+    fixed::mul(CRUISE_THROTTLE * 8, fixed::div(gap, LOOK).min(ONE))
+}
+
+/// Whether two headings are crossing rather than sharing a road.
+///
+/// Within a quarter turn of perpendicular, which on a grid means the other
+/// car is on the cross street.
+fn crossing(a: Ang, b: Ang) -> bool {
+    let d = (b.wrapping_sub(a) as i16 as i32).abs();
+    (d - trig::QUARTER as i32).abs() < trig::QUARTER as i32 / 2
+}
+
+/// Throttle or brake to hold a speed.
+///
+/// A dead band around the target, because without one the pedal alternates
+/// between flat out and hard on the brake every tick.  And nothing below
+/// zero at a standstill: a negative throttle on a stopped car is reverse,
+/// and a car that gives way by reversing into the one behind it has not
+/// given way.
+fn pace(vf: Fx, want: Fx) -> Fx {
+    if vf > want + SLACK {
+        if vf > ROLLING { -ONE } else { 0 }
+    } else if vf < want - SLACK {
+        CRUISE_THROTTLE
+    } else {
+        0
     }
 }
 
@@ -820,35 +1259,30 @@ fn on_corner(city: &City, x: i32, y: i32) -> bool {
     (road(-1, 0) || road(1, 0)) && (road(0, -1) || road(0, 1))
 }
 
-/// String coins along a Manhattan path between two points, on roads only.
+/// String coins along the road between two points.
 ///
-/// The path is x first and then y, which is not the shortest route by road
-/// but is the one a player can *read* at a glance: a line of coins that goes
-/// straight and then turns once.  A cleverer path would be harder to follow
-/// at 90 mph, which would make it a worse path.
+/// Down the route a car would actually take, one every few cells.  It used
+/// to be a Manhattan L - across in x, then along in y - which reads well at
+/// speed but is only a road by coincidence: it was drawn between two points
+/// on the carriageway and kept whichever of its cells happened to land on
+/// one, so a trail between two ends of a bent street could be three coins,
+/// or none at all.  The route search is the same one the autopilot plans
+/// with, so the coins are on the road, in order, and joined up - and a
+/// player following them is being shown the way rather than a bearing.
+///
+/// Every third cell: closer together and the trail is a solid line of gold
+/// with no shape to it; further apart and it stops reading as a trail.
 fn coin_trail(city: &City, from: (i32, i32), to: (i32, i32)) -> Vec<Coin> {
     let mut coins = Vec::new();
-    let mut push = |x: i32, y: i32| {
-        if city.at(x, y).kind == Kind::Road {
-            coins.push(Coin {
-                x: fixed::from_int(x) + fixed::HALF,
-                y: fixed::from_int(y) + fixed::HALF,
-                taken: false,
-            });
-        }
+    let Some(route) = city.drive_route(from, to, COIN_BUDGET) else {
+        return coins;
     };
-    let step = 2;
-    let sx = if to.0 > from.0 { step } else { -step };
-    let mut x = from.0;
-    while (to.0 - x).abs() >= step {
-        x += sx;
-        push(x, from.1);
-    }
-    let sy = if to.1 > from.1 { step } else { -step };
-    let mut y = from.1;
-    while (to.1 - y).abs() >= step {
-        y += sy;
-        push(to.0, y);
+    for &(x, y) in route.iter().step_by(3) {
+        coins.push(Coin {
+            x: fixed::from_int(x) + fixed::HALF,
+            y: fixed::from_int(y) + fixed::HALF,
+            taken: false,
+        });
     }
     coins
 }
@@ -895,6 +1329,13 @@ pub fn atan2_approx(y: Fx, x: Fx) -> Ang {
 mod tests {
     use super::*;
     use crate::world::City;
+
+    /// Straight-line distance between two cars, near enough.
+    fn dist2(a: &Car, b: &Car) -> Fx {
+        let (dx, dy) = (fixed::abs(a.x - b.x), fixed::abs(a.y - b.y));
+        let (hi, lo) = if dx > dy { (dx, dy) } else { (dy, dx) };
+        hi + fixed::mul(lo, fixed::ratio(3, 8))
+    }
 
     fn shift() -> (City, Sim) {
         let city = City::generate(404);
@@ -1208,6 +1649,199 @@ mod tests {
             })
             .count();
         assert_eq!(stragglers, 0, "{stragglers} cars were left behind");
+    }
+
+    /// Which side of the crown of the road a car is on, for its direction of
+    /// travel, or `None` where the question has no answer - inside a
+    /// junction, on a road too narrow to have sides, or for a car that is
+    /// travelling across the street rather than along it.
+    ///
+    /// Positive is the correct side for driving on the right.
+    fn side_of_road(city: &City, c: &Car) -> Option<Fx> {
+        let (x, y) = (fixed::floor(c.x), fixed::floor(c.y));
+        let along_x = road::street_axis(city, x, y)?;
+        let cell = if along_x { city.plan.rows.at(y) } else { city.plan.cols.at(x) };
+        if cell.width < 2 {
+            return None;
+        }
+        let v = if along_x { c.vx } else { c.vy };
+        if fixed::abs(v) < ONE {
+            return None;
+        }
+        let kerb = fixed::from_int(if along_x { y } else { x } - cell.across as i32);
+        let mid = kerb + fixed::from_int(cell.width as i32) / 2;
+        let off = if along_x { c.y - mid } else { c.x - mid };
+        Some(if along_x == (v > 0) { off } else { -off })
+    }
+
+    /// Traffic keeps right, and it does so from the moment it is put down.
+    ///
+    /// The direction each car faces is taken from the half of the road it is
+    /// on, so this is really a test that the two are read the same way by
+    /// the thing that places cars and the thing that steers them.  It used
+    /// to be a coin toss by construction: a car was dropped on a road cell
+    /// and pointed along it either way.
+    #[test]
+    fn traffic_keeps_to_the_right_hand_lane() {
+        for seed in [1u32, 7, 99, 4242] {
+            let city = City::generate(seed);
+            let mut sim = Sim::new(&city, seed);
+            let mut ev = Vec::new();
+            let (mut right, mut wrong) = (0u32, 0u32);
+            for _ in 0..1200 {
+                sim.step(&city, &Controls::default(), drive::HZ, &mut ev);
+                for c in &sim.traffic {
+                    match side_of_road(&city, c) {
+                        Some(s) if s > 0 => right += 1,
+                        Some(s) if s < 0 => wrong += 1,
+                        _ => {}
+                    }
+                }
+            }
+            println!("seed {seed}: {right} right {wrong} wrong - {}%", right * 100 / (right + wrong).max(1));
+            assert!(right + wrong > 1000, "seed {seed}: only {} ticks with a side", right + wrong);
+            // Nine to one, measured at 98 to 100 per cent.  What is left is
+            // cars crossing back after a shunt, which is the correct thing
+            // for them to be doing.
+            assert!(
+                right > wrong * 9,
+                "seed {seed}: {right} car-ticks on the right, {wrong} on the wrong side"
+            );
+        }
+    }
+
+    /// Traffic gives way instead of driving through itself.
+    ///
+    /// Two things are being asserted at once and they are the same thing:
+    /// cars leave a gap, and when they fail to, the collision is resolved.
+    /// Before, traffic was invisible to itself - two cars would occupy the
+    /// same six metres of road and drive on together.
+    #[test]
+    fn traffic_gives_way_to_traffic() {
+        let city = City::generate(11);
+        let mut sim = Sim::new(&city, 11);
+        let mut ev = Vec::new();
+        let mut overlapping = 0;
+        for _ in 0..1800 {
+            sim.step(&city, &Controls::default(), drive::HZ, &mut ev);
+            for i in 0..sim.traffic.len() {
+                for j in i + 1..sim.traffic.len() {
+                    let (a, b) = (&sim.traffic[i], &sim.traffic[j]);
+                    let reach = a.kind.half_len() + b.kind.half_len();
+                    // Well inside each other, not merely touching: a
+                    // collision is resolved over a tick or two and touching
+                    // during it is the point.
+                    if dist2(a, b) < fixed::mul(reach, fixed::HALF) {
+                        overlapping += 1;
+                    }
+                }
+            }
+        }
+        // A hundred car-ticks in a hundred thousand.  Not zero: a shunt is
+        // resolved over a tick or two and being inside each other for part
+        // of one is what a collision *is*.  Measured at 33 with the drivers
+        // giving way and 366 with them ignoring each other, which is the
+        // difference the rule makes.
+        assert!(
+            overlapping < 100,
+            "{overlapping} car-ticks spent inside another car"
+        );
+    }
+
+    /// A car with something stopped in its lane slows down for it.
+    #[test]
+    fn a_driver_lifts_off_for_the_car_in_front() {
+        let city = City::generate(3);
+        let mut sim = Sim::new(&city, 3);
+        // Put two cars nose to tail in the same lane, the front one parked.
+        let lead = sim.traffic[0];
+        let (fx, fy) = (trig::cos(lead.yaw), trig::sin(lead.yaw));
+        let back = fixed::from_int(4);
+        sim.traffic[0].vx = 0;
+        sim.traffic[0].vy = 0;
+        sim.traffic[1] = Car::new(
+            CarKind::Traffic,
+            lead.x - fixed::mul(fx, back),
+            lead.y - fixed::mul(fy, back),
+            lead.yaw,
+            palette::H_RED,
+        );
+        sim.traffic_cruise[1] = fixed::from_int(3);
+        let free = sim.give_way(1);
+        // And the same car with the road ahead of it cleared.
+        sim.traffic[0].x = sim.taxi.x;
+        sim.traffic[0].y = sim.taxi.y;
+        let blocked_by_nothing = sim.give_way(1);
+        assert!(
+            free < blocked_by_nothing,
+            "a car four cells behind a parked one wanted {} against {} on a clear road",
+            fixed::to_f32(free),
+            fixed::to_f32(blocked_by_nothing)
+        );
+    }
+
+    /// Nobody is put down in the roadway who does not belong there.
+    ///
+    /// The fare's two ends and the pedestrians are all on the walking
+    /// network; the cab and the traffic are the only things on the
+    /// carriageway.
+    #[test]
+    fn people_are_put_down_beside_the_road_and_not_on_it() {
+        for seed in [1u32, 7, 99, 4242] {
+            let city = City::generate(seed);
+            let mut sim = Sim::new(&city, seed);
+            for _ in 0..40 {
+                sim.hail(&city);
+                let fare = sim.fare.as_ref().expect("no fare");
+                for (name, (mx, my)) in [("pickup", fare.from), ("dropoff", fare.to)] {
+                    let (x, y) = (fixed::floor(mx), fixed::floor(my));
+                    assert_ne!(
+                        city.at(x, y).kind,
+                        Kind::Road,
+                        "seed {seed}: the {name} is in the carriageway at {x},{y}"
+                    );
+                    assert_eq!(
+                        city.walk.at(x, y),
+                        Foot::Path,
+                        "seed {seed}: the {name} is not somewhere a person can stand"
+                    );
+                }
+                for (name, (sx, sy)) in
+                    [("pickup", fare.from_stop), ("dropoff", fare.to_stop)]
+                {
+                    let (x, y) = (fixed::floor(sx), fixed::floor(sy));
+                    assert!(
+                        city.drivable(x, y),
+                        "seed {seed}: the {name} kerb at {x},{y} is not road"
+                    );
+                }
+                // And a car standing on the kerb is close enough to hand the
+                // passenger over, which is the whole point of having two
+                // places instead of one.
+                assert!(
+                    fare.at_stop(fare.from_stop.0, fare.from_stop.1),
+                    "seed {seed}: a cab at the kerb cannot reach the passenger"
+                );
+            }
+        }
+    }
+
+    /// The coins are on the road and joined up, because they are the route.
+    #[test]
+    fn the_coin_trail_follows_the_road() {
+        for seed in [1u32, 7, 99] {
+            let city = City::generate(seed);
+            let mut sim = Sim::new(&city, seed);
+            for _ in 0..12 {
+                sim.hail(&city);
+                let fare = sim.fare.as_ref().expect("no fare");
+                assert!(!fare.coins.is_empty(), "seed {seed}: a fare with no coins");
+                for c in &fare.coins {
+                    let (x, y) = (fixed::floor(c.x), fixed::floor(c.y));
+                    assert!(city.drivable(x, y), "seed {seed}: a coin off the road at {x},{y}");
+                }
+            }
+        }
     }
 
     #[test]

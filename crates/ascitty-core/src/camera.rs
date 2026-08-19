@@ -54,13 +54,18 @@ impl Default for Camera {
 }
 
 impl Camera {
-    /// Drop the camera in the street nearest `(x, y)`.
+    /// Drop the camera on the pavement nearest `(x, y)`.
     ///
     /// Two failures to avoid, in order of how bad they are: spawning inside
     /// a building, which a first-person renderer cannot recover from at all,
     /// and spawning in the middle of a block, which merely means the first
-    /// thing anyone sees is a courtyard.  So the search prefers roadway,
-    /// falls back to any walkable ground, and only then gives up.
+    /// thing anyone sees is a courtyard.  So the search prefers the
+    /// pedestrian network - pavement, plaza, park - falls back to any
+    /// walkable ground, and only then gives up.
+    ///
+    /// It preferred the *carriageway* until traffic learned to keep its
+    /// lane, at which point standing in the middle of one stopped being
+    /// harmless.
     pub fn spawn(city: &City, x: i32, y: i32) -> Camera {
         let mut best = (x, y);
         let mut fallback: Option<(i32, i32)> = None;
@@ -74,7 +79,14 @@ impl Camera {
                     if !city.open(px, py) {
                         continue;
                     }
-                    if city.at(px, py).kind == crate::world::Kind::Road {
+                    // The pavement, the parks and the plazas - the places a
+                    // person may stand.  It used to be the nearest road,
+                    // which put you in the middle of a carriageway with the
+                    // traffic coming, and put everything placed relative to
+                    // you there as well.  The walking network is the same
+                    // map the pedestrians use, so spawning on it means
+                    // spawning somewhere they could have walked from.
+                    if city.walk.at(px, py) == crate::walk::Foot::Path {
                         best = (px, py);
                         break 'search;
                     }
@@ -264,6 +276,23 @@ mod tests {
                 city.open(fixed::floor(c.x), fixed::floor(c.y)),
                 "spawned inside a building near {x},{y}"
             );
+        }
+    }
+
+    /// You start on the pavement, not in the road.
+    #[test]
+    fn spawn_puts_you_where_a_person_may_stand() {
+        for seed in [1u32, 7, 99, 4242] {
+            let city = City::generate(seed);
+            for (x, y) in [(0, 0), (48, 48), (95, 95), (30, 61), (128, 128)] {
+                let c = Camera::spawn(&city, x, y);
+                let (cx, cy) = (fixed::floor(c.x), fixed::floor(c.y));
+                assert_eq!(
+                    city.walk.at(cx, cy),
+                    crate::walk::Foot::Path,
+                    "seed {seed}: spawned at {cx},{cy} near {x},{y}, which is not pavement"
+                );
+            }
         }
     }
 

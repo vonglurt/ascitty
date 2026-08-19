@@ -147,8 +147,17 @@ impl Tour {
     pub fn new(city: &City, seed: u32) -> Tour {
         let size = crate::world::SIZE as i32;
         let mut cam = Camera::spawn(city, size / 2, size / 2);
-        // Spawn puts you on the nearest road; if that landed in a plaza,
-        // walk out to the street corridor before starting.
+        // Out into the carriageway.  The walker settles half a cell off the
+        // crown of the road - see `LANE_BIAS` - so the road is where this
+        // tour lives, and starting it on the pavement it was spawned on only
+        // means its first few seconds are spent stepping off a kerb.
+        if let Some((rx, ry)) = city.nearest_road(fixed::floor(cam.x), fixed::floor(cam.y), 48) {
+            cam.x = fixed::from_int(rx) + fixed::HALF;
+            cam.y = fixed::from_int(ry) + fixed::HALF;
+            cam.stand(city);
+        }
+        // If that landed in an alley or a plaza, walk out to a street
+        // corridor before starting.
         if !on_street(city, fixed::floor(cam.x), fixed::floor(cam.y)) {
             'out: for r in 1..40i32 {
                 for dy in -r..=r {
