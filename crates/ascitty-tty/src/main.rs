@@ -7,8 +7,11 @@
 //! needing a terminal at all.
 
 mod cast;
+mod gif;
 mod hud;
+mod image;
 mod paint;
+mod png;
 mod term;
 
 use ascitty_core::atmos::Atmos;
@@ -157,6 +160,8 @@ struct Opts {
     fps: u32,
     atmos: Atmos,
     shot: Option<u32>,
+    /// Where to write the shot as a picture instead of as text.
+    png: Option<std::path::PathBuf>,
     bench: bool,
     view: View,
     fov: f64,
@@ -166,6 +171,8 @@ struct Opts {
     anim: bool,
     frames: u32,
     record: Option<std::path::PathBuf>,
+    /// Where to write the demonstration as an animated GIF.
+    gif: Option<std::path::PathBuf>,
 }
 
 impl Default for Opts {
@@ -178,6 +185,7 @@ impl Default for Opts {
             fps: 30,
             atmos: Atmos::default(),
             shot: None,
+            png: None,
             bench: false,
             view: View::Walk,
             fov: 67.0,
@@ -186,6 +194,7 @@ impl Default for Opts {
             anim: false,
             frames: 900,
             record: None,
+            gif: None,
         }
     }
 }
@@ -208,6 +217,7 @@ USAGE: ascitty [options]
   --copter          start above the city instead of on the pavement
   --drive           start behind the wheel of the taxi
   --shot [N]        render N frames, print the last as plain text, exit
+  --png FILE        write that shot as a picture instead of printing it
   --bench           render 200 frames as fast as possible and report
   -h, --help        this
 
@@ -218,6 +228,7 @@ DRIVING ITSELF
   --walk            make the demonstration a walking tour instead
   --anim            play the demonstration and exit; --frames says how long
   --record FILE     write the demonstration to an asciinema .cast file
+  --gif FILE        write it as an animated GIF as well, or instead
   --frames N        frames for --anim and --record   (default: 900, 30 s)
 
 CONTROLS
@@ -285,6 +296,14 @@ fn parse_args() -> Result<Opts, String> {
             "--record" => {
                 o.record = Some(std::path::PathBuf::from(val()?));
                 o.tour = true;
+            }
+            "--gif" => {
+                o.gif = Some(std::path::PathBuf::from(val()?));
+                o.tour = true;
+            }
+            "--png" => {
+                o.png = Some(std::path::PathBuf::from(val()?));
+                o.shot = o.shot.or(Some(1));
             }
             "--bench" => o.bench = true,
             "--shot" => {
@@ -386,10 +405,18 @@ fn run(mut o: Opts) -> Result<(), String> {
             sim.draw(&mut f, &depth, &cam, &o.atmos, &proj);
             o.atmos.rain_over(&mut f, &cam);
         }
-        print!("{}", paint::plain(&f, o.mode));
+        if let Some(path) = &o.png {
+            std::fs::write(path, png::encode(&f)).map_err(|e| format!("{}: {e}", path.display()))?;
+            eprintln!("{}", path.display());
+        } else {
+            print!("{}", paint::plain(&f, o.mode));
+        }
         return Ok(());
     }
-    if let Some(path) = o.record.clone() {
+    if o.record.is_some() || o.gif.is_some() {
+        // One loop, two sinks.  A .cast and a .gif are the same
+        // demonstration in two containers, and running the city twice to
+        // get them would let the two recordings differ.
         let (w, h) = o.size.unwrap_or((120, 36));
         let mut f = Frame::new(w, h);
         let mut buf = String::new();
@@ -399,11 +426,19 @@ fn run(mut o: Opts) -> Result<(), String> {
         let mut cabbie = Cabbie::new();
         let mut events: Vec<Event> = Vec::new();
         let hz = o.fps.max(1) as i32;
-        let mut rec = cast::Recorder::create(&path, w, h, o.fps)
-            .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        let mut rec = match &o.record {
+            Some(path) => Some(
+                cast::Recorder::create(path, w, h, o.fps)
+                    .map_err(|e| format!("cannot write {}: {e}", path.display()))?,
+            ),
+            None => None,
+        };
+        let mut anim = o.gif.as_ref().map(|_| gif::Gif::new(o.fps));
         // A clear and a cursor home first, so a player starting mid-stream
         // does not inherit whatever was on the terminal before.
-        rec.frame("\x1b[2J\x1b[H").map_err(|e| e.to_string())?;
+        if let Some(rec) = rec.as_mut() {
+            rec.frame("\x1b[2J\x1b[H").map_err(|e| e.to_string())?;
+        }
         for _ in 0..o.frames {
             o.atmos.step();
             // Whichever demonstration was asked for drives the camera; the
@@ -421,17 +456,35 @@ fn run(mut o: Opts) -> Result<(), String> {
             let proj = raycast::projection(&city, &cam, &f);
             sim.draw(&mut f, &depth, &cam, &o.atmos, &proj);
             o.atmos.rain_over(&mut f, &cam);
-            paint::paint(&f, o.mode, o.depth, &mut buf);
-            rec.frame(&buf).map_err(|e| e.to_string())?;
+            if let Some(rec) = rec.as_mut() {
+                paint::paint(&f, o.mode, o.depth, &mut buf);
+                rec.frame(&buf).map_err(|e| e.to_string())?;
+            }
+            if let Some(anim) = anim.as_mut() {
+                anim.push(&f);
+            }
         }
-        let (n, secs) = rec.finish().map_err(|e| e.to_string())?;
-        let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        eprintln!(
-            "{}  {n} frames  {secs:.1}s  {} KB\n  play it:  asciinema play {}",
-            path.display(),
-            bytes / 1024,
-            path.display()
-        );
+        if let (Some(rec), Some(path)) = (rec, &o.record) {
+            let (n, secs) = rec.finish().map_err(|e| e.to_string())?;
+            let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            eprintln!(
+                "{}  {n} frames  {secs:.1}s  {} KB\n  play it:  asciinema play {}",
+                path.display(),
+                bytes / 1024,
+                path.display()
+            );
+        }
+        if let (Some(anim), Some(path)) = (anim, &o.gif) {
+            let n = anim.frames();
+            let bytes = anim.finish();
+            let kb = bytes.len() / 1024;
+            std::fs::write(path, bytes).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+            eprintln!(
+                "{}  {n} frames  {:.1}s  {kb} KB",
+                path.display(),
+                n as f32 / o.fps.max(1) as f32
+            );
+        }
         return Ok(());
     }
     if o.bench {

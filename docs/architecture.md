@@ -103,6 +103,14 @@ So the shading model is the Plus/4's and the terminal emulates *it*, not the
 other way round. `palette::to_rgb` converts a TED colour byte to sRGB once,
 into a 128-entry table, and the ANSI painter reads that.
 
+The same table is the palette of every picture in the documentation.
+`ascitty-tty` writes PNGs and animated GIFs itself - `image` turns a frame
+into 8x16 pixels a cell out of the renderer's own glyph bitmaps, `png` and
+`gif` are the containers around it - so a picture of the program is the
+frame buffer enlarged rather than a photograph of a terminal. Both encoders
+are written out because the workspace has no dependencies, and a file format
+is a poor reason to acquire the first one.
+
 ## 6. The three cameras
 
 | Mode | What it is | Constraints |

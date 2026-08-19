@@ -3,6 +3,16 @@
 A city built entirely out of typeable characters, rendered in real time, on a
 colour terminal and on a **Commodore Plus/4**.
 
+![A street at night: towers with lit windows, fire escapes and awnings, rain leaning across the frame](docs/media/street.png)
+
+*Street level in block elements and colour, which is what you actually get —
+`ascitty --shot 520 --size 140x40 --seed 99 --tour --walk`. Every shape in it
+is one of 128 character cells this program generated with a function; there
+is no artwork here and no font.*
+
+The same renderer with `--mode ascii`, in 7-bit characters and no colour at
+all:
+
 ```
 ""~""!..#...==========!...===...||||===\.....=====......!!!!.........====..======"=!!"~~====
 !!.#!!.""==========!!!!...===...||\\\\\\.....=====......!!!!......==.====...======"!!="~~=/=
@@ -26,8 +36,8 @@ _+++++++++++++++++~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~H88~~~~~~~~~~~~~~~~~~~~~++
 .........----______++++++++++++++++++++++++~~~~~~~~~~~~~~~~~~~~++++++++++++++++++++++_____--
 ```
 
-*Street level, 7-bit ASCII, no colour — `ascitty --shot 520 --tour --mode ascii --seed 99`.
-The same frame in block elements and colour is what you actually get.*
+*`ascitty --shot 520 --tour --mode ascii --seed 99` — the mode the name is
+about, and the one that runs anywhere a terminal runs.*
 
 ## What it is
 
@@ -61,30 +71,109 @@ faster, the `.d64` is what an SD2IEC or an emulator wants.
 
 | File | Bytes | |
 |---|---:|---|
-| [ascitty.prg](https://github.com/vonglurt/ascitty/raw/main/build/ascitty.prg) | 24 397 | `DLOAD"ASCITTY"` then `RUN` |
+| [ascitty.prg](https://github.com/vonglurt/ascitty/raw/main/build/ascitty.prg) | 26 840 | `DLOAD"ASCITTY"` then `RUN` |
 | [ascitty.d64](https://github.com/vonglurt/ascitty/raw/main/build/ascitty.d64) | 174 848 | attach as drive 8, then the same |
 
 Both are built by `make disk` from the sources here, and both have been
 booted in VICE — the screenshot further down is one of them running.
 
+## Build it
+
+Two programs come out of this repository and they do not need the same
+things. The terminal build needs a Rust toolchain and **nothing else** —
+the workspace has no dependencies at all, so there is no lock file to
+resolve and no crate to download. The Plus/4 build needs a 6502 C compiler,
+and turning it into a disk image needs an emulator.
+
+| | Needs | Get it with |
+|---|---|---|
+| The terminal build | Rust 1.70 or later | [rustup.rs](https://rustup.rs) |
+| The Plus/4 build | cc65 | `brew install cc65` |
+| The `.d64`, and running either in an emulator | VICE | `brew install vice` |
+
+```sh
+git clone git@github.com:vonglurt/ascitty.git
+cd ascitty
+make run                      # build the terminal version and play it
+```
+
+That is the whole of it for the terminal. `make run` builds in release,
+which is where the renderer belongs: it is the program, and an unoptimised
+build of a per-cell inner loop is about twenty times slower — the difference
+between sixty frames a second and a slideshow. For the same reason the
+*debug* profile in `Cargo.toml` is built at `opt-level = 2`, so a plain
+`cargo run` is playable too; release is simply faster.
+
+### Every target
+
+```sh
+make          # everything: the host build, the .prg and the .d64
+make host     # the terminal build            -> target/release/ascitty
+make prg      # the Plus/4 build              -> build/ascitty.prg
+make disk     # ...on a disk image            -> build/ascitty.d64
+make bake     # regenerate the baked tables   -> targets/plus4/gen/*.h
+
+make run      # play it here
+make demo     # watch the cab take fares on its own
+make walk     # watch the camera walk instead
+make run4     # play the Plus/4 build in xplus4
+make demo4    # ...and leave it alone; it drives itself
+
+make test     # 249 tests, about half a second
+make check    # the gate: tests, both builds, and both actually rendering
+make bench    # frames a second on this machine
+
+make cast     # record the demonstration    -> build/tour.cast
+make gif      # ...as an animated GIF       -> docs/media/demo.gif
+make shot     # regenerate every picture in docs/media
+make sheet    # print the glyph catalogue
+```
+
+`make check` is what has to pass. It runs the tests, builds both targets,
+and then *renders* both — the host into a text frame and the Plus/4 build
+into a screenshot from VICE — because a Plus/4 build that links and boots to
+a blank screen is a build that compiles and does not work.
+
+### The parts of the build worth knowing about
+
+**The baked tables.** `make bake` runs the same Rust code the terminal
+renderer uses and writes what it produced as C headers: the sine table, the
+reciprocal table, the character set and the city itself. The Plus/4 does not
+generate its own city — it could not do it in the time or the memory — so
+the two targets are guaranteed to show the same one. Change the generator
+and the headers are stale until `make bake` runs; `make prg` does it for
+you.
+
+**The seed is in the Makefile.** `SEED ?= 2780919582` is the city both
+targets bake. Overriding it builds a Plus/4 program of a different city
+from the one the terminal renders, which is occasionally what you want and
+never what you want by accident.
+
+If something does not work — wrong colours, wrong characters, a terminal
+that will not report its size, cc65 not on the path — the fixes are in
+**[INSTALL.md](INSTALL.md)**, and the toolchain setup in
+[docs/dev-setup.md](docs/dev-setup.md).
+
 ## Run it
 
 ```sh
-brew install cc65 vice        # only needed for the Plus/4 build
-git clone git@github.com:vonglurt/ascitty.git
-cd ascitty
-make run
+make run                     # or: ./target/release/ascitty
 ```
 
-Full instructions, including the Plus/4, are in
-**[INSTALL.md](INSTALL.md)**.
+### Watch it drive itself
 
-### Watch it walk itself
+![The cab driving itself down a wet street, traffic scattering ahead of it](docs/media/demo.gif)
+
+*Eight seconds of `make demo`, recorded by `make gif`. Small and short
+because a GIF is a whole frame every frame; `make cast` records the same
+thing as an asciinema file, which stays sharp at any size and is a tenth of
+the bytes.*
 
 ```sh
 make demo                    # the cab takes fares on its own
 make walk                    # ...or the camera walks the streets instead
 make cast                    # record it to build/tour.cast (asciinema)
+make gif                     # ...or to docs/media/demo.gif
 ```
 
 `--demo` hands over to a cab that picks up a fare, plans a route over the
@@ -102,6 +191,12 @@ It is deterministic, so a recorded animation is reproducible.
 
 [`docs/media/tour-strip.txt`](docs/media/tour-strip.txt) is the same walk
 sampled every few seconds.
+
+![The taxi from behind, chequer band along its flank, a saloon alongside](docs/media/drive.png)
+
+*The chase camera, from `make demo`. The cab's heading and the camera's are
+not the same thing — the boom lags a turn by a few frames, so a slide is
+watched from outside the spin.*
 
 ### Controls
 
@@ -138,13 +233,20 @@ descends where you might expect Shift to.
 --walk            make the demonstration a walking tour instead
 --anim            play the demonstration and exit
 --record FILE     write the demonstration to an asciinema .cast
---frames N        how long, for --anim and --record   (default 900)
+--gif FILE        ...and/or as an animated GIF
+--frames N        how long, for --anim, --record and --gif  (default 900)
 --shot [N]        render N frames, print the last as plain text, exit
+--png FILE        write that shot as a picture instead of printing it
 --bench           200 frames as fast as possible, and report
 ```
 
 `--shot` needs no terminal at all, which is what makes it usable from a
-Makefile and from CI.
+Makefile and from CI. Neither do `--png` and `--gif`: every picture in this
+README was made by one of them, at 8x16 pixels a cell, with the renderer's
+own glyphs and the Plus/4's own palette — so they are the output rather than
+a photograph of it. Both encoders are written here, because the workspace
+has no dependencies and adding one to write a file format would be a strange
+place to start.
 
 ## On a Commodore Plus/4
 
@@ -292,27 +394,11 @@ Everything is indexed at **[docs/index.md](docs/index.md)**.
 | [backlog.md](docs/backlog.md) | what is coming, and why |
 | [adr/](docs/adr/) | the decisions worth not re-litigating |
 
-## Building
-
-```sh
-make          # everything
-make host     # the terminal build
-make prg      # the Plus/4 build
-make disk     # ...on a .d64
-make test     # 131 tests, about a tenth of a second
-make check    # the gate: tests, both builds, and both actually rendering
-make bench    # frames per second here
-make demo     # watch it drive itself
-make cast     # record the walk as an asciinema file
-make sheet    # print the glyph catalogue
-make shot     # regenerate docs/media
-```
-
 ## Where it stands
 
 Working: the renderer, all three cameras, the city generator with six
 building archetypes, the procedural font, the weather, the driving physics,
-the fare loop, the terminal front end and the Plus/4 build. 131 tests.
+the fare loop, the terminal front end and the Plus/4 build. 249 tests.
 
 Not yet: sub-cell rooflines, proper roof surfaces, scoring and grades,
 sprites and driving on the Plus/4, and the assembly inner loop that would

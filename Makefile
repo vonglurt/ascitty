@@ -47,7 +47,7 @@ GENHDRS = $(GEN)/charset.h $(GEN)/trig.h $(GEN)/recip.h $(GEN)/glyphs.h $(GEN)/c
 T4SRC   = $(T4)/src/main.c $(T4)/src/cast.c
 T4HDRS  = $(T4)/src/plus4.h $(T4)/src/cast.h
 
-.PHONY: all host prg disk bake run run4 demo walk demo4 cast shot test check bench sheet clean help
+.PHONY: all host prg disk bake run run4 demo walk demo4 cast gif shot test check bench sheet clean help
 
 all: host prg disk
 
@@ -59,6 +59,7 @@ help:
 	@echo 'make demo    watch the cab take fares on its own'
 	@echo 'make walk    watch the camera walk the streets instead'
 	@echo 'make cast    record the walk to build/tour.cast (asciinema)'
+	@echo 'make gif     record the drive to docs/media/demo.gif'
 	@echo 'make run4    play it in xplus4'
 	@echo 'make demo4   watch the Plus/4 build walk itself in xplus4'
 	@echo 'make test    every test in the workspace'
@@ -98,6 +99,21 @@ cast: $(HOST)
 	@mkdir -p $(BUILD)
 	@$(HOST) --record $(BUILD)/tour.cast --frames $(CASTLEN) --size $(CASTSIZE)
 	@echo "  gzip it before sending: gzip -9 -k $(BUILD)/tour.cast"
+
+# The same demonstration as a picture that moves, for the README - a web
+# page cannot play a .cast.  Small and short on purpose: a GIF is a
+# full frame every frame however little of it changed, so the size is the
+# frame count times the area, and 72x22 for eight seconds is about two
+# megabytes.  Anything you would actually watch belongs in the .cast.
+GIFLEN  ?= 120
+GIFSIZE ?= 72x22
+GIFFPS  ?= 15
+GIFSEED ?= 99
+
+gif: $(HOST)
+	@mkdir -p docs/media
+	@$(HOST) --demo --drive --seed $(GIFSEED) --size $(GIFSIZE) \
+		--fps $(GIFFPS) --frames $(GIFLEN) --gif docs/media/demo.gif
 
 bench: $(HOST)
 	@$(HOST) --bench --size 160x48
@@ -167,6 +183,8 @@ shot: $(HOST) $(PRG)
 	@$(HOST) --shot 1   --size 150x44 --mode unicode --rain 3 > docs/media/walk-blocks.txt
 	@$(HOST) --shot 200 --size 150x44 --mode ascii --drive     > docs/media/drive-ascii.txt
 	@$(HOST) --shot 1   --size 150x44 --mode unicode --copter  > docs/media/copter-blocks.txt
+	@$(HOST) --shot 520 --size 140x40 --seed 99 --tour --walk   --png docs/media/street.png
+	@$(HOST) --shot 600 --size 140x40 --seed 99 --demo --drive  --png docs/media/drive.png
 	@$(TOOLS)/strip.sh > docs/media/tour-strip.txt
 	@$(BAKE) --sheet > docs/media/glyph-sheet.txt
 	@$(TOOLS)/viceshot.sh $(PRG) docs/media/plus4.png

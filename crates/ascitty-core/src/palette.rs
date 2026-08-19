@@ -124,11 +124,20 @@ pub fn to_rgb(c: Color) -> (u8, u8, u8) {
     // also the depth ramp: `darken` walks a colour down to luminance zero to
     // mean "too far away to see", and that has to arrive at black.  Scaling
     // chroma with luminance makes the bottom of every ramp the same black.
+    //
+    // The angle is measured from the U axis, not from V: `u` is the cosine
+    // and `v` is the sine, which is the convention the TED's published
+    // angles are quoted in.  Taking them the other way round mirrors the
+    // whole colour wheel about its diagonal and quietly renames every hue -
+    // red comes out pale blue, yellow comes out cyan, and the yellow cab is
+    // the wrong colour in every picture of it.  Nothing caught it because
+    // the ramp still went black to bright and every test here asked about
+    // luminance.
     let (u, v) = if hue == H_WHITE {
         (0.0, 0.0)
     } else {
         let th = HUE_ANGLE[hue as usize].to_radians();
-        (SATURATION * y * th.sin(), SATURATION * y * th.cos())
+        (SATURATION * y * th.cos(), SATURATION * y * th.sin())
     };
     // Rec.601 YUV -> RGB, then a mild gamma so the dark end of an eight-step
     // ramp does not collapse into one indistinguishable black.
@@ -203,6 +212,36 @@ mod tests {
         for h in 0..16u8 {
             assert_eq!(to_rgb(rgb_index(h, 0)), (0, 0, 0));
         }
+    }
+
+    /// Every hue is the colour its name says it is.
+    ///
+    /// Stated as which channels lead, because that is what a name like
+    /// "red" actually claims and it holds at any saturation: nothing here
+    /// asserts a particular RGB triple, so the palette can be retuned
+    /// without rewriting the test.  Measured at luminance 4, in the middle
+    /// of the ramp, where the chroma is neither crushed to black nor washed
+    /// towards white.
+    #[test]
+    fn a_hue_is_the_colour_it_is_named_after() {
+        let at = |h: u8| to_rgb(rgb_index(h, 4));
+        let (r, g, b) = at(H_RED);
+        assert!(r > g && r > b, "red is not red: {r},{g},{b}");
+        let (r, g, b) = at(H_GREEN);
+        assert!(g > r && g > b, "green is not green: {r},{g},{b}");
+        let (r, g, b) = at(H_BLUE);
+        assert!(b > r && b > g, "blue is not blue: {r},{g},{b}");
+        let (r, g, b) = at(H_YELLOW);
+        assert!(r > b && g > b, "yellow is not yellow: {r},{g},{b}");
+        let (r, g, b) = at(H_CYAN);
+        assert!(g > r && b > r, "cyan is not cyan: {r},{g},{b}");
+        let (r, g, b) = at(H_PURPLE);
+        assert!(r > g && b > g, "purple is not purple: {r},{g},{b}");
+        let (r, g, b) = at(H_ORANGE);
+        assert!(r > g && g > b, "orange is not orange: {r},{g},{b}");
+        // White carries no chroma at all, at any luminance.
+        let (r, g, b) = at(H_WHITE);
+        assert!(r == g && g == b, "white is tinted: {r},{g},{b}");
     }
 
     #[test]
