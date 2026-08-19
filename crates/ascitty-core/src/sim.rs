@@ -1256,12 +1256,18 @@ impl Sim {
         }
         for pd in &self.peds {
             if near(pd.x, pd.y) {
+                // Twice as tall as it was, and the same width.
+                //
+                // Three fifths of a cell is a metre and a half against a
+                // car's length of four, which is a person seen from a
+                // helicopter and a bollard seen from the pavement.  Six
+                // fifths reads as somebody standing there.
                 let mut b = Billboard::upright(
                     Stamp::Ped,
                     pd.x,
                     pd.y,
                     fixed::ratio(1, 3),
-                    fixed::ratio(3, 5),
+                    fixed::ratio(6, 5),
                     pd.hue,
                 );
                 b.phase = pd.phase;

@@ -52,9 +52,21 @@ impl View {
 
 }
 
-/// How fast the head tilts while a look key is held, in screen rows a
-/// second.  Twenty is the whole useful range of tilt in about half a second.
-const LOOK_ROWS: Fx = fixed::ratio(20, 1);
+/// How fast the head tilts while a look key is held, as a fraction of the
+/// frame's height a second.
+///
+/// A whole frame every second, which sweeps the useful range of tilt - a
+/// third of the frame either side of level - in two thirds of a second.
+///
+/// A fraction rather than a count of rows, and that is the fix rather than
+/// the number: a row is a fixed *angle* only for one frame size.  The tilt
+/// used to be twenty rows a second, which on the twenty-four-row window
+/// somebody flies a helicopter in is nearly the whole range in a second and
+/// on a sixty-row one is a third of it - the same key doing different things
+/// depending on how big the terminal is.  Tying it to the frame makes it an
+/// angular rate, because the frame is a fixed field of view however many
+/// rows it is cut into.
+const LOOK_FRAMES: Fx = ONE;
 
 /// One control, as an analogue axis rather than a button.
 ///
@@ -472,12 +484,23 @@ fn chase(cam: &mut Camera, sim: &Sim, city: &City, rows: i32, head: &mut Head, h
     // roof, the glass and the chequer band - the parts that say it is a
     // taxi - and the rest of the frame is street, which is what the height
     // is for.
-    cam.z = city.ground(fixed::floor(cam.x), fixed::floor(cam.y)) + fixed::ratio(11, 10);
-    // Looking slightly down at the road, plus wherever the driver's head has
-    // got to.  Positive pitch is down, so a head thrown back by the throttle
-    // subtracts and you see sky.
+    cam.z = city.ground(fixed::floor(cam.x), fixed::floor(cam.y)) + fixed::ratio(13, 10);
+    // Looking down at the road, plus wherever the driver's head has got to.
+    //
+    // Positive pitch is *up*: the horizon is drawn at `h/2 + pitch`, row zero
+    // is the top of the frame, and a horizon further down the frame has more
+    // sky above it.  This read the other way round for a long time - the
+    // comment here said so - which put two things the wrong way round at
+    // once.  The camera looked slightly up rather than slightly down, and
+    // the head bobbed backwards: standing on the throttle pitched the view
+    // at the road and standing on the brakes threw it at the sky, which is
+    // exactly the opposite of what a driver's neck does.
+    //
+    // A seventh of the frame down, which on a forty-row frame puts the
+    // horizon about six rows above the middle and fills the bottom two
+    // thirds with street.
     head.step(&sim.taxi, hz);
-    cam.pitch = rows / 10 + head.rows(rows);
+    cam.pitch = -(rows / 7) - head.rows(rows);
 }
 
 struct Opts {
@@ -1133,10 +1156,11 @@ fn run(mut o: Opts) -> Result<(), String> {
             cam.turn(((turn as i64 * spin as i64) >> 16) as i32);
             // The head tilts at a rate, and rows are whole numbers, so the
             // fraction is carried rather than thrown away - at thirty frames
-            // a second a rate of twenty rows a second is two thirds of a row
+            // a second a rate of one frame a second is one and a third rows
             // per frame, and dropping that is a camera that never looks up.
             let look = hands.at(Ctl::LookDown) - hands.at(Ctl::LookUp);
-            tilt_carry += fixed::div(fixed::mul(look, LOOK_ROWS), fixed::from_int(o.fps.max(1) as i32));
+            let rate = fixed::mul(LOOK_FRAMES, fixed::from_int(f.h as i32));
+            tilt_carry += fixed::div(fixed::mul(look, rate), fixed::from_int(o.fps.max(1) as i32));
             let whole = fixed::floor(tilt_carry);
             if whole != 0 {
                 tilt_carry -= fixed::from_int(whole);
@@ -1449,7 +1473,10 @@ mod tests {
     }
 
     /// Under power the head goes back and you see sky; hard on the brakes it
-    /// is thrown forward and you see road.  Positive pitch is down.
+    /// is thrown forward and you see road.
+    ///
+    /// [`Head::rows`] is signed the way the neck is - negative is back - and
+    /// the caller negates it, because positive *pitch* is up.
     #[test]
     fn the_head_leans_back_under_power_and_forward_under_braking() {
         let up = head_run(&[(fixed::from_int(10), HZ)]);
@@ -1517,22 +1544,24 @@ mod tests {
         let mut head = Head::default();
         let mut ev = Vec::new();
         let rows = 40;
-        let mut sky = i32::MAX;
+        // Positive pitch is up, so flat out is the *high* pitch and hard on
+        // the brakes is the low one.
+        let mut sky = i32::MIN;
         for _ in 0..HZ {
             sim.step(&city, &Controls { throttle: ONE, ..Default::default() }, HZ, &mut ev);
             chase(&mut cam, &sim, &city, rows, &mut head, HZ, 0);
-            sky = sky.min(cam.pitch);
+            sky = sky.max(cam.pitch);
         }
-        let mut road = i32::MIN;
+        let mut road = i32::MAX;
         for _ in 0..HZ / 2 {
             sim.step(&city, &Controls { throttle: -ONE, ..Default::default() }, HZ, &mut ev);
             chase(&mut cam, &sim, &city, rows, &mut head, HZ, 0);
-            road = road.max(cam.pitch);
+            road = road.min(cam.pitch);
         }
         assert!(
-            road - sky >= 6,
+            sky - road >= 6,
             "the horizon moved {} rows between flat out and hard on the brakes",
-            road - sky
+            sky - road
         );
     }
 

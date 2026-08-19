@@ -123,7 +123,7 @@ impl Billboard {
 #[rustfmt::skip]
 const LAMP_POST_ART: [&str; 8] = [
     "  .:*:. ",
-    "  :*o*: ",
+    "  :*O*: ",
     "  .:*:. ",
     "   ||   ",
     "   ||   ",
@@ -357,6 +357,15 @@ fn glyph_for(c: char, hue: u8, phase: u8) -> Option<(GlyphId, u8, u8)> {
                 (catalog::ST_LAMP, palette::H_RED, 5)
             }
         }
+        // A street light, which is lit and stays lit.
+        //
+        // It used to share the cars' 'o' - the lamp that is white when it is
+        // pointed at you and red when it is not - so a row of street lights
+        // changed colour as you drove past them, and a lamp post that goes
+        // white, red, white is a lamp post that is flashing.  A street light
+        // has no front and no back: it is the same full-intensity lamp from
+        // every side, all the time.
+        'O' => (catalog::ST_LAMP, palette::H_YELLOW, 7),
         'T' => (catalog::FLORA_CANOPY, palette::H_GREEN, 4),
         't' => (catalog::FLORA_TRUNK, palette::H_BROWN, 3),
         'L' => (catalog::G_QUAD + 12 - 1, hue, 4), // lower half - the flank
@@ -488,6 +497,21 @@ fn body_half(body: Body, side: bool, v: Fx) -> Fx {
 }
 
 /// Where the glass stops and the doors start, down the card.
+/// Where the lamps stop and the bumper starts, down the card.
+///
+/// The lamps and the front wheels want the same corner of the card, and on a
+/// car the lamp is the higher of the two: a front view is lamp and bumper
+/// across the bottom with the tyres showing beneath.  Sampled at six rows a
+/// car gets one row in the lamp band and one below it, which is exactly the
+/// arrangement, and it survives all the way down to the smallest car drawn.
+const BUMPER: Fx = fixed::ratio(82, 100);
+
+/// How far up the card the wheel arches are cut, from the ground line.
+///
+/// A fifth of the card: about half the height of the body below the waist,
+/// which is where a wheel arch reaches on a car that is not a hot rod.
+const ARCH: Fx = fixed::ratio(20, 100);
+
 fn waist_of(body: Body, side: bool) -> Fx {
     match (body, side) {
         (Body::Bus, _) => fixed::ratio(55, 100),
@@ -523,23 +547,69 @@ pub fn paint_car(
     let ground = fixed::ratio(88, 100);
     let lamps = fixed::ratio(70, 100);
 
-    // Wheels first: they stick out below the body and are the only part of
-    // it that is not the body's colour.
-    if v > ground {
-        let (near, far) = if side {
-            (fixed::ratio(22, 100), fixed::ratio(46, 100))
+    let half = body_half(body, side, v);
+
+    // Lamps, at the bottom corners of the end you are looking at.
+    //
+    // Before the wheels, because they share that corner of the card and the
+    // lamp is the smaller of the two: a car seen end-on is mostly lamp and
+    // bumper down there, with the tyres showing between them.
+    if !side
+        && v > lamps
+        && v < BUMPER
+        && mid <= half
+        && mid > half - fixed::ratio(16, 100)
+    {
+        return Some(if phase & 1 == 1 {
+            (catalog::G_SOLID, palette::H_WHITE, 7)
+        } else if phase & 2 == 2 {
+            (catalog::G_SOLID, palette::H_RED, 7)
         } else {
-            (fixed::ratio(26, 100), fixed::ratio(44, 100))
-        };
-        return if mid > near && mid < far {
-            Some((catalog::G_SOLID, palette::H_WHITE, 1))
-        } else {
-            None
-        };
+            (catalog::G_SOLID, palette::H_RED, 4)
+        });
     }
 
-    let half = body_half(body, side, v);
-    if mid > half {
+    // Wheels and the arches they sit in.
+    //
+    // The wheels used to be a dark grey bar under the sills, which at a
+    // distance is a shadow: the car had no visible running gear at all, and
+    // side-on it read as a brick.  A wheel is black, and what makes it look
+    // like a wheel rather than a stripe is the *arch* - a black bite taken
+    // out of the bodywork above it, which is the one part of a car's
+    // silhouette that says where its wheels are from any angle.
+    //
+    // The arch is a parabola rather than a semicircle, because it costs two
+    // multiplies and no square root and nobody has ever looked at a car and
+    // said the wheel arch was the wrong conic.
+    let (near, far) = if side {
+        (fixed::ratio(22, 100), fixed::ratio(46, 100))
+    } else {
+        (fixed::ratio(26, 100), fixed::ratio(44, 100))
+    };
+    if mid > near && mid < far {
+        let hub = (near + far) / 2;
+        let span = (far - near) / 2;
+        // 1 at the middle of the wheel, 0 at its edges.
+        let t = fixed::div(mid - hub, span.max(1));
+        let lift = (ONE - fixed::mul(t, t)).clamp(0, ONE);
+        let arch = ground - fixed::mul(ARCH, lift);
+        if v > arch {
+            // A lighter hub, so a big wheel reads as a wheel rather than as
+            // a hole.  It is smaller than one character at the sizes a car
+            // in traffic is drawn at, which is the right way round: near
+            // cars get the detail and far ones get a black wheel.
+            let up = fixed::div(ground - v, ARCH.max(1));
+            let spoke = fixed::abs(up - fixed::ratio(35, 100)) < fixed::ratio(12, 100)
+                && fixed::abs(t) < fixed::ratio(30, 100);
+            return Some(if spoke {
+                (catalog::G_SOLID, palette::H_WHITE, 2)
+            } else {
+                (catalog::G_SOLID, palette::H_BLACK, 0)
+            });
+        }
+    }
+
+    if v > ground || mid > half {
         return None;
     }
 
@@ -582,17 +652,6 @@ pub fn paint_car(
                 if white { 7 } else { 0 },
             ));
         }
-    }
-
-    // Lamps, at the bottom corners of the end you are looking at.
-    if !side && v > lamps && mid > half - fixed::ratio(16, 100) {
-        return Some(if phase & 1 == 1 {
-            (catalog::G_SOLID, palette::H_WHITE, 7)
-        } else if phase & 2 == 2 {
-            (catalog::G_SOLID, palette::H_RED, 7)
-        } else {
-            (catalog::G_SOLID, palette::H_RED, 4)
-        });
     }
 
     // The body, shaded down towards the sills so that it reads as a rounded
@@ -910,10 +969,14 @@ mod tests {
                     if hue == palette::H_RED && luma == 7 {
                         lamp += 1;
                     }
-                    if hue == palette::H_WHITE && luma == 1 {
+                    // Black low down is a wheel or its arch; black higher up
+                    // is the dark square of the chequer band.  The two are
+                    // the same colour and are told apart by where they are,
+                    // which is also how you tell them apart looking at it.
+                    if hue == palette::H_BLACK && v > fixed::ratio(70, 100) {
                         wheel += 1;
                     }
-                    if hue == palette::H_BLACK {
+                    if hue == palette::H_BLACK && v < fixed::ratio(70, 100) {
                         band += 1;
                     }
                 }
@@ -923,6 +986,39 @@ mod tests {
             assert!(wheel > 0, "{rows} rows: no wheels");
             assert!(band > 0, "{rows} rows: no chequer band");
         }
+    }
+
+    /// Side-on, a car has black wheels sitting in black arches.
+    ///
+    /// The two are the same colour and are told apart by shape: the arch is
+    /// a bite out of the bodywork, so above the ground line there is black
+    /// at the wheels and body colour between them.  A car with a plain black
+    /// bar along its bottom passes a test for "black low down" and looks
+    /// like a brick, so what is asserted is the *gap*.
+    #[test]
+    fn a_car_seen_side_on_has_wheels_in_arches() {
+        let sky = (palette::H_BLUE, 5);
+        let rows = 24;
+        let row = |v: Fx| {
+            let mut black = 0;
+            let mut body = 0;
+            for c in 0..rows * 2 {
+                let u = fixed::div(fixed::from_int(c) + fixed::HALF, fixed::from_int(rows * 2));
+                match paint_car(Body::Saloon, true, u, v, palette::H_RED, 0, sky) {
+                    Some((_, palette::H_BLACK, _)) => black += 1,
+                    Some((_, h, _)) if h == palette::H_RED => body += 1,
+                    _ => {}
+                }
+            }
+            (black, body)
+        };
+        // Just above the ground line: wheels and arches, with sill between.
+        let (black, body) = row(fixed::ratio(85, 100));
+        assert!(black >= 4, "only {black} cells of wheel across the bottom of the car");
+        assert!(body > 0, "the bottom of the car is all wheel - no sill between the arches");
+        // Halfway up the doors: no black at all.
+        let (black, _) = row(fixed::ratio(60, 100));
+        assert_eq!(black, 0, "black in the middle of the door");
     }
 
     /// The windows take the sky's colour, whatever the sky is doing.

@@ -59,7 +59,7 @@ const ARROW_ROW: Fx = fixed::ratio(4, 5);
 ///
 /// It is sized in world units, so this keeps it the same size on the screen
 /// as the camera changes: further away, proportionally bigger.
-const ARROW_LONG: Fx = fixed::ratio(2, 5);
+const ARROW_LONG: Fx = fixed::ratio(1, 5);
 /// Half the width of its shaft, as a fraction of its length.
 const ARROW_SHAFT: Fx = fixed::ratio(22, 100);
 /// Half the width of the head where it is widest, likewise.
@@ -67,7 +67,13 @@ const ARROW_BARB: Fx = fixed::ratio(70, 100);
 /// Where along the arrow the head starts, from the middle, likewise.
 const ARROW_NECK: Fx = fixed::ratio(25, 100);
 /// How thick the black outline is, likewise.
-const ARROW_EDGE: Fx = fixed::ratio(10, 100);
+///
+/// A fifth of the arrow's length.  It was a tenth, which on an arrow that
+/// has since been halved is about one character: an outline one character
+/// thick is a line that the dithering eats where the arrow crosses a bright
+/// roof, and the outline is the only reason the arrow is readable over the
+/// cab at all.
+const ARROW_EDGE: Fx = fixed::ratio(20, 100);
 /// How far back from the point the tip is a different colour, as a fraction
 /// of the arrow's length.
 ///

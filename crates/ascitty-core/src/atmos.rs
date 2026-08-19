@@ -518,34 +518,41 @@ impl Atmos {
     /// reads immediately. Against a facade it is competing with the window
     /// grid that carries the whole picture, and at any density that shows up
     /// there it stops looking like weather and starts looking like the
-    /// screen needs cleaning. So the sky gets the full fall and anything
-    /// already drawn gets a fifth of it - enough that the rain is plainly
-    /// passing in front of the buildings, not enough to eat them.
+    /// screen needs cleaning. So rain falls on the sky and on nothing else:
+    /// it is weather in the distance, over the horizon and down the gaps
+    /// between the towers, and the street you are driving on is dry.
     ///
-    /// "Already drawn" is a blank glyph or a colour that has faded to black,
-    /// so distant buildings the haze has taken count as sky, which is what
-    /// they look like.
+    /// "Sky" is a blank glyph or a colour that has faded to black, so the
+    /// distant buildings the haze has taken count as sky, which is what they
+    /// look like - the curtain of rain therefore begins about where the city
+    /// stops being legible, which is where weather belongs.
+    ///
+    /// It falls straight down. It used to lean with the camera's heading,
+    /// which is a nice idea and reads as the whole screen being dragged
+    /// sideways when you turn the wheel, and the streaks used to scroll
+    /// *upwards*: the glyph's phase shifts the pattern up as it increases,
+    /// so adding the tick to it made the rain rise.
     pub fn rain_over(&self, f: &mut Frame, cam: &Camera) {
+        let _ = cam;
         if self.rain == 0 {
             return;
         }
         let sky_density = self.rain as u32 * 3;
-        let over_density = (sky_density / 5).max(1);
-        let lean = (trig::sin(cam.yaw) >> 14) as i32; // -4..4 cells of drift
         let scroll = (self.tick as i32 * 3) as u32;
         for y in 0..f.h as i32 {
             for x in 0..f.w as i32 {
                 let behind = f.get(x, y);
                 let on_sky =
                     behind.glyph == catalog::G_BLANK || palette::luma_of(behind.color) == 0;
-                let density = if on_sky { sky_density } else { over_density };
-                let sx = (x + (y * lean) / 8) as u32;
-                let h = hash3(sx, (y as u32).wrapping_add(scroll / 2), 0x_4241_4E00);
-                if (h & 255) >= density {
+                if !on_sky {
                     continue;
                 }
-                let luma = if on_sky { 3 } else { 2 };
-                let phase = ((y as u32).wrapping_add(scroll) & 7) as u8;
+                let h = hash3(x as u32, (y as u32).wrapping_add(scroll / 2), 0x_4241_4E00);
+                if (h & 255) >= sky_density {
+                    continue;
+                }
+                let luma = 3;
+                let phase = ((y as u32).wrapping_sub(scroll) & 7) as u8;
                 f.put(
                     x,
                     y,
@@ -883,8 +890,16 @@ use crate::camera::Camera;
         assert!(wet < f.cels.len() / 2, "{wet} cells - that is a wall of water");
     }
 
+    /// Rain is weather in the distance, not spots on the lens.
+    ///
+    /// It used to fall over the buildings too, at a fifth of the density, on
+    /// the grounds that rain in front of a facade is what rain looks like
+    /// from inside it.  It is, and at any density you can see it also looks
+    /// like a dirty screen - and this is a city where the near buildings are
+    /// the picture.  Now the facade stays dry and the sky behind it does the
+    /// weather.
     #[test]
-    fn rain_falls_mostly_against_the_sky_and_not_over_the_buildings() {
+    fn rain_falls_against_the_sky_and_not_over_the_buildings() {
         // Left half is a lit facade, right half is night sky.
         let mut f = Frame::new(80, 60);
         for y in 0..60 {
@@ -906,11 +921,41 @@ use crate::camera::Camera;
             .count();
 
         assert!(sky > 100, "the sky is barely raining ({sky} cells)");
-        assert!(
-            sky > built * 3,
-            "rain over the buildings ({built}) is not far enough below the sky ({sky})"
-        );
-        assert!(built > 0, "no rain at all in front of the buildings");
+        assert_eq!(built, 0, "{built} cells of rain over the buildings");
+    }
+
+    /// The streaks fall downwards.
+    ///
+    /// Two links in one chain, and the bug was in the join between them.
+    /// [`crate::font::rain_streak`] shifts its pattern *up* the cell as the
+    /// phase rises - that is asserted in `font` - so the phase has to count
+    /// down with the tick for the rain to come down.  The obvious "add the
+    /// tick" makes rain that rises, and nobody looks at a still frame long
+    /// enough to notice which way the streaks are going.
+    #[test]
+    fn rain_falls_downwards() {
+        for tick in [0u32, 1, 2, 7, 100] {
+            let mut f = Frame::new(24, 24);
+            let a = Atmos { rain: 8, tick, ..Default::default() };
+            a.rain_over(&mut f, &Camera::default());
+            let mut seen = 0;
+            for y in 0..24i32 {
+                for x in 0..24i32 {
+                    let g = f.get(x, y).glyph;
+                    if !(catalog::G_RAIN..catalog::G_RAIN + 8).contains(&g) {
+                        continue;
+                    }
+                    seen += 1;
+                    let want = ((y as u32).wrapping_sub(tick * 3) & 7) as u8;
+                    assert_eq!(
+                        g - catalog::G_RAIN,
+                        want,
+                        "tick {tick}, row {y}: the streak is not walking down the screen"
+                    );
+                }
+            }
+            assert!(seen > 0, "tick {tick}: no rain to check");
+        }
     }
 
     #[test]

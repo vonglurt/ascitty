@@ -222,6 +222,11 @@ pub fn vrule(x: u32, thick: u32) -> Bitmap {
 /// Rain is drawn as a glyph rather than as a particle: the cell it lands in
 /// picks a streak whose phase comes from the frame counter, so a downpour
 /// costs one table lookup per wet cell instead of a particle system.
+///
+/// A rising phase moves the pattern *up* the cell, so a caller animating it
+/// has to count the phase down for the rain to fall down.  That is asserted
+/// in `a_rising_phase_walks_the_streak_up_the_cell`, because it is the sort
+/// of thing that is obvious in the code and invisible in a screenshot.
 pub fn rain_streak(dx: i32, phase: u32) -> Bitmap {
     let mut bm = BLANK;
     for y in 0..8i32 {
@@ -438,5 +443,29 @@ mod tests {
         let (n, mx, my) = moments(&quadrant(0b0001));
         assert_eq!(n, 16);
         assert!(mx < 4 && my < 4);
+    }
+}
+
+#[cfg(test)]
+mod rain_tests {
+    use super::*;
+
+    /// A rising phase walks the streak up the cell.
+    #[test]
+    fn a_rising_phase_walks_the_streak_up_the_cell() {
+        let top = |p: u32| {
+            let bm = rain_streak(0, p);
+            (0..8u32).find(|&y| get_px(&bm, 4, y))
+        };
+        // Column 4 is where a streak with no lean sits.  As the phase rises
+        // by one the first lit row moves one row earlier, wrapping at the
+        // top of the cell.
+        for p in 0..7u32 {
+            let a = top(p).unwrap_or_else(|| panic!("phase {p} draws nothing"));
+            let b = top(p + 1).unwrap_or_else(|| panic!("phase {} draws nothing", p + 1));
+            if a > 0 {
+                assert_eq!(b, a - 1, "phase {p} to {}: top row {a} then {b}", p + 1);
+            }
+        }
     }
 }

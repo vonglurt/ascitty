@@ -178,6 +178,18 @@ forty-row frame, and it is underdamped on purpose so that lifting off swings
 the view past level and back. The numbers and the reasoning are in
 [driving.md](driving.md).
 
+**Positive pitch is up.** The horizon is drawn at `h/2 + pitch`, row zero is
+the top of the frame, and a horizon further down the frame has more sky above
+it. `raycast::pitch_down` returns a large negative number for the same
+reason. That sign was written down backwards once, in the one place that sets
+the driving camera, and it put two things the wrong way round at the same
+time: the chase camera looked slightly *up* rather than slightly down at the
+road, and the head bobbed the wrong way — standing on the throttle threw the
+view at the tarmac and standing on the brakes threw it at the sky. Both were
+one minus sign. The driving camera now sits a seventh of the frame below
+level, which on a forty-row frame puts the horizon six rows above the middle
+and fills the bottom two thirds with street.
+
 ### Holding a key down
 
 Every control is an analogue axis rather than a flag: a press winds the level
