@@ -19,9 +19,14 @@ along a street.
 
 ```text
 cell             ~6 m
-map              18 blocks square, 234 cells
+map              28 blocks square, 364 cells
+inhabited world  26 blocks square       zone::WORLD_BLOCKS
 built city       16 blocks square       zone::CITY_BLOCKS
 downtown core     8 blocks square       zone::CORE_BLOCKS
+suburb            3 rings               zone::SUBURB_RINGS
+farmland          1 ring                zone::FARM_RINGS
+last houses       1 ring                zone::OUTSKIRT_RINGS
+coast            26 cells of the south  zone::SHORE_CELLS
 block             at least 8 cells      zone::MIN_BLOCK
 nominal pitch    13 cells               zone::BLOCK_PITCH
 arterial         12-16 cells - 72-96 m, kerb to kerb
@@ -140,7 +145,10 @@ The city is laid out as rings of blocks measured from the middle:
 ```text
    ring 0-3     the downtown core - towers, the arterials, full intensity
    ring 4-7     the rest of the city, intensity falling to a fifth
-   ring 8+      outskirts; nothing is raised
+   ring 8-10    suburb - one-storey houses on wide plots, gardens between
+   ring 11      farmland - fields, with a farmhouse in about half of them
+   ring 12      the last houses, and no road runs through them
+   ring 13+     nothing
 ```
 
 Measured in **blocks**, not cells. Dividing a cell distance by the block
@@ -152,6 +160,59 @@ The ring is the "decreasing height outwards" the whole layout is arranged
 around. It multiplies with the zone's own ceiling and with the lot's
 footprint, so an office tower on a big downtown lot may be ninety cells and
 the same use on a small lot at the edge may be six.
+
+### Why there is a world outside the city
+
+Five rings of it, and they exist to answer a question the map edge asks and
+nothing used to answer: *why can I not drive that way?*
+
+A city that stops at a kerb with nothing beyond it reads as a diorama on a
+table. So it thins instead — three rings of single-storey houses on plots
+wide enough to see between, then a ring of fields with the occasional
+farmhouse standing in one, then one last row of houses that no road runs
+through. By the time you have driven far enough to find the edge, the answer
+to "why not further" is "there is nothing out there", which is the true
+answer and does not need a wall to make it.
+
+The rings are zoned by ring rather than by dice. Inside the city a park is a
+roll of the die per block, because a city is a mixture; outside it the whole
+point is that the bands are legible from a long way off, and a scatter of
+farmland through the suburbs would read as gaps rather than as countryside.
+
+**The last ring has no roads in it.** The street plan is two one-dimensional
+axes laid over the whole map, so it cannot express "no roads here" — every
+road runs edge to edge by construction. They are painted out afterwards
+instead, and the block filler never notices, because it walks the *plan*
+looking for buildable runs: the houses still get built and the ground
+between them is green rather than tarmac. What that costs is a flood fill:
+cutting roads leaves stubs — a street whose only way back to the rest of the
+map went through ground that is now a field — and a stub is worse than no
+road, because it is somewhere the traffic can be generated and never leave,
+and somewhere a fare can be placed that no cab can reach. So the carriageway
+is flooded from the middle and anything the flood does not reach stops being
+road. Seven components, in the first city this was measured on.
+
+**And the draw distance went up by a block**, at every haze setting, for the
+same reason the rings are there: from the fields the towers have to be
+*visible*, so that the way back to the middle is something you can see
+rather than something you have to remember.
+
+### The south is a coast
+
+The last twenty-six cells of the south edge are beach and then sea. One
+coast rather than four: an island reads as a model of a city and a coastline
+reads as a city that has a sea on one side of it, which is what most of them
+have. It is always the south, so "drive towards the water" is a direction
+you can learn.
+
+The sea is levelled to the datum rather than following the terrain — it is
+not ground that has been built on, it is the thing ground height is measured
+from — and it is painted after the buildings, because the plan lays roads
+across the whole map and a block that straddles the tide line gets built
+before the coast is drawn. Whatever is on that ground when the coast pass
+arrives, it is beach now.
+
+Sand is walkable and not drivable; water is neither.
 
 ## 2b. Elevation
 

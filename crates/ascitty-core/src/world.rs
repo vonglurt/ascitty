@@ -16,7 +16,7 @@ use crate::elevation::Elevation;
 use crate::rng::{hash3, Rng};
 use crate::shadow::{self, ShadowMap};
 use crate::walk::WalkMap;
-use crate::zone::{self, Use, Zone, ZoneMap, BLOCK_PITCH, CITY_BLOCKS, MIN_BLOCK};
+use crate::zone::{self, Use, Zone, ZoneMap, BLOCK_PITCH, MIN_BLOCK};
 
 /// The city is this many cells on a side.
 ///
@@ -25,7 +25,7 @@ use crate::zone::{self, Use, Zone, ZoneMap, BLOCK_PITCH, CITY_BLOCKS, MIN_BLOCK}
 /// rather than one that coincides with the end of the world.  The lot record
 /// stores its footprint corners as `u8`, so this must stay under 256, which
 /// eighteen blocks of thirteen cells comfortably does.
-pub const SIZE: usize = BLOCK_PITCH * (CITY_BLOCKS as usize + 2);
+pub const SIZE: usize = BLOCK_PITCH * (zone::WORLD_BLOCKS as usize + 2);
 
 /// A cell is about this many metres across.  Not used in any calculation -
 /// the renderer works in cells throughout - but every dimension in this file
@@ -46,6 +46,10 @@ pub enum Kind {
     Park = 3,
     /// Paved open ground - a plaza.
     Plaza = 4,
+    /// Dry sand: the beach along the south edge.
+    Sand = 5,
+    /// The sea.  Nothing stands on it and nothing drives on it.
+    Water = 6,
 }
 
 /// One cell of the height field.
@@ -109,13 +113,13 @@ impl Arch {
 #[derive(Clone, Copy, Debug)]
 pub struct Lot {
     /// West edge of the footprint, inclusive, in cells.
-    pub x0: u8,
+    pub x0: u16,
     /// North edge of the footprint, inclusive.
-    pub y0: u8,
+    pub y0: u16,
     /// East edge of the footprint, inclusive.
-    pub x1: u8,
+    pub x1: u16,
     /// South edge of the footprint, inclusive.
-    pub y1: u8,
+    pub y1: u16,
     /// Height of the tallest part, in world units.
     pub height: u8,
     /// How it is built.
@@ -145,11 +149,11 @@ pub struct Lot {
 
 impl Lot {
     /// Width in cells.
-    pub fn w(&self) -> u8 {
+    pub fn w(&self) -> u16 {
         self.x1 - self.x0 + 1
     }
     /// Depth in cells.
-    pub fn d(&self) -> u8 {
+    pub fn d(&self) -> u16 {
         self.y1 - self.y0 + 1
     }
 }
@@ -726,6 +730,31 @@ impl City {
             }
         }
 
+        // Pass 1b: no roads through the last ring of houses.
+        //
+        // The street plan is two one-dimensional axes laid over the whole
+        // map, so it cannot express "no roads here" - every road runs from
+        // edge to edge by construction.  This paints them out instead, and
+        // the block filler never notices: it walks the *plan* looking for
+        // buildable runs, so the houses still get built and the ground
+        // between them is green rather than tarmac.
+        //
+        // Which is the point of the ring.  The last houses are reached
+        // across the fields and not by road, so driving out that way ends
+        // with the surface running out rather than with a wall, and there
+        // is nothing beyond them worth reaching.
+        for y in 0..SIZE as i32 {
+            for x in 0..SIZE as i32 {
+                if zones.ring(x, y) < zone::FARM_EDGE {
+                    continue;
+                }
+                let i = y as usize * SIZE + x as usize;
+                if matches!(cells[i].kind, Kind::Road | Kind::Sidewalk) {
+                    cells[i].kind = Kind::Park;
+                }
+            }
+        }
+
         // Pass 2: find each block and fill it.
         //
         // A block is a maximal run of buildable cells in both directions.
@@ -773,6 +802,83 @@ impl City {
                     );
                 }
                 x = x1 + 1;
+            }
+        }
+
+        // Pass 2b: the coast.
+        //
+        // After the buildings rather than before, because the plan lays
+        // roads across the whole map and a block that straddles the tide
+        // line gets built before anything here runs.  Whatever is on this
+        // ground when we arrive, it is beach now.
+        for y in 0..SIZE as i32 {
+            if !zone::is_shore(y, SIZE) {
+                continue;
+            }
+            for x in 0..SIZE as i32 {
+                let mut site = Site {
+                    cells: &mut cells,
+                    lots: &mut lots,
+                    elev: &mut elev,
+                    zones: &zones,
+                    rng: &mut rng,
+                    seed,
+                };
+                shore_cell(&mut site, x as usize, y as usize);
+            }
+        }
+
+        // Pass 2c: one carriageway, not seven.
+        //
+        // Painting the roads out of the last ring and drowning the ones in
+        // the south leaves stubs behind - a street whose only way back to
+        // the rest of the map went through ground that is now a field.  A
+        // stub is worse than no road: it is somewhere the traffic can be
+        // generated and never leave, and somewhere a fare can be placed
+        // that no cab can reach.  So the network is flooded from the middle
+        // and anything the flood does not reach stops being road.
+        //
+        // Seven components, in the city this was first measured on.
+        {
+            let mut seen = vec![false; SIZE * SIZE];
+            let mut queue = Vec::new();
+            let mid = SIZE as i32 / 2;
+            'find: for r in 0..SIZE as i32 / 2 {
+                for dy in -r..=r {
+                    for dx in -r..=r {
+                        let (x, y) = (mid + dx, mid + dy);
+                        if x < 0 || y < 0 || x >= SIZE as i32 || y >= SIZE as i32 {
+                            continue;
+                        }
+                        if cells[y as usize * SIZE + x as usize].kind == Kind::Road {
+                            queue.push((x, y));
+                            seen[y as usize * SIZE + x as usize] = true;
+                            break 'find;
+                        }
+                    }
+                }
+            }
+            while let Some((x, y)) = queue.pop() {
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let (nx, ny) = (x + dx, y + dy);
+                    if nx < 0 || ny < 0 || nx >= SIZE as i32 || ny >= SIZE as i32 {
+                        continue;
+                    }
+                    let i = ny as usize * SIZE + nx as usize;
+                    if seen[i] || cells[i].kind != Kind::Road {
+                        continue;
+                    }
+                    seen[i] = true;
+                    queue.push((nx, ny));
+                }
+            }
+            for y in 0..SIZE {
+                for x in 0..SIZE {
+                    let i = y * SIZE + x;
+                    if cells[i].kind == Kind::Road && !seen[i] {
+                        cells[i].kind = Kind::Park;
+                    }
+                }
             }
         }
 
@@ -895,11 +1001,48 @@ fn fill_block(site: &mut Site, block: Rect) {
     let mid = ((x0 + x1) / 2, (y0 + y1) / 2);
     let zone = site.zones.at(mid.0 as i32, mid.1 as i32);
 
+    // The coast, which is not a block that failed to be built on but a
+    // different thing entirely.  Painted per cell rather than per block,
+    // because a shoreline is a line across the map and a block is a square.
+    if zone == Zone::Shore {
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                shore_cell(site, x, y);
+            }
+        }
+        return;
+    }
+
+    // Farmland: a field, with a house standing in the corner of about half
+    // of them.  Not a "block that is built on" - the lot subdivision that
+    // makes a street of houses makes a housing estate out of a farm, which
+    // is the opposite of what the outer ring is for.
+    if zone == Zone::Farm {
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                site.cells[y * SIZE + x].kind = Kind::Park;
+            }
+        }
+        if site.rng.chance(1, 2) && x1 > x0 + 4 && y1 > y0 + 4 {
+            // In a corner of the field, off the road, the way a farmhouse
+            // sits: a yard, a house, and the rest of it planted.
+            let w = 2 + site.rng.below(2) as usize;
+            let (fx0, fy0) = (x0 + 1, y0 + 1);
+            raise(
+                site,
+                Zone::Farm,
+                4,
+                Rect { x0: fx0, y0: fy0, x1: fx0 + w, y1: fy0 + w },
+            );
+        }
+        return;
+    }
+
     // Some ground is not built on at all, and which ground that is comes
     // from the zoning rather than from a dice roll per block - a park is a
     // place, not an accident.
     if !zone.is_built() {
-        let green = zone == Zone::Park;
+        let green = zone.is_green();
         for y in y0..=y1 {
             for x in x0..=x1 {
                 site.cells[y * SIZE + x].kind = if green { Kind::Park } else { Kind::Plaza };
@@ -919,6 +1062,10 @@ fn fill_block(site: &mut Site, block: Rect) {
     let min_lot = match zone {
         Zone::Downtown => 5,
         Zone::Commercial => 4,
+        // A suburban plot is wide.  That is most of what makes a suburb
+        // look like one from the road: you can see between the houses, and
+        // what is between them is garden.
+        Zone::Suburb => 6,
         _ => 3,
     };
     let mut queue = vec![(x0, y0, x1, y1)];
@@ -948,6 +1095,18 @@ fn fill_block(site: &mut Site, block: Rect) {
     let palette_id = (field(mid.0, mid.1, site.seed ^ 0x_9A11_E77E) / 32) as usize;
 
     for (i, (ax, ay, bx, by)) in out.iter().copied().enumerate() {
+        // Two plots in five out here are garden rather than house, which is
+        // the gap between the houses rather than a missing house: a suburb
+        // built solid is a terrace, and a terrace on a wide plot is a
+        // warehouse.
+        if zone == Zone::Suburb && site.rng.chance(2, 5) {
+            for y in ay..=by {
+                for x in ax..=bx {
+                    site.cells[y * SIZE + x].kind = Kind::Park;
+                }
+            }
+            continue;
+        }
         // On a civic block only the middle lot is built.
         if civic && i != out.len() / 2 {
             for y in ay..=by {
@@ -991,6 +1150,23 @@ const PALETTES: [&[u8]; 8] = [
     // A neon strip
     &[crate::palette::H_PINK, crate::palette::H_PURPLE, crate::palette::H_CYAN],
 ];
+
+/// Paint one cell of the coast.
+///
+/// Sand at the top of the beach and sea below it, with the sea levelled to
+/// the datum so that the terrain generator's gentle grade does not tilt the
+/// water.  Anything that had been laid here - road, pavement, the corner of
+/// a lot - is overwritten, because the coast is not negotiable.
+fn shore_cell(site: &mut Site, x: usize, y: usize) {
+    let water = zone::is_water(y as i32, SIZE);
+    let c = &mut site.cells[y * SIZE + x];
+    c.kind = if water { Kind::Water } else { Kind::Sand };
+    c.lot = NO_LOT;
+    site.elev.build(x as i32, y as i32, 0);
+    if water {
+        site.elev.flatten(x as i32, y as i32, 0);
+    }
+}
 
 /// Put a building on one lot.
 fn raise(site: &mut Site, zone: Zone, palette_id: usize, lot: Rect) {
@@ -1045,7 +1221,31 @@ fn raise(site: &mut Site, zone: Zone, palette_id: usize, lot: Rect) {
     // tallest at about two hundred and forty metres and gives the sky back.
     * 4
         / 5;
-    let height = height.clamp(2, 96) as u8;
+    // Out of town, a house is a house.
+    //
+    // The bands above are machinery for producing a *skyline* - a great many
+    // short buildings, fewer tall ones, the occasional landmark over the
+    // top - and there is no skyline in a suburb.  Worse, the ceiling those
+    // bands work from has a floor of three cells in it, so the landmark roll
+    // put five-cell blocks in the middle of the fields.  Out here the height
+    // is written down rather than rolled for: one cell, and two for one
+    // house in four.
+    //
+    // A cell is six metres, so a one-cell house is a bungalow and a two-cell
+    // one has an upstairs.  That is the whole of the vocabulary, and it is
+    // enough: what makes the outer rings read as outer rings is that the
+    // roofline is flat and low and you can see over it to the towers.
+    let height = if matches!(zone, Zone::Suburb | Zone::Farm) {
+        if site.rng.chance(1, 4) {
+            2
+        } else {
+            1
+        }
+    } else {
+        height
+    };
+    let floor = if matches!(zone, Zone::Suburb | Zone::Farm) { 1 } else { 2 };
+    let height = height.clamp(floor, 96) as u8;
 
     let arch = pick_arch(site.rng, use_, height);
 
@@ -1075,10 +1275,10 @@ fn raise(site: &mut Site, zone: Zone, palette_id: usize, lot: Rect) {
 
     let idx = site.lots.len() as u16;
     site.lots.push(Lot {
-        x0: lot.x0 as u8,
-        y0: lot.y0 as u8,
-        x1: lot.x1 as u8,
-        y1: lot.y1 as u8,
+        x0: lot.x0 as u16,
+        y0: lot.y0 as u16,
+        x1: lot.x1 as u16,
+        y1: lot.y1 as u16,
         height,
         arch,
         use_,
@@ -1193,6 +1393,107 @@ pub fn detail(x: i32, y: i32, salt: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
+/// The world does not stop at the edge of the city.
+    ///
+    /// Five rings of it: three of suburb, one of farmland, one last row of
+    /// houses, and then nothing.  What is asserted is the shape rather than
+    /// the contents - that the built-up part thins out into low houses and
+    /// green, that the last ring has no road in it, and that the south is
+    /// sea - because that is the whole reason the rings exist.
+    #[test]
+    fn the_city_thins_into_country_before_the_map_ends() {
+        for seed in [7u32, 2024, 99] {
+            let city = City::generate(seed);
+            let mid = SIZE as i32 / 2;
+            let pitch = BLOCK_PITCH as i32;
+
+            // Nothing tall out in the fields.  Measured north, which is the
+            // one direction with no coast in it.
+            let mut tallest_outside = 0;
+            let mut roads_in_the_last_ring = 0;
+            let mut green_out_there = 0;
+            let mut cells_out_there = 0;
+            for y in 0..SIZE as i32 {
+                for x in 0..SIZE as i32 {
+                    let r = city.zones.ring(x, y);
+                    if zone::is_shore(y, SIZE) {
+                        continue;
+                    }
+                    if (zone::FARM_EDGE..zone::WORLD_EDGE).contains(&r)
+                        && city.at(x, y).kind == Kind::Road
+                    {
+                        roads_in_the_last_ring += 1;
+                    }
+                    // One ring of slack at the city edge: a block is a run
+                    // of ground between roads and the ring grid is measured
+                    // in nominal blocks, so a block whose middle is the last
+                    // one downtown can reach a cell into the first suburban
+                    // ring.  The zoning is per block, which is the right
+                    // unit; this test is per cell, which is not.
+                    if r > zone::CITY_EDGE && r < zone::WORLD_EDGE {
+                        cells_out_there += 1;
+                        tallest_outside = tallest_outside.max(city.elev.building(x, y));
+                        if city.at(x, y).kind == Kind::Park {
+                            green_out_there += 1;
+                        }
+                    }
+                }
+            }
+            assert_eq!(
+                roads_in_the_last_ring, 0,
+                "seed {seed}: {roads_in_the_last_ring} cells of road in the last ring of houses"
+            );
+            assert!(
+                tallest_outside <= 2,
+                "seed {seed}: something {tallest_outside} cells tall out in the suburb"
+            );
+            assert!(
+                green_out_there * 3 > cells_out_there,
+                "seed {seed}: only {green_out_there} of {cells_out_there} cells outside the city are green"
+            );
+
+            // And the city is still a city.
+            let mut tallest_inside = 0;
+            for y in mid - 3 * pitch..mid + 3 * pitch {
+                for x in mid - 3 * pitch..mid + 3 * pitch {
+                    tallest_inside = tallest_inside.max(city.elev.building(x, y));
+                }
+            }
+            assert!(tallest_inside > 20, "seed {seed}: downtown is only {tallest_inside} cells tall");
+        }
+    }
+
+    /// The south edge is a coast, and it is the end of the road.
+    #[test]
+    fn the_south_edge_is_sea() {
+        let city = City::generate(7);
+        let (mut sand, mut water) = (0, 0);
+        for y in 0..SIZE as i32 {
+            for x in 0..SIZE as i32 {
+                match city.at(x, y).kind {
+                    Kind::Sand => {
+                        sand += 1;
+                        assert!(!city.drivable(x, y), "you can drive on the beach at {x},{y}");
+                        assert_eq!(city.walk.at(x, y), crate::walk::Foot::Path, "the beach at {x},{y} cannot be walked on");
+                    }
+                    Kind::Water => {
+                        water += 1;
+                        assert!(!city.drivable(x, y), "you can drive on the sea at {x},{y}");
+                        assert_eq!(city.walk.at(x, y), crate::walk::Foot::Blocked, "you can walk on water at {x},{y}");
+                        assert_eq!(city.elev.building(x, y), 0, "something is built on the sea at {x},{y}");
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert!(sand > 1_000, "only {sand} cells of beach");
+        assert!(water > 5_000, "only {water} cells of sea");
+        // ...and it is all in the south.
+        for x in 0..SIZE as i32 {
+            assert_ne!(city.at(x, 0).kind, Kind::Water, "there is sea in the north");
+            assert_eq!(city.at(x, SIZE as i32 - 1).kind, Kind::Water, "the south edge is not sea");
+        }
+    }
     use super::*;
 
     fn city() -> City {

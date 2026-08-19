@@ -488,13 +488,39 @@ fn ground(city: &City, atmos: &Atmos, light: &Light, wx: Fx, wy: Fx, dist: Fx) -
             }
         }
         Kind::Plaza => (catalog::ROAD_PAVING, palette::H_WHITE, 4),
+        // The beach: pale, grainy, with the odd darker patch of wet sand
+        // where the tide has been.
+        Kind::Sand => {
+            let h = hash3(gx as u32, gy as u32, 0x_5A4D_0001);
+            if h & 15 == 0 {
+                (catalog::shade(3), palette::H_BROWN, 5)
+            } else {
+                (catalog::shade(2), palette::H_YELLOW, 6)
+            }
+        }
+        // The sea, as bands with crests broken along them.
+        //
+        // No animation and no tick: this is evaluated per ground *sample*,
+        // several thousand times a frame, and the sea is a mile away.  What
+        // makes it read as water rather than as a blue field is that the
+        // crests are a horizontal pattern with vertical noise in it, which
+        // is the one thing a flat blue surface is not.
+        Kind::Water => {
+            let h = hash3(gx as u32, gy as u32, 0x_2A2A_0002);
+            let crest = (gy as u32).wrapping_mul(3).wrapping_add(h >> 5) & 7;
+            if crest < 2 {
+                (catalog::shade(2), palette::H_LIGHT_BLUE, 6)
+            } else {
+                (catalog::shade(6), palette::H_BLUE, 3)
+            }
+        }
         Kind::Building => (catalog::G_SOLID, palette::H_BLACK, 0),
     };
 
     // Wet ground: a puddle picks up the sodium light and gets a lot
     // brighter, which is most of what makes a rained-on street read as
     // rained on rather than as a darker street.
-    if atmos.wet() && cell.kind != Kind::Park {
+    if atmos.wet() && !matches!(cell.kind, Kind::Park | Kind::Sand | Kind::Water) {
         let h = hash3(gx as u32, gy as u32, 0x_5075_4444);
         let size = fixed::ratio(2 + (h & 3) as i32, 8);
         if fixed::abs(fx - fixed::HALF) < size && fixed::abs(fy - fixed::HALF) < size && h & 12 == 0 {
@@ -762,6 +788,7 @@ mod tests {
     use super::*;
     use crate::camera::Camera;
     use crate::world::{City, Plan, SIZE};
+    use crate::zone::BLOCK_PITCH;
 
     fn scene() -> (City, Camera, Atmos) {
         let city = City::generate(2024);
@@ -1145,15 +1172,29 @@ mod tests {
         }
     }
 
+    /// A frame of the city is not one flat thing.
+    ///
+    /// Swept over headings rather than taken from one, because "the middle
+    /// of the map" is a spawn point and not a viewpoint: it can perfectly
+    /// well be a pavement half a cell from a wall, and a camera with its
+    /// nose against a facade correctly draws one facade.  What is being
+    /// asserted is that the city is *there*, so it is enough that some
+    /// heading finds it.
     #[test]
     fn a_frame_gets_drawn_and_is_not_all_one_thing() {
-        let (city, cam, atmos) = scene();
+        let (city, mut cam, atmos) = scene();
         let mut f = Frame::new(120, 40);
-        render(&city, &cam, &atmos, &mut f);
-        let distinct: std::collections::HashSet<_> = f.cels.iter().map(|c| c.glyph).collect();
-        assert!(distinct.len() > 8, "only {} distinct glyphs - that is not a city", distinct.len());
-        let lit = f.cels.iter().filter(|c| c.color != 0).count();
-        assert!(lit > f.cels.len() / 20, "the frame is almost entirely black");
+        let mut best = 0;
+        let mut lit_best = 0;
+        for deg in (0..360).step_by(15) {
+            cam.yaw = crate::trig::from_degrees(deg as f64);
+            render(&city, &cam, &atmos, &mut f);
+            let distinct: std::collections::HashSet<_> = f.cels.iter().map(|c| c.glyph).collect();
+            best = best.max(distinct.len());
+            lit_best = lit_best.max(f.cels.iter().filter(|c| c.color != 0).count());
+        }
+        assert!(best > 8, "only {best} distinct glyphs from any heading - that is not a city");
+        assert!(lit_best > f.cels.len() / 20, "every heading is almost entirely black");
     }
 
     #[test]
@@ -1188,8 +1229,19 @@ mod tests {
         let city = City::generate(31);
         let atmos = Atmos { rain: 0, ..Default::default() };
         let mut f = Frame::new(80, 40);
-        let mut cam = Camera::spawn(&city, SIZE as i32 / 2, SIZE as i32 / 2);
+        // Several viewpoints across the middle of the map, because whether
+        // any one of them has a wall in front of it is an accident of the
+        // plan and this is a test about the renderer.
+        let mut cam;
         let mut found = false;
+        let spots: Vec<(i32, i32)> = (-2..=2)
+            .flat_map(|dy| (-2..=2).map(move |dx| (dx, dy)))
+            .map(|(dx, dy)| {
+                (SIZE as i32 / 2 + dx * BLOCK_PITCH as i32, SIZE as i32 / 2 + dy * BLOCK_PITCH as i32)
+            })
+            .collect();
+        for &(sx, sy) in &spots {
+            cam = Camera::spawn(&city, sx, sy);
         for deg in (0..360).step_by(5) {
             cam.yaw = crate::trig::from_degrees(deg as f64);
             let st = render(&city, &cam, &atmos, &mut f);
@@ -1203,6 +1255,7 @@ mod tests {
                     st.nearest
                 );
             }
+        }
         }
         assert!(found, "the camera never faced a nearby building");
     }

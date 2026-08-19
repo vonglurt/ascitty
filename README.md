@@ -175,10 +175,11 @@ with you. A bus does not care that you hit it.
 | `Boulevard` | 4–5 cells, 24–30 m | |
 | `Arterial` | 12–16 cells, 72–96 m | one or two per city, running its whole length |
 
-Ground is `Road`, `Sidewalk`, `Building`, `Park` or `Plaza`, and the
-difference matters to everything: cars belong on the first, people on the
-rest, fares wait on the pavement, and the walking network is a second map
-over the same grid so that a pedestrian crosses at the crossing.
+Ground is `Road`, `Sidewalk`, `Building`, `Park`, `Plaza`, `Sand` or
+`Water`, and the difference matters to everything: cars belong on the first,
+people on most of the rest, fares wait on the pavement, and the walking
+network is a second map over the same grid so that a pedestrian crosses at
+the crossing.
 
 A pavement is drawn in bands from the kerb inwards — kerb, planted verge,
 paving, and a dark seam at the building line so the wall does not appear to
@@ -186,6 +187,33 @@ float. Standing on it: `LampPost`, `Signal`, `Hydrant` and `Bollard` at the
 kerb, `Tree` in the verge behind them, `Mailbox` and `Meter` on the paving.
 All of it goes over when you hit it, at a velocity and a lean, and none of
 it slows the car down — which is the whole appeal.
+
+### It does not stop at the kerb
+
+The map is twenty-eight blocks square and the city is sixteen of them. What
+is in between is the answer to a question the edge of a map always asks:
+
+```text
+   ring 0-3     downtown - towers, the arterials
+   ring 4-7     the rest of the city, falling away
+   ring 8-10    suburb - one-storey houses on wide plots, gardens between
+   ring 11      farmland - fields, a farmhouse in about half of them
+   ring 12      the last houses, and no road runs through them
+   ring 13+     nothing
+```
+
+A city that stops at a kerb with nothing beyond it reads as a diorama on a
+table. This one thins out instead, so that by the time you have driven far
+enough to find the edge, the answer to *why not further* is "there is
+nothing out there" — which is the true answer and does not need a wall to
+make it. The last ring has no roads at all: those houses are reached across
+the fields or not at all.
+
+The south is a coast — beach, then sea, always the south so that "drive
+towards the water" is a direction you can learn. And the draw distance is a
+block longer than it used to be for the same reason all of this is here:
+from the fields the towers have to be visible, so the way back to the middle
+is something you can see rather than something you have to remember.
 
 ### The architecture
 

@@ -170,17 +170,26 @@ fn sky_fill(luma: u8) -> catalog::GlyphId {
 /// Distance at which everything has faded to black, in world units, as a
 /// function of haze.
 pub fn draw_distance(haze: u8) -> i32 {
-    match haze {
-        0 => 200,
-        1 => 150,
-        2 => 110,
-        3 => 80,
-        4 => 60,
-        5 => 45,
-        6 => 34,
-        7 => 26,
-        _ => 20,
-    }
+    // A block further than it used to be, at every setting.
+    //
+    // The city grew a suburb, a ring of fields and a coast around it, and
+    // the reason to see further is the same reason those are there: from
+    // the outer rings the towers have to be *visible*, so that the way back
+    // to the middle is something you can see rather than something you have
+    // to remember.  A block is thirteen cells - see `zone::BLOCK_PITCH`.
+    const BLOCK: i32 = crate::zone::BLOCK_PITCH as i32;
+    BLOCK
+        + match haze {
+            0 => 200,
+            1 => 150,
+            2 => 110,
+            3 => 80,
+            4 => 60,
+            5 => 45,
+            6 => 34,
+            7 => 26,
+            _ => 20,
+        }
 }
 
 impl Atmos {

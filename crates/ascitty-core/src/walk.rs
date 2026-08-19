@@ -234,7 +234,10 @@ fn classify(
     }
     match kind_at(x, y) {
         Kind::Building => Foot::Blocked,
-        Kind::Sidewalk | Kind::Park | Kind::Plaza => Foot::Path,
+        // The beach is walkable and the sea is not, which is the whole of
+        // what the shore means to anything that moves.
+        Kind::Sidewalk | Kind::Park | Kind::Plaza | Kind::Sand => Foot::Path,
+        Kind::Water => Foot::Blocked,
         Kind::Road => {
             // An alley is a gap between buildings, and people walk down it.
             // Making it blocked looks tidy and cuts the network in half:

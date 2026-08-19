@@ -1488,13 +1488,21 @@ mod tests {
         }
     }
 
+    /// Anywhere in the built city can be driven to from anywhere else in it.
+    ///
+    /// The coordinates are measured from the middle rather than written
+    /// down, because the map grew a suburb, a ring of farmland and a coast
+    /// around the outside of it: the absolute numbers that used to be
+    /// "ordinary places on the grid" are now somebody's field.
     #[test]
     fn a_route_exists_between_ordinary_places_on_the_grid() {
         let city = City::generate(7);
+        let mid = SIZE as i32 / 2;
+        let reach = crate::zone::CITY_EDGE * crate::zone::BLOCK_PITCH as i32 - 8;
         let mut found = 0;
         for i in 0..8 {
-            let a = (30 + i * 7, 40 + i * 3);
-            let b = (200 - i * 5, 190 - i * 9);
+            let a = (mid - reach + i * 7, mid - reach + i * 3);
+            let b = (mid + reach - i * 5, mid + reach - i * 9);
             if city.drive_route(a, b, ROUTE_BUDGET).is_some() {
                 found += 1;
             }
@@ -1505,7 +1513,10 @@ mod tests {
     #[test]
     fn the_route_it_returns_is_all_carriageway_and_joined_up() {
         let city = City::generate(7);
-        let r = city.drive_route((40, 40), (120, 150), ROUTE_BUDGET).expect("no route");
+        let mid = SIZE as i32 / 2;
+        let r = city
+            .drive_route((mid - 40, mid - 40), (mid + 40, mid + 60), ROUTE_BUDGET)
+            .expect("no route");
         for &(x, y) in &r {
             assert!(city.drivable(x, y), "the route runs over {x},{y}, which is not road");
         }

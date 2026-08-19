@@ -139,6 +139,19 @@ impl Elevation {
         self.building(x, y) == 0
     }
 
+    /// Set the ground here outright, in steps.
+    ///
+    /// The only thing that does: everything else on the map either raises
+    /// the ground it found or levels a footprint to its own average, because
+    /// the terrain is generated once and then respected.  The sea is the
+    /// exception - it is not terrain that has been built on, it is the
+    /// datum the terrain is measured from.
+    pub fn flatten(&mut self, x: i32, y: i32, steps: u8) {
+        if let Some(i) = self.index(x, y) {
+            self.ground[i] = steps;
+        }
+    }
+
     /// Raise a building.
     pub fn build(&mut self, x: i32, y: i32, height: u8) {
         if let Some(i) = self.index(x, y) {
