@@ -131,6 +131,25 @@ This is the one piece of real vehicle behaviour in here. It is present
 because without it a car with grip pivots on its own axis at 150 km/h, which
 is what a tank does.
 
+### The end that is going first is the end that hits
+
+A wall impact is decided by probing the cell under the car's centre and the
+cell under one *end* of it — and the end has to be the one the car is moving
+towards. It was always the nose, which in reverse is the end moving *away*
+from whatever is about to be hit: a car backed its whole rear half into a
+building before its centre reached the wall, and then stopped dead from a
+standing overlap.
+
+That reads, from the driver's seat, as the brakes coming on by themselves
+when you back up. It is not braking. It is arriving late.
+
+The invariant is now that the back bumper is never inside a building, tested
+every tick of a reverse into a wall and at whatever angle the car has been
+knocked to. The cost is that a car with its tail already against a wall
+cannot reverse at all, which is correct and is why the autopilot's escape
+alternates between backing out and pulling forward: a driver wedged against a
+wall does not keep reversing at it.
+
 ### Buildings are rigid and everything else is not
 
 A wall stops the car, costs it speed and paint, and knocks it crooked — which

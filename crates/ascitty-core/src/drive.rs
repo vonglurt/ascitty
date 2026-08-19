@@ -492,13 +492,21 @@ impl Car {
         let dx = fixed::mul(self.vx, inv);
         let dy = fixed::mul(self.vy, inv);
 
+        // Which end is going first.  Forwards it is the nose; in reverse it
+        // is the tail, and probing the nose while reversing is the same as
+        // not probing at all - the car backs its whole rear half into a wall
+        // before its centre notices, and then stops dead from a standing
+        // overlap.  That is what "the brakes come on when you back into
+        // something" is: not braking, arriving late.
+        let vf = fixed::mul(self.vx, fx) + fixed::mul(self.vy, fy);
+        let lead = if vf < 0 { -nose } else { nose };
         let probe = |x: Fx, y: Fx| -> bool {
-            // Probe at the nose as well as the centre, so a car does not
-            // bury half its length in a wall before anything notices.
+            // Probe at the leading end as well as the centre, so a car does
+            // not bury half its length in a wall before anything notices.
             city.open(fixed::floor(x), fixed::floor(y))
                 && city.open(
-                    fixed::floor(x + fixed::mul(fx, nose)),
-                    fixed::floor(y + fixed::mul(fy, nose)),
+                    fixed::floor(x + fixed::mul(fx, lead)),
+                    fixed::floor(y + fixed::mul(fy, lead)),
                 )
         };
 
@@ -1039,6 +1047,50 @@ mod tests {
         assert_eq!(car.yaw, before, "it turned on the spot like a tank");
     }
 
+    /// Backing into a wall stops at the wall, not half a car past it.
+    ///
+    /// The probe used to look at the nose whatever direction the car was
+    /// going, which in reverse is the end that is moving *away* from
+    /// whatever it is about to hit.  The car backed its whole rear half into
+    /// the building before its centre reached the wall and then stopped from
+    /// a standing overlap, which reads as the brakes coming on by
+    /// themselves.
+    #[test]
+    fn backing_into_a_wall_stops_at_the_wall() {
+        // Open ground with one wall in it, so the geometry is the point
+        // rather than whatever the generator happened to lay down.
+        let mut city = open_ground();
+        let (x, y) = (20i32, 20i32);
+        city.elev.build(x - 1, y, 12);
+        assert!(!city.open(x - 1, y), "the test wall is not a wall");
+        // Facing east, two cells clear of it, so reversing takes it west
+        // into that wall from a standing start with room to get going.
+        let mut car = Car::new(
+            CarKind::Taxi,
+            fixed::from_int(x + 2) + fixed::HALF,
+            fixed::from_int(y) + fixed::HALF,
+            0,
+            7,
+        );
+        let start = car.x;
+        for _ in 0..HZ * 2 {
+            car.step(&Controls { throttle: -ONE, ..Default::default() }, &city, HZ);
+            // The invariant, every tick and whatever the car has rotated to:
+            // the back bumper is not inside a building.
+            let (fx, fy) = (trig::cos(car.yaw), trig::sin(car.yaw));
+            let half = car.kind.half_len();
+            let (bx, by) = (car.x - fixed::mul(fx, half), car.y - fixed::mul(fy, half));
+            assert!(
+                city.open(fixed::floor(bx), fixed::floor(by)),
+                "the back bumper is inside the building at {},{}",
+                fixed::to_f32(bx),
+                fixed::to_f32(by)
+            );
+        }
+        // ...and it did reverse rather than being stuck from the first tick.
+        assert!(car.x < start, "it never moved: {}", fixed::to_f32(car.x));
+    }
+
     #[test]
     fn it_never_ends_up_inside_a_building() {
         let (city, mut car) = on_the_road();
@@ -1117,5 +1169,6 @@ mod tests {
         assert!(collide(&mut a, &mut b, &ground).is_none(), "the same collision fired twice");
     }
 }
+
 
 

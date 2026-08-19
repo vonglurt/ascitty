@@ -360,10 +360,16 @@ impl Cabbie {
 
         self.unstick(city, sim, hz);
         if self.backing > 0 {
-            // Reverse, wheel over, so the nose swings off the wall rather
-            // than grinding along it.
+            // Off the wall, wheel over, so the nose swings clear rather than
+            // grinding along it.  Alternate attempts go *forwards* instead:
+            // the back bumper is solid now - a car cannot reverse into a
+            // building any more than it can drive into one - so a cab wedged
+            // with its tail against a wall has nowhere to back into, and
+            // reversing at it forever is how one fare in five minutes
+            // happens.  A driver in that position pulls forward and tries
+            // again.
             return Controls {
-                throttle: -ONE,
+                throttle: if self.wriggle > 0 { -ONE } else { ONE },
                 steer: fixed::from_int(self.wriggle),
                 handbrake: false,
             };
