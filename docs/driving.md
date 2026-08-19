@@ -7,7 +7,7 @@
 There are no tyres, no weight transfer, no suspension and no engine curve,
 and adding any of them would make the car worse.
 
-Four properties are modelled and nothing else.
+Five properties are modelled and nothing else.
 
 ### The car wants to go forwards, like a boat
 
@@ -32,12 +32,50 @@ consequence of the update order rather than a special case.
 
 Swap the last two lines and the car is on rails.
 
-### Grip falls off with speed, and the handbrake removes it
+### It is a car up to a point and a boat past it
 
-Interpolated between the parked figure and the flat-out one, so the car gets
-loose as it gets fast without a threshold anyone can feel as a switch. Slow
-corners are on rails; fast ones are not. The handbrake drops grip to almost
-nothing, which is how you get the car sideways on purpose.
+Grip is interpolated between the parked figure and the flat-out one along a
+cubic, so it is still nearly the parked figure at half the top speed and only
+lets go over the last quarter of the range — and it gets there without a
+threshold anyone can feel as a switch. Town corners track the nose; flat-out
+ones do not. The handbrake removes grip at any speed, which is how you get
+the car sideways on purpose.
+
+Grip is quoted as the fraction of the slide that survives **one tick**, and
+that is not a detail. A per-second figure has to be linearised to be spent a
+tick at a time, and the linear form cannot remove more than one tick's worth
+of anything: written as `(1 - keep) / 60` per tick, even a grip of *zero*
+leaves `(1 - 1/60)^60` — 37% — of the slide alive a second later. Every
+corner was a boat because no setting of the old constants could make one that
+was not.
+
+Taken at a held speed on open ground, a full-lock quarter turn:
+
+| Entry | Radius | Peak slip | With the handbrake |
+|---|---:|---:|---:|
+| 28 km/h | 5 m | 0.20 | |
+| 65 km/h | 18 m | 0.10 | |
+| 100 km/h | 41 m | 0.09 | 0.90 |
+| 150 km/h | 87 m | 0.29 | 0.84 |
+
+The version this replaced turned inside 14 m at 150 km/h and slipped between
+0.85 and 0.93 at *every* speed in that table, handbrake or not. It drifted
+identically at walking pace and flat out, which is another way of saying the
+speed made no difference to the handling at all.
+
+### The wheel stops working as the speed rises
+
+Yaw rate climbs with speed while the steering lock is what limits it, and
+falls away as `TURN_REF / speed` once the grip is. The corner the car can
+take is therefore one of constant *force* rather than of a constant angle,
+and its radius grows with the square of the speed — 5 m at 28 km/h, 18 m at
+65, 87 m flat out. Going faster means going a great deal wider, and getting
+the nose round a junction at speed means slowing down or hanging the tail
+out.
+
+This is the one piece of real vehicle behaviour in here. It is present
+because without it a car with grip pivots on its own axis at 150 km/h, which
+is what a tank does.
 
 ### Buildings are rigid and everything else is not
 
@@ -55,7 +93,16 @@ A lamp post does not slow the car at all.
   because the vehicle failed is a run that stopped being about pace.
 - **Anything the player cannot feel.** Reality is not a goal. Pace is.
 
-## 3. Cars hitting cars
+## 3. The tick rate is not a handling setting
+
+Grip is per tick and drag is per second, and both are scaled to the rate they
+are actually spent at. Neither used to be: at 30 Hz — the rate the autopilot
+and the Plus/4 timings run at — the car kept twice as much of every slide and
+had half the drag, so the machine that could least afford a loose car got the
+loosest one. The same four seconds of full-lock cornering now ends within a
+car's length of the same place at 30 Hz and at 60.
+
+## 4. Cars hitting cars
 
 The textbook two-body impulse:
 
@@ -78,7 +125,7 @@ gets pushed hard enough to separate.
 by mass inside the shove applies it twice. The symptom was a taxi at 40 mph
 moving a parked car about a foot.
 
-## 4. Masses
+## 5. Masses
 
 | | Mass | Half-length |
 |---|---:|---:|
@@ -89,7 +136,7 @@ moving a parked car about a foot.
 A taxi sends a parked saloon spinning and barely moves a bus, which is the
 point of there being a bus.
 
-## 5. No square roots
+## 6. No square roots
 
 `speed()` uses the octagonal approximation `max + 3/8 × min`: two
 comparisons and a shift, within 4%, which is well inside what a speedometer
@@ -100,7 +147,7 @@ apart are they" and "how fast is it going" are measured the same way.
 cubic — accurate to about a fifth of a degree, which is a fifth of a
 character.
 
-## 6. A terminal cannot tell you a key was released
+## 7. A terminal cannot tell you a key was released
 
 It sends a byte when a key goes down and nothing at all when it comes up, so
 "is the accelerator pressed" is not a question the input stream can answer.
@@ -110,7 +157,7 @@ the terminal's own autorepeat into something that reads as a held pedal.
 Five frames. Longer than the autorepeat interval and the car stutters; much
 longer and it will not stop.
 
-## 7. The chase camera
+## 8. The chase camera
 
 Two things make it feel like a driving camera rather than a camera bolted to
 a car.

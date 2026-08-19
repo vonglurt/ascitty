@@ -13,11 +13,22 @@
 //!    carries on in the old direction for a few ticks.  That gap between
 //!    where the car points and where it is going is the drift, and it is a
 //!    consequence of the update order rather than a special case.
-//! 3. **Grip falls off with speed, and the handbrake removes it.**  Slow
-//!    corners are on rails.  Fast ones are not.  Pulling the handbrake
-//!    drops grip to almost nothing, which is how you get the car sideways
-//!    on purpose.
-//! 4. **Buildings are rigid and everything else is not.**  A wall stops the
+//! 3. **It is a car up to a point and a boat past it.**  Grip is quoted as
+//!    the fraction of the slide that survives a tick, and it is held near
+//!    the parked figure through the whole ordinary speed range and then
+//!    let go over the last of it: town driving tracks the nose, and only
+//!    flat out does the tail come round.  The handbrake removes grip at
+//!    any speed, which is how you get the car sideways on purpose.
+//! 4. **The wheel stops working as the speed rises.**  Yaw rate climbs
+//!    with speed while the steering lock is what limits it, and falls away
+//!    as `1 / speed` once the front tyres are, which is to say the car has
+//!    a fixed cornering *force* rather than a fixed cornering angle.  The
+//!    radius of the tightest corner available therefore grows with the
+//!    square of the speed: 5 m at 28 km/h, 18 m at 65, 87 m flat out.
+//!    This is the one piece of real vehicle behaviour in here, and it is
+//!    present because without it a car with grip pivots on the spot at
+//!    150 km/h, which is what a tank does.
+//! 5. **Buildings are rigid and everything else is not.**  A wall stops the
 //!    car and costs it speed and paint.  A lamp post does not.
 //!
 //! Reality is not a goal.  Pace is.
@@ -41,18 +52,45 @@ const DRAG: Fx = fixed::ratio(88, 100);
 /// Top speed, in units per second.  A unit is six metres, so this is about
 /// 150 km/h - fast enough that the grid goes past in a blur.
 const VMAX: Fx = fixed::ratio(7, 1);
-/// Lateral grip at rest: almost all sideways motion is killed each second.
-const GRIP_LOW_SPEED: Fx = fixed::ratio(2, 100);
-/// Lateral grip at top speed: much more of the slide survives.
-const GRIP_HIGH_SPEED: Fx = fixed::ratio(46, 100);
-/// Lateral grip with the handbrake pulled.
-const GRIP_HANDBRAKE: Fx = fixed::ratio(88, 100);
-/// Peak yaw rate, in angle units per second.
-const TURN_RATE: i32 = 40_000;
-/// Speed at which the car turns its hardest.  Below this the wheels have
-/// nothing to work against; above it the turn is limited on purpose so that
-/// flat-out cornering has to be done sideways.
-const TURN_REF: Fx = fixed::ratio(5, 2);
+/// Lateral grip, quoted as the fraction of the slide that survives *one
+/// tick* at [`HZ`].
+///
+/// Per tick, not per second, and the distinction is the whole reason the
+/// car used to swim.  A per-second figure has to be linearised to be spent
+/// a tick at a time, and the linear form cannot remove more than one
+/// tick's worth of anything: with the bleed written as `(1 - keep) / 60`
+/// per tick, even a grip of zero leaves `(1 - 1/60)^60`, or 37%, of the
+/// slide alive after a full second.  Every corner was a boat because no
+/// setting of the old constants could make one that was not.
+///
+/// Parked, four fifths of the slide survives a tick and a thousandth of it
+/// survives a second: the car goes where it points.
+const GRIP_LOW_SPEED: Fx = fixed::ratio(80, 100);
+/// Lateral grip at top speed.  Half the slide is still there three quarters
+/// of a second later, which is the boat.
+const GRIP_HIGH_SPEED: Fx = fixed::ratio(985, 1000);
+/// Lateral grip with the handbrake pulled: the slide outlives the corner.
+const GRIP_HANDBRAKE: Fx = fixed::ratio(995, 1000);
+/// How the grip between those two is found, as the power the speed fraction
+/// is raised to before interpolating.
+///
+/// Cubed, so grip is still nearly the parked figure at half the top speed
+/// and only lets go over the last quarter of the range.  Interpolating
+/// straight down the speed - which is what this did - makes the middle of
+/// the range, where the car actually spends its life, half a boat.
+const GRIP_CURVE: u32 = 3;
+/// Peak yaw rate, in angle units per second: about 130 degrees a second.
+const TURN_RATE: i32 = 24_000;
+/// Speed at which the car turns its hardest, in units per second - about
+/// 32 km/h.
+///
+/// Below it the steering lock is the limit, the yaw rate rises with speed,
+/// and the car turns inside about five metres however slowly it is going.
+/// Above it the grip is the limit: the yaw rate falls as `TURN_REF / speed`,
+/// which is a corner of constant force and so of a radius that grows with
+/// the square of the speed.  The alternative - the flat plateau this had -
+/// lets the car spin on its own axis at any speed you like.
+const TURN_REF: Fx = fixed::ratio(3, 2);
 /// How much speed a wall takes.
 const WALL_BOUNCE: Fx = fixed::ratio(-35, 100);
 /// How much of the car's body a wall claims per impact, per unit of speed.
@@ -215,28 +253,48 @@ impl Car {
         vf += fixed::mul(force, inv);
 
         // Drag, applied per tick as a fraction of the per-second figure.
-        vf -= fixed::mul(fixed::mul(vf, ONE - DRAG), inv * hz / 60);
+        vf -= fixed::mul(fixed::mul(vf, ONE - DRAG), inv);
         vf = vf.clamp(-fixed::mul(VMAX, fixed::HALF), VMAX);
 
         // Grip.  Interpolated between the parked figure and the flat-out
-        // one, so the car gets loose as it gets fast without a threshold
-        // anyone can feel as a switch.
-        let f = fixed::div(fixed::abs(vf), VMAX).min(ONE);
+        // one along a cubic, so the car keeps the nose through the speeds it
+        // is driven at and gets loose only near the top - and gets there
+        // without a threshold anyone can feel as a switch.
+        let frac = fixed::div(fixed::abs(vf), VMAX).min(ONE);
+        let mut f = frac;
+        for _ in 1..GRIP_CURVE {
+            f = fixed::mul(f, frac);
+        }
         let keep = if c.handbrake {
             GRIP_HANDBRAKE
         } else {
             fixed::lerp(GRIP_LOW_SPEED, GRIP_HIGH_SPEED, f)
         };
-        // `keep` is per second; per tick it is the same fraction scaled.
-        vl = fixed::mul(vl, ONE - fixed::mul(ONE - keep, inv * hz / 60));
+        // `keep` is per tick at `HZ`; at any other rate the bleed is scaled
+        // to match, and clamped because a slow enough tick would otherwise
+        // ask to remove more sideways motion than there is.
+        let per_tick = fixed::div(fixed::from_int(HZ), fixed::from_int(hz));
+        let bleed = fixed::mul(ONE - keep, per_tick).min(ONE);
+        vl = fixed::mul(vl, ONE - bleed);
 
         // Recombine *before* the heading changes.  See the module note: this
         // ordering is the drift.
         self.vx = fixed::mul(fx, vf) + fixed::mul(rx, vl);
         self.vy = fixed::mul(fy, vf) + fixed::mul(ry, vl);
 
-        // Steering authority rises with speed and then plateaus.
-        let auth = fixed::div(fixed::abs(vf), TURN_REF).min(ONE);
+        // Steering authority rises with speed, peaks where the lock stops
+        // being the limit, and falls away again above it.  The falling half
+        // is what keeps a car with grip from turning like a tank at 150
+        // km/h: past `TURN_REF` the wheel buys a corner of roughly constant
+        // force, so going faster means going a great deal wider, and the way
+        // to get the nose round a junction at speed is to slow down or to
+        // hang the tail out - which is the boat.
+        let sp = fixed::abs(vf);
+        let auth = if sp <= TURN_REF {
+            fixed::div(sp, TURN_REF)
+        } else {
+            fixed::div(TURN_REF, sp)
+        };
         let dir = if vf < 0 { -ONE } else { ONE };
         let rate = fixed::mul(fixed::mul(c.steer, auth), dir);
         let turn = ((rate as i64 * TURN_RATE as i64) >> 16) / hz as i64;
@@ -447,8 +505,8 @@ mod tests {
     /// place cars at the origin and care about nothing else.
     fn open_ground() -> City {
         let mut c = City::generate(21);
-        for y in 0..4i32 {
-            for x in 0..4i32 {
+        for y in 0..64i32 {
+            for x in 0..64i32 {
                 c.elev.build(x, y, 0);
                 c.cells[y as usize * crate::world::SIZE + x as usize].kind =
                     crate::world::Kind::Road;
@@ -462,6 +520,40 @@ mod tests {
         for _ in 0..ticks {
             car.step(&c, city, HZ);
         }
+    }
+
+    /// Take a corner at a held speed on open ground, and report the worst
+    /// slip and how tight the corner was.
+    ///
+    /// Held, because the interesting question is what the car does at *a*
+    /// speed: measured with the throttle simply pinned, every corner is
+    /// taken at the top speed the car reached on the way round and the
+    /// speeds cannot be told apart.
+    ///
+    /// The radius comes from the chord: a quarter turn of radius r joins
+    /// its ends with a chord of r * sqrt(2).
+    fn corner(speed: Fx, handbrake: bool) -> (Fx, f32) {
+        let city = open_ground();
+        let mut car = Car::new(CarKind::Taxi, fixed::HALF, fixed::HALF, 0, 7);
+        let go = Controls { throttle: ONE, ..Default::default() };
+        for _ in 0..600 {
+            if car.speed() >= speed {
+                break;
+            }
+            car.step(&go, &city, HZ);
+        }
+        let (x0, y0, yaw0) = (car.x, car.y, car.yaw);
+        let mut peak = 0;
+        for _ in 0..900 {
+            let throttle = if car.speed() < speed { ONE } else { 0 };
+            car.step(&Controls { throttle, steer: ONE, handbrake }, &city, HZ);
+            peak = peak.max(car.slip());
+            if (car.yaw.wrapping_sub(yaw0) as i16 as i32).abs() >= trig::QUARTER as i32 {
+                break;
+            }
+        }
+        let (dx, dy) = (fixed::to_f32(car.x - x0), fixed::to_f32(car.y - y0));
+        (peak, (dx * dx + dy * dy).sqrt() / std::f32::consts::SQRT_2)
     }
 
     #[test]
@@ -497,32 +589,87 @@ mod tests {
 
     #[test]
     fn turning_at_speed_makes_it_slide() {
-        let (city, mut car) = on_the_road();
-        flat_out(&mut car, &city, 90);
-        let c = Controls { throttle: ONE, steer: ONE, ..Default::default() };
-        let mut peak = 0;
-        for _ in 0..40 {
-            car.step(&c, &city, HZ);
-            peak = peak.max(car.slip());
-        }
-        assert!(peak > fixed::ratio(1, 10), "it turned on rails: slip {}", fixed::to_f32(peak));
+        let (peak, _) = corner(VMAX, false);
+        assert!(peak > fixed::ratio(1, 5), "it turned on rails: slip {}", fixed::to_f32(peak));
     }
 
+    /// The point of the whole exercise: at the speeds the car is actually
+    /// driven at, it goes where it points.
+    ///
+    /// Measured at about 0.10 at 65 km/h and 0.29 flat out, against 0.92 and
+    /// 0.93 for the version this replaced - which drifted the same amount at
+    /// every speed and so was a boat at all of them.
+    #[test]
+    fn it_tracks_its_nose_at_town_speed() {
+        let (peak, _) = corner(fixed::from_int(3), false);
+        assert!(
+            peak < fixed::ratio(1, 5),
+            "it swims through an ordinary corner: slip {}",
+            fixed::to_f32(peak)
+        );
+        let (fast, _) = corner(VMAX, false);
+        assert!(fast > peak, "going faster made no difference to how much it slides");
+    }
+
+    /// Going faster means going wider, which is the difference between a car
+    /// and a tank.  Measured: 18 m at 65 km/h, 41 m at 100, 87 m flat out.
+    #[test]
+    fn the_faster_it_goes_the_wider_it_turns() {
+        let (_, town) = corner(fixed::from_int(3), false);
+        let (_, quick) = corner(fixed::ratio(9, 2), false);
+        let (_, flat) = corner(VMAX, false);
+        assert!(quick > town * 1.5, "no wider at 100 km/h: {town} then {quick}");
+        assert!(flat > quick * 1.5, "no wider flat out: {quick} then {flat}");
+    }
+
+    /// And the handbrake is how you get sideways on purpose - at any speed,
+    /// not only at the top of the range where the car is loose anyway.
+    ///
+    /// Measured: 0.90 against 0.09 at 100 km/h.  It was 1.00 against 0.92
+    /// before, which is to say it did nothing you could see.
     #[test]
     fn the_handbrake_makes_it_slide_more() {
-        let run = |hb: bool| {
-            let (city, mut car) = on_the_road();
-            flat_out(&mut car, &city, 90);
-            let c = Controls { throttle: ONE, steer: ONE, handbrake: hb };
-            let mut peak = 0;
-            for _ in 0..40 {
-                car.step(&c, &city, HZ);
-                peak = peak.max(car.slip());
+        for v in [fixed::from_int(3), fixed::ratio(9, 2), VMAX] {
+            let (hb, _) = corner(v, true);
+            let (no, _) = corner(v, false);
+            assert!(
+                hb > no + fixed::ratio(1, 4),
+                "the handbrake did nothing at {}: {} against {}",
+                fixed::to_f32(v),
+                fixed::to_f32(hb),
+                fixed::to_f32(no)
+            );
+        }
+    }
+
+    /// The same manoeuvre at half the tick rate puts the car in the same
+    /// place.
+    ///
+    /// Grip and drag are quoted per tick and per second respectively, and
+    /// both have to be scaled to the rate they are actually spent at.  The
+    /// version this replaced scaled neither: at 30 Hz - which is what the
+    /// autopilot and the Plus/4 timings run at - the car kept twice as much
+    /// of every slide, so the machine that could least afford a loose car
+    /// got the loosest one.
+    #[test]
+    fn the_tick_rate_does_not_change_how_it_drives() {
+        let drive = |hz: i32| {
+            let city = open_ground();
+            let mut car = Car::new(CarKind::Taxi, fixed::HALF, fixed::HALF, 0, 7);
+            for i in 0..(4 * hz) {
+                let steer = if i > hz { ONE } else { 0 };
+                car.step(&Controls { throttle: ONE, steer, handbrake: false }, &city, hz);
             }
-            peak
+            (fixed::to_f32(car.x), fixed::to_f32(car.y), fixed::to_f32(car.speed()))
         };
-        let (hb, no) = (run(true), run(false));
-        assert!(hb > no, "the handbrake did nothing: {} vs {}", fixed::to_f32(hb), fixed::to_f32(no));
+        let (x60, y60, s60) = drive(60);
+        let (x30, y30, s30) = drive(30);
+        // Within a car's length over four seconds of full-lock cornering.
+        assert!(
+            (x60 - x30).abs() < 1.0 && (y60 - y30).abs() < 1.0,
+            "30 Hz went somewhere else: {x60},{y60} against {x30},{y30}"
+        );
+        assert!((s60 - s30).abs() < 0.5, "30 Hz ended at a different speed: {s60} against {s30}");
     }
 
     #[test]

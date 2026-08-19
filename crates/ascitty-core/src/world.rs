@@ -322,7 +322,12 @@ impl Axis {
         // The one arterial on this axis, placed before anything else so it
         // lands where it belongs - through the middle of the city, not
         // wherever the sequence of gaps happened to arrive.
-        let arterial = SIZE / 2 + rng.range(-(BLOCK_PITCH as i32), BLOCK_PITCH as i32) as usize;
+        // Signed arithmetic, then cast.  Casting the jitter to `usize`
+        // first turns every leftward offset into a number near 2^64 and the
+        // addition overflows, which release builds wrap back to the right
+        // answer and debug builds - every test run - panic on.
+        let jitter = rng.range(-(BLOCK_PITCH as i32), BLOCK_PITCH as i32);
+        let arterial = (SIZE as i32 / 2 + jitter).max(0) as usize;
 
         // Start part way in, so the edge of the map is never a kerb.
         let mut i = rng.range(3, 11) as usize;

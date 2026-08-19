@@ -79,7 +79,15 @@ const LOCK_RANGE: i32 = 8;
 /// Cross-track gain: lock per cell off the lane line, at a standstill.
 ///
 /// Divided by speed in use, so this is the gain at the bottom of the range.
-const CROSS: Fx = fixed::ratio(1, 2);
+///
+/// Doubled when the car stopped being a boat.  The division by speed was
+/// written against a physics where the wheel bought the same yaw at every
+/// speed above a crawl; it now buys less the faster you go (see
+/// [`crate::drive`]), so the same command moves the car a good deal less at
+/// cruising pace and the gain has to make it up.  Measured over four
+/// five-minute runs, at the old gain: 500 ticks on the correct side of the
+/// road against 600 on the wrong one, which is a cab with no opinion.
+const CROSS: Fx = fixed::ratio(1, 1);
 
 /// The most lock the cross-track term alone may ask for.
 ///
@@ -93,8 +101,9 @@ const CROSS: Fx = fixed::ratio(1, 2);
 /// than one that cannot find it.
 ///
 /// Capped, the term is a lane-change request and the angle term still does
-/// the steering.
-const CROSS_MAX: Fx = fixed::ratio(2, 5);
+/// the steering.  Raised with the gain, and by less than the gain, so the
+/// cap still bites before the wheel is on the stop.
+const CROSS_MAX: Fx = fixed::ratio(3, 5);
 
 /// Bearing error beyond which the throttle comes off.
 ///
@@ -120,13 +129,22 @@ const COMMIT: i32 = 24_000;
 /// are not the same event.
 const RELEASE: i32 = 6_000;
 
-/// The fastest the autopilot will go on a straight, in units per second.
+/// The fastest the autopilot will go on a straight, in units per second -
+/// about 65 km/h against the car's own 150.
 ///
-/// The car's own top speed is half again as much.  A demonstration is not a
-/// time trial, and this grid's lanes are two cells wide: flat out, the cab
-/// arrives at every junction too fast to take it and the whole run is
-/// spent recovering.
-const CRUISE_MAX: Fx = fixed::ratio(9, 2);
+/// A demonstration is not a time trial, and this grid's lanes are two cells
+/// wide: flat out, the cab arrives at every junction too fast to take it and
+/// the whole run is spent recovering.
+///
+/// The figure is now what the corner radius says it should be rather than a
+/// guess.  Cornering radius in this car grows with the square of the speed:
+/// three cells at this figure and seven at the old one, and a junction on
+/// this grid is not seven cells wide.  The symptom was a cab that
+/// understeered across the pavement on the far side of every turn.  Measured over four five-minute runs, ticks spent
+/// off the carriageway while travelling: 9, 54, 41 and 24 per cent at the
+/// old figure, and 2, 0, 0 and 2 at this one, with more fares completed in
+/// the same time.
+const CRUISE_MAX: Fx = fixed::ratio(3, 1);
 
 /// Forward speed below which reverse is what the throttle means.
 ///
@@ -582,10 +600,11 @@ fn full_lock_at(range: Fx) -> i32 {
 /// The fastest it is sensible to be going with the wheel this far over.
 ///
 /// Not zero at the extreme, which looks like the obvious answer and is a
-/// trap: steering authority in this physics is proportional to speed, so a
-/// car commanded to a standstill while pointing the wrong way can no longer
-/// turn and stays pointing the wrong way.  The floor is a crawl that still
-/// has enough authority to come round.
+/// trap: below its reference speed this car's steering authority is
+/// proportional to speed, so a car commanded to a standstill while pointing
+/// the wrong way can no longer turn and stays pointing the wrong way.  The
+/// floor is a crawl - and it is the speed at which the car turns its very
+/// hardest, which is the right place for the sharpest corners to be taken.
 fn corner_speed(err: i32) -> Fx {
     let e = err.abs();
     if e > HARD {
@@ -879,16 +898,15 @@ mod tests {
     fn the_cab_keeps_to_the_carriageway_while_it_is_going_somewhere() {
         for seed in [1u32, 7, 99, 4242] {
             let r = run(seed, 3_000);
-            // Under half.  Measured at about 40 per cent, which is high and
-            // is recorded in the backlog: a car two cells long tracking the
-            // middle of a one-cell lane puts its centre over the kerb
-            // whenever it corrects, and the physics has no notion of a
-            // vehicle footprint that would stop it.  The value of the test
-            // is that a controller which simply drives across the city
-            // ignoring the roads - which two earlier versions of this did,
-            // at 79 and 86 per cent - fails it outright.
+            // Under a fifth.  Measured at 2, 0, 0 and 2 per cent, which is
+            // most of a car's width of margin: it was about 40 per cent
+            // while the cab cruised faster than it could corner, and 79 and
+            // 86 for two early versions that simply drove across the city
+            // ignoring the roads.  A fifth is therefore a long way from
+            // where the cab drives and a long way from where a broken one
+            // does, which is what a bar on a chaotic measurement is for.
             assert!(
-                r.strayed * 2 < r.travelling,
+                r.strayed * 5 < r.travelling,
                 "seed {seed}: off the road for {} of {} travelling ticks",
                 r.strayed,
                 r.travelling

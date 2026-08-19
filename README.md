@@ -45,9 +45,9 @@ character set, so it draws shapes no PETSCII set contains.
 Three ways to be in it:
 
 - **Walk** — first person, eye height, down the avenues.
-- **Drive** — third person behind a taxi, with arcade physics that slide,
-  street furniture that goes over, traffic that scatters, and a fare on the
-  clock.
+- **Drive** — third person behind a taxi that tracks its nose through town
+  and hangs the tail out at speed, with street furniture that goes over,
+  traffic that scatters, and a fare on the clock.
 - **Copter** — free flight above the roofline, looking down.
 
 And weather: rain that leans with your heading and brightens in front of lit

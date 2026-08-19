@@ -207,36 +207,41 @@ It would want a third structure — a list of line segments rasterised over
 the grid after the two axes are laid — plus a marking path that can follow
 it, and blocks that come out as triangles.
 
-### The cabbie's lane keeping — **now**
-The driving demonstration routes, drives and parks correctly, but its
-preference for the right-hand lane is only about even: measured across four
-cities at 52, 63, 55 and 25 per cent of travelling ticks on the correct side
-of the crown. The 25 is the interesting one - that city is *inverted*, and
-turning the cross-track gain up to full authority made it worse rather than
-better, which is the signature of a sign that flips somewhere rather than of
-a gain that is too small.
+### The cabbie's lane keeping — **soon**
+Now 68, 55, 79 and 65 per cent of travelling ticks on the correct side of the
+crown across the four test cities, up from 52, 63, 55 and 25. Most of that
+came from the car rather than from the controller: when the physics stopped
+letting the wheel buy the same yaw at any speed, the cross-track gain had to
+double to move the car the same distance, and the inverted city that used to
+sit at 25 per cent - and that got *worse* when the gain was turned up, which
+looked like a sign error somewhere - came right along with the rest.
 
-Ruled out so far: the sign conventions in `cabbie::lane`, `Cabbie::track` and
-the measurement agree when checked by hand against all four combinations of
-axis and direction; `across` measures from the low-coordinate kerb on every
-road in every city, which is now asserted; and the controller was reading the
-road at its route's cursor rather than the road under the car, which was a
-real bug and fixing it did not fix this.
+What is left is the two-cell street against the fourteen-cell arterial. Three
+lane targets were tried - the middle of the right-hand half, the kerbside
+lane, and one cell past the crown - and each was clearly best on some cities
+and clearly worst on others, which suggests one set of gains cannot serve
+both. Scaling them by the width of the carriageway is the obvious next thing.
 
-Three lane targets were tried - the middle of the right-hand half, the
-kerbside lane, and one cell past the crown - and each was clearly best on
-some cities and clearly worst on others, which suggests the single set of
-gains cannot serve both a fourteen-cell arterial and a two-cell street.
-Scaling the gains by the width of the carriageway is the obvious next thing.
+Ruled out along the way: the sign conventions in `cabbie::lane`,
+`Cabbie::track` and the measurement agree when checked by hand against all
+four combinations of axis and direction; `across` measures from the
+low-coordinate kerb on every road in every city, which is now asserted; and
+the controller was reading the road at its route's cursor rather than the
+road under the car, which was a real bug and fixing it did not fix this.
 
-### The cabbie on the pavement — **soon**
-About 40 per cent of travelling ticks have the cab's centre on a cell that is
-not carriageway. Some of that is honest - the car is two cells long and the
-lane it is tracking is one cell wide, so correcting puts its centre over the
-kerb - but not 40 per cent of it. The physics has no notion of a vehicle
-footprint, so nothing stops a car from ending up anywhere its centre can
-reach; giving `integrate` the hull and resolving against it would fix this
-and the wall-wedging in `Cabbie::unstick` at the same time.
+### The cabbie on the pavement — **maybe**
+Was about 40 per cent of travelling ticks with the cab's centre on a cell
+that is not carriageway; now 2, 0, 0 and 2. The cause was not the controller
+either: cornering radius now grows with the square of the speed, the cab was
+still cruising at a speed that used to corner and no longer does, and it
+understeered onto the pavement on the far side of every junction. Dropping
+the cruising speed to what the radius allows removed almost all of it.
+
+The underlying gap is still there and is what would need doing if this comes
+back: the physics has no notion of a vehicle footprint, so nothing stops a
+car from ending up anywhere its centre can reach. Giving `integrate` the hull
+and resolving against it would close that and the wall-wedging in
+`Cabbie::unstick` at the same time.
 
 ### Traffic that follows the road — **soon**
 Traffic currently drives in a straight line at a constant throttle and is

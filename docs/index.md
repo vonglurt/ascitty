@@ -68,8 +68,9 @@ lives in says why:
 | Walking | [`walk`](../crates/ascitty-core/src/walk.rs) | where a person on foot may be, and how they get about |
 
 ### [`driving.md`](driving.md)
-The arcade physics: the four properties that are modelled, the three that
-deliberately are not, and the update ordering that produces the drift.
+The arcade physics: the five properties that are modelled, the three that
+deliberately are not, the update ordering that produces the drift, and the
+grip curve that keeps it to the top of the speed range.
 
 ### [`plus4.md`](plus4.md)
 The Commodore Plus/4 build. What the machine gives you, what it takes away,
