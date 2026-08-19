@@ -398,15 +398,30 @@ impl Stamp {
 fn glyph_for(c: char, hue: u8, phase: u8) -> Option<(GlyphId, u8, u8)> {
     Some(match c {
         ' ' => return None,
-        '#' => (catalog::G_SOLID, hue, 6),
+        // A body panel.  A step darker than it was: a car is a thing with a
+        // shape, and at the top of the ramp it was a lamp with a shape.
+        '#' => (catalog::G_SOLID, hue, 5),
         '.' => (catalog::shade(3), hue, 3),
         '|' => (catalog::ST_POST, palette::H_WHITE, 3),
         '=' => (catalog::G_CORNICE + 3, palette::H_WHITE, 2),
-        'o' => (catalog::ST_LAMP, palette::H_YELLOW, 7),
+        // Lights, and which end of the car you are looking at.
+        //
+        // The low bit of the phase says the camera is in front of it.  White
+        // means it is coming towards you and red means it is going away,
+        // which is the only cue in the frame that says which way a car is
+        // pointing - a box of body panels does not, and "am I about to hit
+        // that" is a question about direction rather than about position.
+        'o' => {
+            if phase & 1 == 1 {
+                (catalog::ST_LAMP, palette::H_WHITE, 7)
+            } else {
+                (catalog::ST_LAMP, palette::H_RED, 5)
+            }
+        }
         'T' => (catalog::FLORA_CANOPY, palette::H_GREEN, 4),
         't' => (catalog::FLORA_TRUNK, palette::H_BROWN, 3),
-        'L' => (catalog::G_QUAD + 12 - 1, hue, 5), // lower half - the flank
-        'R' => (catalog::G_QUAD + 12 - 1, hue, 5),
+        'L' => (catalog::G_QUAD + 12 - 1, hue, 4), // lower half - the flank
+        'R' => (catalog::G_QUAD + 12 - 1, hue, 4),
         // The checker band, and the sign on the roof.
         'k' => (catalog::G_QUAD + 6 - 1, palette::H_WHITE, 7),
         'S' => (catalog::G_SOLID, palette::H_YELLOW, 7),
@@ -506,7 +521,19 @@ pub fn draw(f: &mut Frame, depth: &[Fx], cam: &Camera, atmos: &Atmos, p: &Proj, 
         return false;
     }
     // The foot of the card, and the top, in screen rows.
-    let foot = p.horizon + fixed::floor(fixed::div(fixed::mul(cam.z - b.base, p.proj), ty));
+    //
+    // `p.eye` is the camera's height *above the ground*, which is the number
+    // the ground plane is drawn with - see `raycast::projection`.  This used
+    // `cam.z`, the camera's absolute height, and the two are not the same
+    // thing anywhere the terrain has risen: measured across four places in
+    // one city, an eye height of 0.71 to 0.80 against a `cam.z` of 1.17 to
+    // 1.83.  Sprites were therefore drawn with an eye height twice to two
+    // and a half times too big, which pushes their feet that much further
+    // below the horizon - and because the error scales with `1/ty` like
+    // everything else in the projection, a car ten cells away sat eleven
+    // rows too low while a distant one was almost right.  That is what
+    // "the cars are in the wrong place and drift as they recede" was.
+    let foot = p.horizon + fixed::floor(fixed::div(fixed::mul(p.eye - b.base, p.proj), ty));
     let top = foot - rows;
 
     // Leaning: a knocked-over lamp post pivots about its foot.  Shearing the
@@ -792,3 +819,4 @@ mod silhouette_tests {
         }
     }
 }
+

@@ -588,7 +588,7 @@ exists for any structure to exceed.
 
 ### D. Verification
 
-288 assertions execute in approximately 0.2 s. The acceptance gate
+289 assertions execute in approximately 0.2 s. The acceptance gate
 additionally rebuilds both targets, regenerates the baked headers, renders a
 host frame, and boots the target program in an emulator to confirm
 non-trivial output. A target program that compiles is not evidence that it
@@ -754,7 +754,29 @@ first half second of every hold. Measured against an emulated terminal at the
 defaults - 500 ms to first repeat, then 33 ms - a quarter-second window read
 43 and 52 mph at the two moments where half a second read 58 and 84.
 
-### G. A stuck check that only knew one kind of stuck
+### G. A projection that used the wrong height
+
+Sprites - cars, people, street furniture, the fare markers - are billboards
+placed by the same projection the walls use. Their feet were positioned with
+the camera's *absolute* height where the ground plane uses its height **above
+the ground**. The two are the same number only where the terrain is at zero.
+
+The terrain generator produces about two cells of relief across the map, so
+across four sampled places in one city the true eye height was 0.71 to 0.80
+cells against an absolute height of 1.17 to 1.83 - the sprite projection was
+using an eye two to two and a half times too large. Feet are drawn
+`eye x scale / distance` rows below the horizon, so the error scales like
+everything else in the projection: a car ten cells away sat about eleven rows
+too low, while a distant one was nearly right.
+
+The reported symptom was "the cars are in the wrong place and seem to drift
+away as they recede", which is an exact description of an error proportional
+to `1/distance` and is not a description of anything else. It survived
+inspection for as long as it did because the city it was first looked at in
+is nearly flat where the camera spawns, and because a sprite drawn too low is
+still a sprite.
+
+### H. A stuck check that only knew one kind of stuck
 
 The same autopilot detects being wedged by measuring speed: below half a cell
 per second for half a second, it reverses with opposite lock. A car that has

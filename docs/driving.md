@@ -80,10 +80,15 @@ Taken at a held speed on open ground, a full-lock quarter turn:
 
 | Entry | Radius | Peak slip | With the handbrake |
 |---|---:|---:|---:|
-| 28 km/h | 5 m | 0.20 | |
-| 65 km/h | 18 m | 0.10 | |
-| 100 km/h | 41 m | 0.09 | 0.90 |
-| 150 km/h | 87 m | 0.29 | 0.84 |
+| 28 km/h | 4 m | 0.10 | 0.89 |
+| 65 km/h | 16 m | 0.08 | 0.93 |
+| 100 km/h | 36 m | 0.06 | 0.90 |
+| 150 km/h | 83 m | 0.15 | 0.84 |
+
+The grip was raised twice. It let go far too early: at 150 km/h a full-lock
+corner slipped 0.29 with nothing touching the handbrake, and a car that
+drifts *without being asked to* is a car you cannot place between two rows of
+buildings six metres apart. The slide is now something you ask for.
 
 The version this replaced turned inside 14 m at 150 km/h and slipped between
 0.85 and 0.93 at *every* speed in that table, handbrake or not. It drifted
@@ -152,6 +157,44 @@ gets pushed hard enough to separate.
 by mass inside the shove applies it twice. The symptom was a taxi at 40 mph
 moving a parked car about a foot.
 
+## 4a. The cab ploughs
+
+The impulse is worked out with the cab weighing three times what it weighs
+the rest of the time, which is not physics, it is the game. A taxi that loses
+half its speed to every saloon it clips cannot cross town, and the fare is on
+a clock. Heavy in the solve, the cab keeps most of its momentum and the other
+car gets half again as much of a shove as an even exchange would.
+
+The bus is tripled with it, because the bus is the thing the cab *cannot*
+plough through and that only stays true if it keeps its lead - at its
+ordinary weight against a ploughing cab, a saloon and a bus went nearly the
+same distance when hit.
+
+Separating them is asymmetric for the same reason. The car that is not the
+cab is bounced back the whole overlap and a little further, so it visibly
+recoils; the cab gives ground only if that car has nowhere to go, which on a
+narrow street is a wall behind it.
+
+Contact is three quarters of the sum of the half-lengths rather than all of
+it. The bodies are drawn as boxes and collided as circles, and a circle round
+a box twice as long as it is wide is a lot of empty air at the corners: at
+the full length, two cars passing in opposite lanes of a two-cell street
+clipped each other, which is not a near miss, it is a phantom.
+
+## 4b. The boost, and the meter
+
+A coin is worth three things: two seconds on the clock, a unit of money, and
+three seconds of **boost** - twice the engine and twice the top speed, spent
+only while the throttle is down, so a coin taken into a corner is still worth
+something coming out of it.
+
+Against that, the meter runs on petrol as well as on time: a unit of money a
+second, for as long as the shift lasts. The fare pays a fixed amount for the
+distance and the clock pays nothing at all, so without a running cost the
+fastest route and the slowest are worth the same. With one, a trip is
+profitable to the extent that it was quick and that you picked things up on
+the way.
+
 ## 5. The other traffic
 
 `crates/ascitty-core/src/sim.rs`, and the rules of the road it reads are in
@@ -188,6 +231,17 @@ belongs to the traffic going the other way, in which case it crosses back.
 Otherwise every car on a fourteen-cell arterial files into one lane and
 leaves the rest of it empty.
 
+### Backing out of a shunt
+
+A driver who has just been hit does not carry on as though nothing happened:
+they reverse, with the wheel over, for a quarter of a shift. Fifteen seconds
+is a long time to be backing up - long enough to get clear of whatever it
+was, and long enough that on a street the player is still on, the car is
+recycled somewhere ahead before it finishes. That is the intent: a shunt
+clears itself off the road rather than becoming a permanent obstacle in the
+middle of it. The lock alternates by index so a pile-up does not reverse in
+formation.
+
 ### Giving way is two rules
 
 - **Do not close on the car in front.** The speed a driver wants falls off
@@ -204,6 +258,33 @@ pass clean through, which is invisible until you are following a queue and
 two of them occupy the same six metres of road. Measured over 1,800 ticks:
 33 car-ticks spent inside another car with the drivers giving way, 366 with
 them ignoring each other.
+
+## 5a. The cab goes round things
+
+The autopilot looks six cells up its own nose for something slower than
+itself in a corridor a car and a bit wide, and leans past it - a third of a
+turn of lock at most, on top of whatever the lane wants, strongest when the
+gap is smallest - while lifting off if the gap is closing anyway.
+
+Three things about it are load-bearing, and each of them was measured by
+being got wrong first.
+
+**The side is committed to.** Deciding it fresh every tick is the obvious
+version and is worse than doing nothing: a car a little to the left is passed
+on the right, which moves it to the right in the frame, which asks for a pass
+on the left, and the cab drives up the middle of what it was avoiding at full
+lock in alternating directions. The decision is held for most of a second.
+
+**Dead ahead goes to the kerb side.** The tidier-looking choice is to pull
+towards the crown, and it is wrong: on a road where the traffic keeps right,
+the space to the left of the thing in front is the oncoming lane.
+
+**It only pulls out where there is road to pull out onto, and only overtakes
+on a narrow street for something that has stopped.** Dodging with no regard
+for the kerb spent 43 per cent of one run's travelling ticks off the
+carriageway against 2; overtaking merely-slower traffic on a two-cell street
+- where the only room is the oncoming lane - took the right-hand-lane figure
+from 85 per cent to 57.
 
 ## 6. Where a fare stands
 
@@ -225,16 +306,23 @@ every third cell of the same breadth-first route the cabbie plans with, so
 they are on the road, in order, joined up, and a player following them is
 being shown the way rather than a bearing.
 
-## 7. Masses
+## 7. Masses and sizes
 
-| | Mass | Half-length |
-|---|---:|---:|
-| Taxi | 10 | 0.25 |
-| Traffic | 9 | 0.25 |
-| Bus | 40 | 0.5 |
+| | Length | Half-length | Mass | In a collision |
+|---|---:|---:|---:|---:|
+| Taxi | 12 m | 6 m | 10 | **30** |
+| Traffic | 9.6 m | 4.8 m | 9 | 9 |
+| Bus | 13.5 m | 6.75 m | 40 | **120** |
 
-A taxi sends a parked saloon spinning and barely moves a bus, which is the
-point of there being a bus.
+The cab is 5.4 m tall and the bus 8.1 m, which are not real dimensions and
+are not meant to be: at forty rows a vehicle drawn honestly is three
+characters and reads as a crate. What matters is the order and the ratios,
+and that the cab's roof is low enough to see the road over - see
+[`CarKind::hull`].
+
+The bus was twice as big as this and lost a quarter twice. An eight-cell bus
+is forty-eight metres, which is longer than most of the buildings it drives
+past are wide, and it filled a two-cell street end to end.
 
 ## 8. No square roots
 

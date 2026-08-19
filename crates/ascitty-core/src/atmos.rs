@@ -34,6 +34,14 @@ pub struct Phase {
     pub top: u8,
     /// Luminance at the horizon, which is where the light is.
     pub bottom: u8,
+    /// How long this phase lasts, in shares of the day.
+    ///
+    /// Not every phase is worth the same amount of time.  A dust storm is a
+    /// thing that happens to an afternoon; the afternoon is the afternoon.
+    /// Weights rather than durations so that the length of a day stays one
+    /// number - see [`Atmos::day`] - and changing what a phase is worth
+    /// cannot change how long a day is.
+    pub hold: u8,
 }
 
 /// The day, as twelve phases in the order they happen.
@@ -44,19 +52,22 @@ pub struct Phase {
 /// skies a city like this one has in the sort of film it comes from, and
 /// they are chosen to be told apart at sixteen hues.
 pub const DAY: [Phase; 12] = [
-    Phase { name: "NIGHT", hue: palette::H_DARK_BLUE, top: 0, bottom: 2 },
-    Phase { name: "MORNING", hue: palette::H_WHITE, top: 1, bottom: 3 },
-    Phase { name: "AWAKENING", hue: palette::H_LIGHT_BLUE, top: 2, bottom: 4 },
-    Phase { name: "SUNRISE", hue: palette::H_ORANGE, top: 3, bottom: 6 },
-    Phase { name: "DUST", hue: palette::H_RED, top: 3, bottom: 5 },
-    Phase { name: "NOON", hue: palette::H_YELLOW, top: 5, bottom: 7 },
-    Phase { name: "AFTERNOON", hue: palette::H_BLUE, top: 4, bottom: 6 },
-    Phase { name: "OVERCAST", hue: palette::H_WHITE, top: 4, bottom: 6 },
-    Phase { name: "SUNSET", hue: palette::H_GREEN, top: 3, bottom: 5 },
-    Phase { name: "AFTERGLOW", hue: palette::H_PINK, top: 2, bottom: 5 },
-    Phase { name: "GLOAMING", hue: palette::H_GREEN, top: 1, bottom: 3 },
-    Phase { name: "DEEP NIGHT", hue: palette::H_BLUE, top: 0, bottom: 2 },
+    Phase { name: "NIGHT", hue: palette::H_DARK_BLUE, top: 0, bottom: 2, hold: 2 },
+    Phase { name: "MORNING", hue: palette::H_WHITE, top: 2, bottom: 4, hold: 2 },
+    Phase { name: "AWAKENING", hue: palette::H_LIGHT_BLUE, top: 3, bottom: 5, hold: 2 },
+    Phase { name: "SUNRISE", hue: palette::H_ORANGE, top: 3, bottom: 6, hold: 1 },
+    Phase { name: "DUST", hue: palette::H_RED, top: 3, bottom: 5, hold: 1 },
+    Phase { name: "NOON", hue: palette::H_YELLOW, top: 5, bottom: 7, hold: 2 },
+    Phase { name: "AFTERNOON", hue: palette::H_BLUE, top: 4, bottom: 6, hold: 6 },
+    Phase { name: "OVERCAST", hue: palette::H_WHITE, top: 4, bottom: 6, hold: 2 },
+    Phase { name: "SUNSET", hue: palette::H_GREEN, top: 3, bottom: 5, hold: 2 },
+    Phase { name: "AFTERGLOW", hue: palette::H_PINK, top: 2, bottom: 5, hold: 1 },
+    Phase { name: "GLOAMING", hue: palette::H_GREEN, top: 1, bottom: 3, hold: 1 },
+    Phase { name: "DEEP NIGHT", hue: palette::H_BLUE, top: 0, bottom: 2, hold: 2 },
 ];
+
+/// The shares of a day, added up.
+pub const DAY_SHARES: u32 = 24;
 
 /// Ticks in a full cycle of [`DAY`], at the rate the program steps the
 /// atmosphere - one per frame.
@@ -67,14 +78,13 @@ pub const DAY: [Phase; 12] = [
 /// not a strobe, short enough that a single run is not all one colour.
 pub const DAY_TICKS: u32 = 7200;
 
-/// How many rows above the horizon the sky takes to reach its zenith
-/// colour, and how far a phase change sweeps up before it has taken over.
+/// The fewest rows the sky gradient is ever spread over.
 ///
-/// Measured in rows rather than as a fraction of the frame on purpose: the
-/// horizon moves with the pitch and the frame is whatever size the terminal
-/// is, and a gradient that rescaled itself to both would breathe every time
-/// the camera nodded.
-pub const SKY_SPAN: i32 = 20;
+/// The gradient normally spans the whole sky, so it reaches the top of the
+/// frame whatever size the frame is.  This is the floor: a camera pointed at
+/// the ground has three rows of sky above the buildings, and a whole ramp
+/// squeezed into three rows is a stripe rather than a sky.
+pub const MIN_SKY_SPAN: i32 = 12;
 
 /// The state of the sky.
 #[derive(Clone, Copy, Debug)]
@@ -206,25 +216,70 @@ impl Atmos {
     /// With `day` at zero the sky holds wherever the tick counter left it,
     /// which is what `--day 0` is for: a picture of one sky.
     pub fn phase(&self) -> (usize, Fx) {
-        let each = (if self.day == 0 { DAY_TICKS } else { self.day } / DAY.len() as u32).max(1);
-        let cycle = each * DAY.len() as u32;
-        // Held, or running: the offset is where the cycle starts either way.
+        let cycle = if self.day == 0 { DAY_TICKS } else { self.day }.max(DAY_SHARES);
         let t = if self.day == 0 {
             self.sky_offset % cycle
         } else {
             self.tick.wrapping_add(self.sky_offset) % cycle
         };
-        let i = (t / each) as usize % DAY.len();
-        let within = fixed::div(fixed::from_int((t % each) as i32), fixed::from_int(each as i32));
-        (i, within)
+        // Walk the shares.  Twelve of them, once per call, on a cheap
+        // machine as well as this one: it is an add and a compare a phase.
+        let mut start = 0u32;
+        for (i, p) in DAY.iter().enumerate() {
+            let len = cycle * p.hold as u32 / DAY_SHARES;
+            if t < start + len || i == DAY.len() - 1 {
+                let within = if len == 0 {
+                    0
+                } else {
+                    fixed::div(fixed::from_int((t - start) as i32), fixed::from_int(len as i32))
+                };
+                return (i, within.clamp(0, ONE));
+            }
+            start += len;
+        }
+        (0, 0)
+    }
+
+    /// Where the light is, as a compass bearing.
+    ///
+    /// One turn a day, arranged so that the middle of `SUNRISE` is due east
+    /// and the middle of `SUNSET` is due west - which the shares in [`DAY`]
+    /// are set up to make exactly half a turn apart, so this is the honest
+    /// sun rather than an approximation of one.
+    ///
+    /// East is angle zero here because east is `+x`, which is the same
+    /// convention the driving and the shadow sweep use.  Nothing else in the
+    /// program has an opinion about where the sun is, so this is the only
+    /// place it has to be true.
+    pub fn sun_az(&self) -> Ang {
+        let cycle = if self.day == 0 { DAY_TICKS } else { self.day }.max(DAY_SHARES);
+        let t = if self.day == 0 {
+            self.sky_offset % cycle
+        } else {
+            self.tick.wrapping_add(self.sky_offset) % cycle
+        };
+        // Where sunrise is, in ticks, plus half of it: the middle of the
+        // phase is the moment the sun is on the horizon.
+        let mut rise = 0u32;
+        for p in DAY.iter().take(3) {
+            rise += cycle * p.hold as u32 / DAY_SHARES;
+        }
+        rise += cycle * DAY[3].hold as u32 / DAY_SHARES / 2;
+        let round = ((t as i64 - rise as i64).rem_euclid(cycle as i64) * 65536 / cycle as i64) as i32;
+        round as Ang
     }
 
     /// The tick offset that starts the cycle at phase `n`.
     pub fn phase_offset(n: u32, day: u32) -> u32 {
-        let each = (if day == 0 { DAY_TICKS } else { day } / DAY.len() as u32).max(1);
+        let cycle = if day == 0 { DAY_TICKS } else { day }.max(DAY_SHARES);
+        let n = (n as usize) % DAY.len();
+        let mut start = 0u32;
+        for p in DAY.iter().take(n) {
+            start += cycle * p.hold as u32 / DAY_SHARES;
+        }
         // Half a phase in, so `--sky 5` is noon rather than the moment noon
         // is still sweeping up over the morning.
-        (n % DAY.len() as u32) * each + each / 2
+        start + cycle * DAY[n].hold as u32 / DAY_SHARES / 2
     }
 
     /// How much light the sky is throwing on the city, in luminance steps.
@@ -272,16 +327,25 @@ impl Atmos {
     /// The boundary itself is dithered by a row: without it the sweep is a
     /// ruled line across the sky, which reads as a rendering artefact
     /// because it is one.
-    pub fn sky_at(&self, rows_above: i32, jitter: u32) -> (u8, u8) {
+    pub fn sky_at(&self, rows_above: i32, sky_rows: i32, bearing: Ang, jitter: u32) -> (u8, u8) {
         let (i, t) = self.phase();
         let now = DAY[i];
         let before = DAY[(i + DAY.len() - 1) % DAY.len()];
 
-        // How high the new sky has climbed, in rows, over the first half of
-        // the phase.
+        // The gradient runs over the whole sky rather than over a fixed
+        // number of rows.  Anchoring it to rows keeps it fixed to the world
+        // when the camera nods, which is the honest thing, and it also means
+        // that on any frame taller than the anchor the top half of the sky
+        // is one flat colour - and a flat top half is not a sky.  So the
+        // span is what is actually above the horizon, floored so that a
+        // sliver of sky under a camera pointed at the ground is not a whole
+        // ramp squeezed into three rows.
+        let span = sky_rows.max(MIN_SKY_SPAN);
+
+        // How far the new sky has climbed, over the first half of the phase.
         let swept = fixed::floor(fixed::mul(
             fixed::mul(t, fixed::from_int(2)).min(ONE),
-            fixed::from_int(SKY_SPAN),
+            fixed::from_int(span),
         ));
         // One row of noise at the edge, so the boundary is a weather front
         // and not a ruler.
@@ -289,15 +353,41 @@ impl Atmos {
         let p = if here <= swept { now } else { before };
 
         // The gradient: palest at the horizon, darkening to the zenith.
-        let up = fixed::div(
-            fixed::from_int(rows_above.clamp(0, SKY_SPAN)),
-            fixed::from_int(SKY_SPAN),
+        let up = fixed::div(fixed::from_int(rows_above.clamp(0, span)), fixed::from_int(span));
+        let mut luma = fixed::lerp(
+            fixed::from_int(p.bottom as i32),
+            fixed::from_int(p.top as i32),
+            up,
         );
-        let luma = fixed::floor(
-            fixed::lerp(fixed::from_int(p.bottom as i32), fixed::from_int(p.top as i32), up)
-                + fixed::HALF,
-        );
-        (p.hue, luma.clamp(0, 7) as u8)
+
+        // And the glow, which is what makes the day turn.
+        //
+        // The light is a bearing that goes once round in a day - due east at
+        // sunrise, due west at sunset - and the sky nearest it is brighter.
+        // It is the only thing in the frame that says which way you are
+        // facing, and it is why a sunrise looks different from a sunset
+        // rather than merely being a different colour.
+        //
+        // Strongest at the horizon and gone by the zenith, because that is
+        // where a low sun puts it, and scaled by how much light the phase
+        // has to give: a midnight sky does not glow in the east.
+        let strength = match p.bottom {
+            0..=2 => 0,
+            3..=4 => 1,
+            _ => 2,
+        };
+        if strength > 0 {
+            let off = (bearing.wrapping_sub(self.sun_az()) as i16 as i32).abs();
+            let quarter = trig::QUARTER as i32;
+            if off < quarter {
+                // One at the edge of the quarter, none at right angles to it.
+                let near = fixed::div(fixed::from_int(quarter - off), fixed::from_int(quarter));
+                let low = ONE - up;
+                luma += fixed::mul(fixed::mul(fixed::from_int(strength), near), low);
+            }
+        }
+
+        (p.hue, fixed::floor(luma + fixed::HALF).clamp(0, 7) as u8)
     }
 
     /// What is in the sky along a given ray, at a given row.
@@ -305,7 +395,7 @@ impl Atmos {
     /// `col_ang` is the compass bearing of the ray, so stars are fixed to
     /// the world rather than to the screen: turn around and the same stars
     /// come back.
-    pub fn sky(&self, col_ang: Ang, row_above_horizon: i32) -> Cel {
+    pub fn sky(&self, col_ang: Ang, row_above_horizon: i32, sky_rows: i32) -> Cel {
         if row_above_horizon <= 0 {
             return Cel::EMPTY;
         }
@@ -313,7 +403,7 @@ impl Atmos {
         // between columns, coarsely enough that they do not swarm.
         let bucket = (col_ang >> 5) as u32;
         let h = hash3(bucket, row_above_horizon as u32, 0x5747_2A25);
-        let (hue, luma) = self.sky_at(row_above_horizon, h >> 5);
+        let (hue, luma) = self.sky_at(row_above_horizon, sky_rows, col_ang, h >> 5);
 
         // Stars, but only where it is dark enough to see one.  Nothing
         // switches them off at dawn: the sky gets brighter and they stop
@@ -526,6 +616,9 @@ impl Atmos {
 mod tests {
     use super::*;
 
+    /// A sky twenty rows tall, which is about what a terminal gives.
+    const SPAN: i32 = 20;
+
     /// The day goes all the way round and comes back.
     #[test]
     fn the_sky_visits_every_phase_and_returns() {
@@ -556,8 +649,8 @@ mod tests {
                 sky_offset: Atmos::phase_offset(n, 0),
                 ..Default::default()
             };
-            let (_, low) = a.sky_at(1, 0);
-            let (_, high) = a.sky_at(SKY_SPAN, 0);
+            let (_, low) = a.sky_at(1, SPAN, 0, 0);
+            let (_, high) = a.sky_at(SPAN, SPAN, 0, 0);
             assert!(
                 low >= high,
                 "{}: the zenith at {high} is brighter than the horizon at {low}",
@@ -574,13 +667,13 @@ mod tests {
         // A quarter of the way into a phase: the new hue is down at the
         // horizon and the old one is still overhead.
         let a = Atmos { day: DAY_TICKS, sky_offset: each / 4, ..Default::default() };
-        let (low, _) = a.sky_at(1, 0);
-        let (high, _) = a.sky_at(SKY_SPAN, 0);
+        let (low, _) = a.sky_at(1, SPAN, 0, 0);
+        let (high, _) = a.sky_at(SPAN, SPAN, 0, 0);
         assert_eq!(low, DAY[0].hue, "the new sky is not at the horizon");
         assert_eq!(high, DAY[DAY.len() - 1].hue, "the old sky has already gone");
         // And by the half-way point it has taken the whole sky.
         let a = Atmos { day: DAY_TICKS, sky_offset: each * 3 / 4, ..Default::default() };
-        assert_eq!(a.sky_at(SKY_SPAN, 0).0, DAY[0].hue, "it never finished rising");
+        assert_eq!(a.sky_at(SPAN, SPAN, 0, 0).0, DAY[0].hue, "it never finished rising");
     }
 
     /// Stars are only drawn where the sky is dark enough to have any.
@@ -596,7 +689,7 @@ mod tests {
         let count = |a: &Atmos| {
             (0..2000)
                 .filter(|i| {
-                    let c = a.sky((i * 31) as Ang, 1 + i % SKY_SPAN);
+                    let c = a.sky((i * 31) as Ang, 1 + i % SPAN, SPAN);
                     catalog::is_star(c.glyph)
                 })
                 .count()
@@ -625,11 +718,11 @@ mod tests {
             sky_offset: Atmos::phase_offset(5, 0),
             ..Default::default()
         };
-        let was = a.sky_at(4, 0);
+        let was = a.sky_at(4, SPAN, 0, 0);
         for _ in 0..DAY_TICKS * 2 {
             a.step();
         }
-        assert_eq!(a.sky_at(4, 0), was, "it moved anyway");
+        assert_eq!(a.sky_at(4, SPAN, 0, 0), was, "it moved anyway");
         assert_eq!(a.phase_name(), "NOON");
     }
     use crate::arch::{self, Face};
@@ -687,7 +780,7 @@ use crate::camera::Camera;
     fn stars_are_fixed_to_the_world_not_to_the_screen() {
         let a = Atmos::default();
         let ang = trig::from_degrees(41.0);
-        assert_eq!(a.sky(ang, 5).glyph, a.sky(ang, 5).glyph);
+        assert_eq!(a.sky(ang, 5, SPAN).glyph, a.sky(ang, 5, SPAN).glyph);
     }
 
     #[test]

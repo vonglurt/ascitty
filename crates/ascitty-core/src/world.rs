@@ -1034,7 +1034,18 @@ fn raise(site: &mut Site, zone: Zone, palette_id: usize, lot: Rect) {
         let over = if footprint >= 12 { ceiling * 3 / 2 } else { ceiling + 4 };
         site.rng.range(ceiling as i32, over as i32)
     }
-    .clamp(2, 96) as u8;
+    // A fifth off everything.
+    //
+    // Not a change to the distribution - the bands, the landmark rule and
+    // the roofline they produce are all the same shape - but to the scale of
+    // it.  A cell is six metres and a fifty-cell tower is three hundred of
+    // them, which is taller than anything in the city it is dressed as; and
+    // from a car, a street whose walls run off the top of the frame at every
+    // junction is a corridor rather than a place.  Four fifths puts the
+    // tallest at about two hundred and forty metres and gives the sky back.
+    * 4
+        / 5;
+    let height = height.clamp(2, 96) as u8;
 
     let arch = pick_arch(site.rng, use_, height);
 

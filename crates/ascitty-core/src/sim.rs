@@ -67,6 +67,23 @@ pub const RECYCLE: i32 = 34;
 pub const START_TIME: i32 = 60;
 /// Seconds a coin is worth.
 pub const COIN_TIME: i32 = 2;
+/// Ticks of boost a coin is worth.
+///
+/// Three seconds of twice the engine and twice the top speed, spent only
+/// while the throttle is down.  A coin is therefore worth three things at
+/// once - time, money, and speed - which is what makes a trail of them worth
+/// following rather than worth ignoring in favour of the shortest line to
+/// the marker.
+pub const COIN_BOOST: u32 = 3 * drive::HZ as u32;
+/// How often a tick of the meter costs a unit of money, in ticks.
+///
+/// Once a second.  The fare pays a fixed amount for the distance and the
+/// clock pays nothing at all, so without a running cost the fastest route
+/// and the slowest are worth the same and there is no reason to hurry beyond
+/// the clock.  With one, every second of a job is a coin burned, and a trip
+/// is profitable to the extent that it was quick and that you picked things
+/// up on the way.
+pub const FUEL_TICKS: u32 = drive::HZ as u32;
 /// Seconds picking up a fare is worth.
 pub const PICKUP_TIME: i32 = 12;
 /// How close, and how slow, you have to be to pick up or drop off.
@@ -76,11 +93,32 @@ pub const STOP_SPEED: Fx = fixed::ratio(3, 2);
 /// How near the marker the cab has to be to pick up or set down.
 ///
 /// Wider than [`STOP_RADIUS`], because the passenger stands on the pavement
-/// and the cab may not.  A car pulled up at the kerb is one cell from the
-/// person on it, and it may be up to a stopping circle's worth further out
-/// than that before it is not at the kerb any more, so the reach is the two
-/// added together.  The last step is the passenger's.
-pub const REACH: Fx = fixed::ratio(7, 4);
+/// and the cab may not: a car pulled up at the kerb is a cell from the
+/// person on it.  A quarter of a cell of slop on top of that and no more -
+/// it was the whole of a stopping circle, which is a box three and a half
+/// cells across, and on a two-cell street that is the entire road.  A fare
+/// that pays out for being *near* the circle is a fare you never actually
+/// arrive at.
+///
+/// The autopilot is not held to this: it stops in the circle at the kerb and
+/// [`Fare::at_stop`] takes either.  This number is the one a player is
+/// asked to hit.
+pub const REACH: Fx = fixed::ratio(5, 4);
+
+/// How far from the kerb the cab may stop and still be paid.
+///
+/// Half a cell more than the circle the autopilot aims at, which is the slop
+/// between stopping and having stopped.
+pub const KERB_REACH: Fx = STOP_RADIUS + fixed::HALF;
+
+/// How long a driver spends reversing after being hit, in ticks.
+///
+/// A quarter of a shift.  Fifteen seconds is a long time to be backing up -
+/// long enough to get clear of whatever it was, and long enough that on a
+/// street the cab is still on, the car is recycled somewhere ahead before it
+/// finishes.  That is the intent: a shunt clears itself off the road rather
+/// than becoming a permanent obstacle in the middle of it.
+pub const BACKING: i32 = START_TIME * drive::HZ / 4;
 
 /// How far ahead a driver in the traffic looks for a reason to lift off.
 ///
@@ -206,8 +244,15 @@ impl Fare {
     pub fn at_stop(&self, x: Fx, y: Fx) -> bool {
         let (mx, my) = self.marker();
         let (sx, sy) = self.stop();
+        // The kerb clause is a little wider than the circle the autopilot
+        // aims at.  It stops when it is inside that circle and then coasts,
+        // so it comes to rest just outside it as often as not - and a cab
+        // that has arrived, stopped, and is not paid sits there until the
+        // stuck check reverses it into the road.  Measured: a third of one
+        // city's travelling ticks were spent off the carriageway doing
+        // exactly that.
         (fixed::abs(mx - x) < REACH && fixed::abs(my - y) < REACH)
-            || (fixed::abs(sx - x) < STOP_RADIUS && fixed::abs(sy - y) < STOP_RADIUS)
+            || (fixed::abs(sx - x) < KERB_REACH && fixed::abs(sy - y) < KERB_REACH)
     }
 }
 
@@ -243,14 +288,18 @@ pub struct Sim {
     /// How fast each of them would like to be going with a clear road.
     /// Varied per car, so a street is not a convoy at one speed.
     traffic_cruise: Vec<Fx>,
+    /// Ticks each of them has left to spend reversing out of a shunt.
+    traffic_backing: Vec<u32>,
     /// The street furniture.
     pub props: Vec<Prop>,
     /// The pedestrians.
     pub peds: Vec<Ped>,
     /// The current job, if any.
     pub fare: Option<Fare>,
-    /// Money taken this shift.
+    /// Money taken this shift, after petrol.
     pub money: u32,
+    /// What the petrol has cost so far, for the scoreboard.
+    pub spent: u32,
     /// Consecutive things hit without stopping.
     pub combo: u32,
     /// Ticks left on the clock, at [`drive::HZ`].
@@ -275,10 +324,12 @@ impl Sim {
             traffic: Vec::with_capacity(TRAFFIC),
             traffic_ctl: vec![Controls::default(); TRAFFIC],
             traffic_cruise: vec![0; TRAFFIC],
+            traffic_backing: vec![0; TRAFFIC],
             props: Vec::new(),
             peds: Vec::with_capacity(PEDS),
             fare: None,
             money: 0,
+            spent: 0,
             combo: 0,
             ticks_left: START_TIME * drive::HZ,
             tick: 0,
@@ -691,6 +742,12 @@ impl Sim {
         self.step_peds(city, hz);
         self.step_fare(city, out);
 
+        // The meter runs on petrol as well as on time.
+        if self.tick.is_multiple_of(FUEL_TICKS) {
+            self.money = self.money.saturating_sub(1);
+            self.spent = self.spent.saturating_add(1);
+        }
+
         self.ticks_left -= 1;
         if self.ticks_left <= 0 {
             self.ticks_left = 0;
@@ -716,6 +773,7 @@ impl Sim {
                 let (c, cruise) = self.spawn_car(city);
                 self.traffic[i] = c;
                 self.traffic_cruise[i] = cruise;
+                self.traffic_backing[i] = 0;
                 continue;
             }
             let ctl = self.traffic_controls(city, i);
@@ -727,6 +785,7 @@ impl Sim {
             if let Some(sev) = drive::collide(&mut a, &mut b, city) {
                 self.taxi = a;
                 self.traffic[i] = b;
+                self.traffic_backing[i] = BACKING as u32;
                 if sev > ONE {
                     self.combo += 1;
                     self.money += 2 * self.combo;
@@ -745,6 +804,8 @@ impl Sim {
                 if drive::collide(&mut a, &mut b, city).is_some() {
                     self.traffic[i] = a;
                     self.traffic[j] = b;
+                    self.traffic_backing[i] = BACKING as u32;
+                    self.traffic_backing[j] = BACKING as u32;
                 }
             }
         }
@@ -755,7 +816,19 @@ impl Sim {
     /// Two jobs, and they are independent: keep the lane, and do not run
     /// into anything.  Neither of them is a route - this car has no idea
     /// where it is going and does not need one.
-    fn traffic_controls(&self, city: &City, i: usize) -> Controls {
+    fn traffic_controls(&mut self, city: &City, i: usize) -> Controls {
+        // Backing out of a shunt.  A driver who has just been hit does not
+        // carry on as though nothing happened: they reverse, with the wheel
+        // over, until they are clear - and on a street the player is still
+        // on, they are recycled somewhere ahead before they finish, which is
+        // how a wreck stops being a permanent obstacle.
+        if self.traffic_backing[i] > 0 {
+            self.traffic_backing[i] -= 1;
+            // The lock alternates by index, so a pile-up does not reverse in
+            // formation.
+            let lock = if i.is_multiple_of(2) { ONE } else { -ONE };
+            return Controls { throttle: -ONE, steer: fixed::mul(lock, fixed::HALF), handbrake: false };
+        }
         let c = self.traffic[i];
         let (fx, fy) = (trig::cos(c.yaw), trig::sin(c.yaw));
         // The car's own right-hand side, which is the axis every offset
@@ -932,6 +1005,7 @@ impl Sim {
                 c.taken = true;
                 self.ticks_left += COIN_TIME * drive::HZ;
                 self.money += 1;
+                self.taxi.boost = self.taxi.boost.max(COIN_BOOST);
                 out.push(Event::Coin);
             }
         }
@@ -1065,7 +1139,14 @@ impl Sim {
                 (_, _, true) if c.hue & 1 == 0 => Stamp::JeepSide,
                 (_, _, true) => Stamp::MuscleSide,
             };
-            self.boards.push(Billboard::upright(stamp, c.x, c.y, w, h, c.hue));
+            let mut b = Billboard::upright(stamp, c.x, c.y, w, h, c.hue);
+            // Which end of it you are looking at, for the lights: the
+            // camera is in front of the car when the car's own heading
+            // points away from it.
+            let (cfx, cfy) = (trig::cos(c.yaw), trig::sin(c.yaw));
+            let toward = fixed::mul(cam.x - c.x, cfx) + fixed::mul(cam.y - c.y, cfy);
+            b.phase = u8::from(toward > 0);
+            self.boards.push(b);
         }
         for pd in &self.peds {
             if near(pd.x, pd.y) {
@@ -1090,15 +1171,18 @@ impl Sim {
                 // disc does and costs one table lookup.
                 let s = trig::sin((self.tick.wrapping_mul(2400)) as Ang);
                 let w = fixed::ratio(1, 4) + fixed::mul(fixed::abs(s), fixed::ratio(1, 4));
-                let mut b = Billboard::upright(
+                let b = Billboard::upright(
                     Stamp::Coin,
                     c.x,
                     c.y,
                     w,
-                    fixed::ratio(2, 5),
+                    fixed::ratio(3, 5),
                     palette::H_YELLOW,
                 );
-                b.base = fixed::ratio(1, 3);
+                // On the road, not hovering over it.  It was a third of a
+                // cell up - two metres - which reads as a coin floating at
+                // windscreen height, and which made it impossible to tell
+                // whether you were going to drive over one or under it.
                 self.boards.push(b);
             }
             let (mx, my) = fare.marker();
@@ -1277,12 +1361,25 @@ fn coin_trail(city: &City, from: (i32, i32), to: (i32, i32)) -> Vec<Coin> {
     let Some(route) = city.drive_route(from, to, COIN_BUDGET) else {
         return coins;
     };
-    for &(x, y) in route.iter().step_by(3) {
-        coins.push(Coin {
-            x: fixed::from_int(x) + fixed::HALF,
-            y: fixed::from_int(y) + fixed::HALF,
-            taken: false,
-        });
+    // In the lane, not down the middle of the cell.
+    //
+    // The route is a breadth-first path and has no opinion about which side
+    // of the road it is on, so coins laid on its cell centres are as often
+    // in the oncoming lane as in yours - and a car that drives at them,
+    // which is the whole point of them, is being paid to drive on the wrong
+    // side.  Measured: with the cab collecting, centred coins took it from
+    // 79 per cent on the correct side to 55.  Put in the lane, the trail and
+    // the lane rule ask for the same thing.
+    let n = route.len();
+    for (i, &(x, y)) in route.iter().enumerate().step_by(3) {
+        // The direction over a few cells, for the same reason the autopilot
+        // takes its heading over a few: a route across a wide road
+        // staircases, and one step of it is as often across as along.
+        let a = route[i.saturating_sub(2)];
+        let b = route[(i + 2).min(n - 1)];
+        let dir = ((b.0 - a.0).signum(), (b.1 - a.1).signum());
+        let (cx, cy) = road::lane(city, x, y, dir);
+        coins.push(Coin { x: cx, y: cy, taken: false });
     }
     coins
 }

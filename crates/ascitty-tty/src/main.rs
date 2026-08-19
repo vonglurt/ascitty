@@ -761,6 +761,19 @@ fn ceiling_of(city: &City) -> Fx {
     fixed::from_int(tallest as i32 + 6)
 }
 
+/// The HUD layer over a driving frame: the arrow on the road.
+///
+/// All three paths that draw the game - the interactive one, `--shot` and
+/// the recorder - call this, because a picture of the game without the thing
+/// you steer by is a picture of a different program.
+fn hud_layer(f: &mut Frame, sim: &Sim, cam: &Camera, atmos: &Atmos) {
+    if let Some((tx, ty)) = sim.target() {
+        let want = ascitty_core::sim::atan2_approx(ty - cam.y, tx - cam.x);
+        let rel = want.wrapping_sub(cam.yaw) as i16 as i32;
+        hud::arrow_on_the_road(f, rel, atmos.tick);
+    }
+}
+
 fn run(mut o: Opts) -> Result<(), String> {
     let city = City::generate(o.seed);
     let mut cam = Camera::spawn(&city, SIZE as i32 / 2, SIZE as i32 / 2);
@@ -827,6 +840,9 @@ fn run(mut o: Opts) -> Result<(), String> {
             let proj = raycast::projection(&city, &cam, &f);
             sim.draw(&mut f, &depth, &cam, &o.atmos, &proj);
             o.atmos.rain_over(&mut f, &cam);
+            if view == View::Drive {
+                hud_layer(&mut f, &sim, &cam, &o.atmos);
+            }
         }
         if let Some(path) = &o.png {
             std::fs::write(path, png::encode(&f)).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -883,6 +899,9 @@ fn run(mut o: Opts) -> Result<(), String> {
             let proj = raycast::projection(&city, &cam, &f);
             sim.draw(&mut f, &depth, &cam, &o.atmos, &proj);
             o.atmos.rain_over(&mut f, &cam);
+            if view == View::Drive {
+                hud_layer(&mut f, &sim, &cam, &o.atmos);
+            }
             if let Some(rec) = rec.as_mut() {
                 paint::paint(&f, o.mode, o.depth, &mut buf);
                 rec.frame(&buf).map_err(|e| e.to_string())?;
@@ -1175,6 +1194,10 @@ fn run(mut o: Opts) -> Result<(), String> {
         let proj = raycast::projection(&city, &cam, &f);
         sim.draw(&mut f, &depth, &cam, &o.atmos, &proj);
         o.atmos.rain_over(&mut f, &cam);
+        // The HUD layer: over the city, over the cab, over the weather.
+        if view == View::Drive {
+            hud_layer(&mut f, &sim, &cam, &o.atmos);
+        }
         paint::paint(&f, o.mode, o.depth, &mut buf);
         hud::append(&mut buf, &hud::Status {
             view: match (autopilot, view) {

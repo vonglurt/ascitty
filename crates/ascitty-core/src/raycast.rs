@@ -198,8 +198,11 @@ pub fn render_to(
         let rdy = dy + fixed::mul(py, camx);
         let bearing = column_bearing(cam.yaw, camx, cam.fov);
 
-        for y in 0..horizon.min(h) {
-            f.put(x, y, atmos.sky(bearing, horizon - y));
+        // How much sky there is above the horizon on this frame, which is
+        // what the gradient is spread over.
+        let sky_rows = horizon.min(h);
+        for y in 0..sky_rows {
+            f.put(x, y, atmos.sky(bearing, horizon - y, sky_rows));
         }
         for y in (horizon.max(0) + 1)..h {
             let d = row_dist[y as usize];

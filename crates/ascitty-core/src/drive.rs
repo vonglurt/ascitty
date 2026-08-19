@@ -85,12 +85,19 @@ const VMAX: Fx = fixed::ratio(7, 1);
 /// slide alive after a full second.  Every corner was a boat because no
 /// setting of the old constants could make one that was not.
 ///
-/// Parked, four fifths of the slide survives a tick and a thousandth of it
-/// survives a second: the car goes where it points.
-const GRIP_LOW_SPEED: Fx = fixed::ratio(80, 100);
-/// Lateral grip at top speed.  Half the slide is still there three quarters
-/// of a second later, which is the boat.
-const GRIP_HIGH_SPEED: Fx = fixed::ratio(985, 1000);
+/// Parked, under three quarters of the slide survives a tick and nothing
+/// measurable survives a second: the car goes where it points.
+const GRIP_LOW_SPEED: Fx = fixed::ratio(72, 100);
+/// Lateral grip at top speed.
+///
+/// It was 0.985, which leaves half the slide alive three quarters of a
+/// second later - a boat.  Measured against the corner table, that read as
+/// 0.29 of slip through a full-lock quarter turn at 150 km/h with nothing
+/// touching the handbrake, and a car that drifts without being asked to is a
+/// car you cannot place between two rows of buildings six metres apart.  At
+/// 0.95 the same corner slips 0.15 and the handbrake still slides 0.84, so
+/// the slide is something you ask for.
+const GRIP_HIGH_SPEED: Fx = fixed::ratio(950, 1000);
 /// Lateral grip with the handbrake pulled: the slide outlives the corner.
 const GRIP_HANDBRAKE: Fx = fixed::ratio(995, 1000);
 /// How the grip between those two is found, as the power the speed fraction
@@ -117,6 +124,23 @@ const TURN_REF: Fx = fixed::ratio(3, 2);
 const WALL_BOUNCE: Fx = fixed::ratio(-35, 100);
 /// How much of the car's body a wall claims per impact, per unit of speed.
 const WALL_DAMAGE: i32 = 9;
+/// How much of a car's own length is its bumper, for deciding that two of
+/// them have touched.
+///
+/// Three quarters.  The bodies are drawn as boxes and collided as circles,
+/// and a circle round a box that is twice as long as it is wide is a great
+/// deal of empty air at the corners: at the full half-length two cars
+/// passing in opposite lanes of a two-cell street clipped each other, which
+/// is not a near miss, it is a phantom.  Three quarters lets them pass and
+/// still stops a rear-ending from being a drive-through.
+const CONTACT: Fx = fixed::ratio(3, 4);
+
+/// How far past merely-not-touching the car that gives ground is pushed.
+///
+/// An eighth of a cell - three quarters of a metre.  Enough that a car the
+/// cab has hit is seen to go backwards rather than to stop overlapping, and
+/// small enough that it is not a teleport.
+const BOUNCE: Fx = fixed::ratio(1, 8);
 
 /// What the driver is doing.
 #[derive(Clone, Copy, Debug, Default)]
@@ -150,6 +174,32 @@ impl CarKind {
         }
     }
 
+    /// What it weighs while it is doing the hitting.
+    ///
+    /// The cab weighs three times as much in a collision as it does when
+    /// something collides with it, and that is not physics, it is the game.
+    /// A taxi that loses half its speed to every saloon it clips is a taxi
+    /// that cannot cross town, and the fare is on a clock: the thing you are
+    /// driving has to plough.  So the impulse is worked out with the cab
+    /// heavy, which leaves it most of its momentum and gives the other car
+    /// half again as much of a shove as an even exchange would.
+    ///
+    /// A bus is still forty and still wins, because the point of there being
+    /// a bus is that there is something you do not simply drive through.
+    pub fn impact_mass(self) -> i32 {
+        match self {
+            // The cab ploughs.
+            CarKind::Taxi => self.mass() * 3,
+            // And the bus is the thing it cannot plough through, which only
+            // stays true if the bus keeps its lead: at its ordinary forty
+            // against a cab weighing thirty, a saloon and a bus went nearly
+            // the same distance when hit, and the point of there being a bus
+            // is that they do not.
+            CarKind::Bus => self.mass() * 3,
+            CarKind::Traffic => self.mass(),
+        }
+    }
+
     /// Half-length of the body, in world units.
     ///
     /// A cell is about six metres, so these are: a saloon at 9.6 m, the cab
@@ -163,7 +213,12 @@ impl CarKind {
     /// passing through each other's boots.
     pub fn half_len(self) -> Fx {
         match self {
-            CarKind::Bus => fixed::from_int(2),
+            // Cut by a quarter twice.  An eight-cell bus - forty-eight
+            // metres of it - was longer than most of the buildings it drove
+            // past were wide and filled a two-cell street end to end; at
+            // nine eighths of a cell it is a thirteen-metre single-decker,
+            // which is a bus.
+            CarKind::Bus => fixed::ratio(9, 8),
             CarKind::Taxi => fixed::from_int(1),
             CarKind::Traffic => fixed::ratio(4, 5),
         }
@@ -177,18 +232,21 @@ impl CarKind {
     /// metres across the back and ten metres down the side - so a single
     /// "width" cannot draw one.  See [`crate::sprite::silhouette`].
     ///
-    /// The cab is deliberately the squattest of the three.  The chase camera
-    /// sits behind it and looks over it, so its roof is the bottom of what
-    /// you can see of the road ahead: at seven fifths of a cell its roofline
-    /// was two rows above the middle of a forty-row frame and the horizon
-    /// was behind it.  Six fifths puts the roof two character rows lower -
-    /// measured, from row 21 to row 23 - which is two more rows of street.
-    /// It is the one dimension here chosen for the camera rather than for
-    /// the car.
+    /// The cab is deliberately the squattest of the three, and has been cut
+    /// twice.  The chase camera sits behind it and looks over it, so its
+    /// roof is the bottom of what you can see of the road ahead: at seven
+    /// fifths of a cell its roofline was two rows above the middle of a
+    /// forty-row frame and the horizon was behind it.  Six fifths put the
+    /// roof two character rows lower, and nine tenths, which is a quarter
+    /// off again, puts it two more.  It is the one dimension here chosen for
+    /// the camera rather than for the car.
+    ///
+    /// The bus lost a quarter of all three at the same time, for the
+    /// opposite reason: it was not too tall, it was simply enormous.
     pub fn hull(self) -> (Fx, Fx, Fx) {
         match self {
-            CarKind::Bus => (fixed::from_int(4), fixed::ratio(9, 5), fixed::ratio(12, 5)),
-            CarKind::Taxi => (fixed::from_int(2), fixed::ratio(6, 5), fixed::ratio(6, 5)),
+            CarKind::Bus => (fixed::ratio(9, 4), fixed::from_int(1), fixed::ratio(27, 20)),
+            CarKind::Taxi => (fixed::from_int(2), fixed::ratio(6, 5), fixed::ratio(9, 10)),
             CarKind::Traffic => (fixed::ratio(8, 5), fixed::from_int(1), fixed::ratio(13, 10)),
         }
     }
@@ -227,12 +285,19 @@ pub struct Car {
     pub hue: u8,
     /// What it is.
     pub kind: CarKind,
+    /// Ticks of boost left: twice the engine and twice the top speed.
+    ///
+    /// It is on the car rather than in the controls because it outlives a
+    /// frame - you pick a coin up once and spend it over the next few
+    /// seconds - and because the autopilot and the player earn it the same
+    /// way and neither has to remember it.
+    pub boost: u32,
 }
 
 impl Car {
     /// A car sitting still at a place, pointing somewhere.
     pub fn new(kind: CarKind, x: Fx, y: Fx, yaw: Ang, hue: u8) -> Car {
-        Car { x, y, vx: 0, vy: 0, yaw, spin: 0, damage: 0, hue, kind }
+        Car { x, y, vx: 0, vy: 0, yaw, spin: 0, damage: 0, hue, kind, boost: 0 }
     }
 
     /// Speed, in units per second.
@@ -273,14 +338,28 @@ impl Car {
         // Engine, brake and reverse are three different forces, because
         // pressing "back" while rolling forwards must brake rather than
         // engage reverse - otherwise the car is undriveable.
+        // Boost: twice the engine and twice the top speed, while it lasts
+        // and while you are on the throttle.  Lifting off does not spend it,
+        // which means a coin taken into a corner is still worth something
+        // coming out of it.
+        let boosting = self.boost > 0 && c.throttle > 0;
+        if self.boost > 0 && c.throttle > 0 {
+            self.boost -= 1;
+        }
+        let (accel, vmax) = if boosting {
+            (fixed::mul(ACCEL, fixed::from_int(2)), fixed::mul(VMAX, fixed::from_int(2)))
+        } else {
+            (ACCEL, VMAX)
+        };
+
         let t = c.throttle;
         let force = if t > 0 {
             // The engine, on its curve: everything it has from a standstill,
             // tapering to nothing at `ENGINE_CEILING`.  Never negative -
             // past the ceiling the engine simply stops pushing, it does not
             // start braking.
-            let left = (ONE - fixed::div(vf.max(0), ENGINE_CEILING)).max(0);
-            fixed::mul(fixed::mul(t, ACCEL), left)
+            let left = (ONE - fixed::div(vf.max(0), fixed::mul(ENGINE_CEILING, fixed::div(vmax, VMAX)))).max(0);
+            fixed::mul(fixed::mul(t, accel), left)
         } else if vf > fixed::ratio(1, 4) {
             fixed::mul(t, BRAKE)
         } else {
@@ -290,7 +369,7 @@ impl Car {
 
         // Drag, applied per tick as a fraction of the per-second figure.
         vf -= fixed::mul(fixed::mul(vf, ONE - DRAG), inv);
-        vf = vf.clamp(-fixed::mul(VMAX, fixed::HALF), VMAX);
+        vf = vf.clamp(-fixed::mul(VMAX, fixed::HALF), vmax);
 
         // Grip.  Interpolated between the parked figure and the flat-out
         // one along a cubic, so the car keeps the nose through the speeds it
@@ -398,7 +477,17 @@ impl Car {
 
     /// Take an impulse - from another car, or from something you flattened.
     pub fn shove(&mut self, ix: Fx, iy: Fx, spin: i32) {
-        let m = fixed::from_int(self.kind.mass());
+        self.shove_as(ix, iy, spin, self.kind.mass());
+    }
+
+    /// Take an impulse as though this car weighed `mass`.
+    ///
+    /// The collision solver works the impulse out from
+    /// [`CarKind::impact_mass`] and has to spend it against the same number,
+    /// or the two halves disagree and the pair gains energy - which looks
+    /// like two cars that touch and fire apart.
+    pub fn shove_as(&mut self, ix: Fx, iy: Fx, spin: i32, mass: i32) {
+        let m = fixed::from_int(mass.max(1));
         self.vx += fixed::div(ix, m);
         self.vy += fixed::div(iy, m);
         self.spin += spin;
@@ -412,7 +501,7 @@ impl Car {
 /// spinning; a bus barely notices either.
 pub fn collide(a: &mut Car, b: &mut Car, city: &City) -> Option<Fx> {
     let (dx, dy) = (b.x - a.x, b.y - a.y);
-    let reach = a.kind.half_len() + b.kind.half_len();
+    let reach = fixed::mul(a.kind.half_len() + b.kind.half_len(), CONTACT);
     let (nx, ny, dist) = normalise(dx, dy);
     if dist > reach {
         return None;
@@ -430,8 +519,9 @@ pub fn collide(a: &mut Car, b: &mut Car, city: &City) -> Option<Fx> {
         return None; // already separating
     }
 
-    let ma = fixed::from_int(a.kind.mass());
-    let mb = fixed::from_int(b.kind.mass());
+    let (ka, kb) = (a.kind.impact_mass(), b.kind.impact_mass());
+    let ma = fixed::from_int(ka);
+    let mb = fixed::from_int(kb);
 
     // The textbook impulse for two bodies:
     //
@@ -451,8 +541,8 @@ pub fn collide(a: &mut Car, b: &mut Car, city: &City) -> Option<Fx> {
     let ix = fixed::mul(j, nx);
     let iy = fixed::mul(j, ny);
 
-    a.shove(-ix, -iy, -260);
-    b.shove(ix, iy, 260);
+    a.shove_as(-ix, -iy, -260, ka);
+    b.shove_as(ix, iy, 260, kb);
     let sev = fixed::abs(closing);
     a.damage = a.damage.saturating_add(fixed::floor(sev).clamp(0, 12) as u8);
     b.damage = b.damage.saturating_add(fixed::floor(sev).clamp(0, 12) as u8);
@@ -467,14 +557,41 @@ pub fn collide(a: &mut Car, b: &mut Car, city: &City) -> Option<Fx> {
     // drive; if it does not, the other car takes the whole correction, and
     // if neither can move they simply stay touching for another tick, which
     // is harmless.
-    let overlap = (reach - dist).max(0) / 2 + 1;
-    let a_ok = nudge(a, -fixed::mul(nx, overlap), -fixed::mul(ny, overlap), city);
-    let b_ok = nudge(b, fixed::mul(nx, overlap), fixed::mul(ny, overlap), city);
-    if !a_ok {
-        nudge(b, fixed::mul(nx, overlap), fixed::mul(ny, overlap), city);
-    }
-    if !b_ok {
-        nudge(a, -fixed::mul(nx, overlap), -fixed::mul(ny, overlap), city);
+    // Who gives ground is not an even split when one of them is the cab.
+    // It ploughs, so the *other* car is bounced back the whole way and a
+    // little further - `BOUNCE`, so it visibly recoils rather than merely
+    // stopping touching - and the cab only gives ground if the other car
+    // has nowhere to go, which on a narrow street is a wall behind it.
+    let gap = (reach - dist).max(0);
+    let (fx, fy) = (fixed::mul(nx, gap + BOUNCE), fixed::mul(ny, gap + BOUNCE));
+    let half = (fixed::mul(nx, gap / 2 + 1), fixed::mul(ny, gap / 2 + 1));
+    let ploughs = |k: CarKind| k == CarKind::Taxi;
+    if ploughs(a.kind) != ploughs(b.kind) {
+        // The one that does not plough moves first, and the one that does
+        // moves only if that failed.
+        let moved = if ploughs(a.kind) {
+            nudge(b, fx, fy, city)
+        } else {
+            nudge(a, -fx, -fy, city)
+        };
+        if !moved {
+            let _ = if ploughs(a.kind) {
+                nudge(a, -fx, -fy, city)
+            } else {
+                nudge(b, fx, fy, city)
+            };
+        }
+    } else {
+        // Two of a kind: half each, and whichever half will not fit is
+        // taken by the other one.
+        let a_ok = nudge(a, -half.0, -half.1, city);
+        let b_ok = nudge(b, half.0, half.1, city);
+        if !a_ok {
+            nudge(b, half.0, half.1, city);
+        }
+        if !b_ok {
+            nudge(a, -half.0, -half.1, city);
+        }
     }
     Some(sev)
 }
@@ -662,10 +779,49 @@ mod tests {
         );
     }
 
+    /// The corner table in the documentation, printed so that it can be
+    /// kept true, and asserted so that it cannot quietly stop being.
     #[test]
-    fn turning_at_speed_makes_it_slide() {
-        let (peak, _) = corner(VMAX, false);
-        assert!(peak > fixed::ratio(1, 5), "it turned on rails: slip {}", fixed::to_f32(peak));
+    fn the_corner_table() {
+        for (kmh, speed) in [
+            (28, ONE),
+            (65, fixed::ratio(3, 1)),
+            (100, fixed::ratio(46, 10)),
+            (150, VMAX),
+        ] {
+            let (slip, r) = corner(speed, false);
+            let (hslip, hr) = corner(speed, true);
+            println!(
+                "{kmh:3} km/h  radius {:5.1} m  slip {:.2}   handbrake: radius {:5.1} m slip {:.2}",
+                r * 6.0,
+                fixed::to_f32(slip),
+                hr * 6.0,
+                fixed::to_f32(hslip)
+            );
+            assert!(slip < fixed::ratio(1, 5), "{kmh} km/h drifts on its own");
+            assert!(hslip > fixed::ratio(3, 5), "{kmh} km/h will not slide even on the handbrake");
+        }
+    }
+
+    /// Flat out and off the brakes, it still goes where it points.
+    ///
+    /// This used to assert the opposite - that a corner at the top of the
+    /// range slid - because it did, at 0.29 of slip.  A car that drifts
+    /// without being asked to is a car you cannot place, and placing it is
+    /// the whole of driving between two rows of buildings six metres apart.
+    /// The slide is now something you ask for, with the handbrake, and this
+    /// asserts both halves of that.
+    #[test]
+    fn it_tracks_its_nose_even_flat_out() {
+        let (loose, _) = corner(VMAX, false);
+        let (slid, _) = corner(VMAX, true);
+        assert!(loose < fixed::ratio(1, 5), "it drifted on its own: slip {}", fixed::to_f32(loose));
+        assert!(
+            slid > loose * 4,
+            "the handbrake did nothing: {} against {}",
+            fixed::to_f32(slid),
+            fixed::to_f32(loose)
+        );
     }
 
     /// The point of the whole exercise: at the speeds the car is actually
@@ -836,4 +992,5 @@ mod tests {
         assert!(collide(&mut a, &mut b, &ground).is_none(), "the same collision fired twice");
     }
 }
+
 

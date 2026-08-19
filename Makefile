@@ -202,7 +202,7 @@ shot: $(HOST) $(PRG)
 	@$(HOST) --shot 1   --size 150x44 --mode unicode --copter  > docs/media/copter-blocks.txt
 	@$(HOST) --shot 520 --size 140x40 --seed 99 --tour --walk --sky 0 --day 0 \
 		--png docs/media/street.png
-	@$(HOST) --shot 750 --size 140x40 --seed 99 --demo --drive --sky 3 --day 0 \
+	@$(HOST) --shot 900 --size 140x40 --seed 99 --demo --drive --sky 6 --day 0 \
 		--png docs/media/drive.png
 	@$(HOST) --shot 1   --size 140x40 --seed 99 --copter --haze 1 --sky 5 --day 0 \
 		--png docs/media/copter.png

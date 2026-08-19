@@ -1,6 +1,6 @@
 # ASCITTY — a raytraced ASCII city
 
-**v0.3.0 · 19 August 2026**
+**v0.4.0 · 19 August 2026**
 
 A city built entirely out of typeable characters, rendered in real time, on a
 colour terminal and on a **Commodore Plus/4** — and a taxi game inside it.
@@ -17,13 +17,13 @@ the same string.
 
 *Street level in block elements and colour, which is what you actually get.
 `ascitty --shot 520 --size 140x40 --seed 99 --tour --walk --sky 0 --day 0` —
-**v0.3.0**, 19 Aug 2026.*
+**v0.4.0**, 19 Aug 2026.*
 
 ## Watch it drive itself
 
 ![The cab driving itself down a street, traffic ahead of it, the fare marker glowing on the pavement](docs/media/demo.gif)
 
-*Eight seconds of `make demo`, recorded by `make gif` — **v0.3.0**, 19 Aug
+*Eight seconds of `make demo`, recorded by `make gif` — **v0.4.0**, 19 Aug
 2026. Small and short because a GIF is a whole frame every frame; `make
 cast` records the same run as an asciinema file, which stays sharp at any
 size and is a tenth of the bytes.*
@@ -45,7 +45,7 @@ make gif       # ...or to docs/media/demo.gif
 
 ![The taxi from behind, chequer band along its flank, a saloon alongside on the avenue](docs/media/drive.png)
 
-*The chase camera, from `make demo` at `--sky 3` — **v0.3.0**, 19 Aug 2026.
+*The chase camera, from `make demo` at `--sky 3` — **v0.4.0**, 19 Aug 2026.
 The cab's
 heading and the camera's are not the same thing: the boom lags a turn by a
 few frames, so a slide is watched from outside the spin.*
@@ -79,7 +79,7 @@ It starts in the first one.
 
 ![The city from above the tallest roof: towers seen down their faces, rooftops and fire escapes below](docs/media/copter.png)
 
-*The copter, from `--copter --haze 1 --sky 5` — **v0.3.0**, 19 Aug 2026. How
+*The copter, from `--copter --haze 1 --sky 5` — **v0.4.0**, 19 Aug 2026. How
 far
 down it looks is worked out from how high it is, how far the haze lets it
 see and how many rows the frame has, rather than being a fixed tilt — see
@@ -92,15 +92,27 @@ A run is a shift on the clock, and the clock is the whole of the pressure.
 | | |
 |---|---|
 | Starting time | 60 s |
-| A coin | +2 s, +$1 |
+| A coin | +2 s, +$1, **and three seconds of boost** |
 | Picking up, and setting down | +12 s each |
 | The fare itself | $3 a cell of distance, plus $10 |
+| Petrol | −$1 a second, for as long as the shift lasts |
 | Combo | consecutive things hit without touching a wall; a car pays `2 × combo`, a lamp post pays `combo` |
 
 **Time comes only from working.** There is no other source — nothing lying
 about to be collected, no bonus for driving well. The only way to keep
 playing is to keep taking fares, which is why the clock never has to be
 explained.
+
+**And the meter runs on petrol as well as on time.** The fare pays a fixed
+amount for the distance and the clock pays nothing, so without a running cost
+the fastest route and the slowest are worth the same. A trip is profitable to
+the extent that it was quick and that you picked things up on the way — and
+the coins strung along it are laid in the lane you should be driving in, so
+collecting them and keeping right are the same manoeuvre.
+
+**The boost** is twice the engine and twice the top speed for three seconds,
+spent only while you are on the throttle: a coin taken into a corner is still
+worth something coming out of it.
 
 ### What it says out loud
 
@@ -122,10 +134,21 @@ decides whether to shout and the core does not know there is a screen.
 
 | | Length | Mass | Drawn as |
 |---|---:|---:|---|
-| The cab | 12 m | 10 | `Taxi`, chequer band and roof sign, from any angle |
+| The cab | 12 m | 10, and **30 when it is doing the hitting** | `Taxi`, chequer band and roof sign, from any angle |
 | Traffic | 9.6 m | 9 | `Car` end-on, `JeepSide` or `MuscleSide` in profile, `Wreck` once dented |
-| A bus | 24 m | 40 | `Bus`, `BusSide` |
+| A bus | 13.5 m | 40, and 120 in a collision | `Bus`, `BusSide` |
 | People | — | — | `Ped`, on the pavements and over the crossings |
+
+**The cab ploughs.** It weighs three times as much in a collision as it does
+the rest of the time, which is not physics, it is the game: a taxi that loses
+half its speed to every saloon it clips cannot cross town, and the fare is on
+a clock. The car it hit is bounced back and takes the whole separation, and
+then reverses out of the way for a quarter of a shift. The bus is tripled
+along with it, because the bus is the thing you *cannot* plough through.
+
+**White lights are coming towards you and red are going away** — which is the
+only cue in the frame that says which way a car is pointing, and "am I about
+to hit that" is a question about direction rather than about position.
 
 Twelve vehicles and forty-eight people, and the same twelve and forty-eight
 all shift: when one falls more than about forty cells behind it is picked up
@@ -197,7 +220,7 @@ prints them.
 
 ![The cab at a green sunset, the sky pale at the horizon and darkening above it](docs/media/sunset.png)
 
-*`--sky 8 --day 0` — **v0.3.0**, 19 Aug 2026. The green sunset, held still
+*`--sky 8 --day 0` — **v0.4.0**, 19 Aug 2026. The green sunset, held still
 for the picture.*
 
 A phase change does not cross-fade. Two hues cannot be mixed in a palette
@@ -221,9 +244,11 @@ them leaning across the frame is reading the weather rather than the city.
 | | |
 |---|---|
 | An engine with a curve | hardest from rest, tapering off; the top of the range is 1¾ s away, not ¼ |
-| Grip that lets go at the top | 0.09 of slip through a corner at 100 km/h and 0.29 at 150 — a car through town and a boat at the top of it, with a handbrake for when you want the boat sooner |
+| A corner you can place | it goes where it points at every speed; the drift is the handbrake's, not the car's |
 | A corner that widens with speed | radius grows with the square of it, so getting round a junction means slowing down or hanging the tail out |
 | Acceleration bobbing | the camera carries the driver's head on a spring: back under power, forward under braking, still at any constant speed |
+| Grip you have to ask to lose | 0.06 to 0.15 of slip through a corner at any speed with your hands off the handbrake, and 0.84 to 0.93 with it |
+| A boost off every coin | twice the engine and twice the top speed, three seconds at a time |
 | Damage that is only paint | it accumulates and it shows; the car never stops working |
 | A chase boom that gets out of the way | shortened until it is clear of the wall it would otherwise show you the inside of |
 
@@ -293,7 +318,7 @@ all:
 ```
 
 *`ascitty --shot 520 --size 92x20 --seed 99 --tour --walk --mode ascii` —
-**v0.3.0**, 19 Aug 2026. The mode the name is about, and the one that runs
+**v0.4.0**, 19 Aug 2026. The mode the name is about, and the one that runs
 anywhere a terminal runs.*
 
 ## Downloads
@@ -351,7 +376,7 @@ make walk     # watch the camera walk instead
 make run4     # play the Plus/4 build in xplus4
 make demo4    # ...and leave it alone; it drives itself
 
-make test     # 288 tests, about half a second
+make test     # 289 tests, about half a second
 make check    # the gate: tests, both builds, and both actually rendering
 make bench    # frames a second on this machine
 
@@ -398,6 +423,10 @@ on the clock — and it pulls away on its own until you touch something.
 **`wasd` is the vehicle, wherever you are.** Forward, back, and left and
 right meaning whatever they mean to the thing you are in: the wheel in the
 cab, a step sideways on foot and in the air. **The arrows are the view.**
+
+A yellow arrow lies on the road under the cab, pointing at the fare. It is
+the size of the street on purpose: "which way now" is a question you ask at
+ninety miles an hour, and reading a word is not an answer you have time for.
 
 Driving:
 
@@ -493,10 +522,10 @@ place to start.
 
 ```sh
 $ ascitty --version
-ascitty 0.3.0 (seed 0xa5c1771e)
+ascitty 0.4.0 (seed 0xa5c1771e)
 ```
 
-Releases are tagged `v0.3.0` and so on, and every picture in this README
+Releases are tagged `v0.4.0` and so on, and every picture in this README
 says which build drew it. Regenerating them is `make shot` and `make gif`;
 the seed is fixed, so the same tag renders the same frames.
 
@@ -505,7 +534,7 @@ the seed is fixed, so the same tag renders the same frames.
 ![The Plus/4 build running in VICE](docs/media/plus4.png)
 
 *The `.prg` booted in VICE and photographed by `tools/viceshot.sh` — a
-40×25 city on a 1.76 MHz 7501. **v0.3.0**, 19 Aug 2026.*
+40×25 city on a 1.76 MHz 7501. **v0.4.0**, 19 Aug 2026.*
 
 `build/ascitty.prg` and `build/ascitty.d64` are the real thing: a 40×25
 city, in colour, on a 1.76 MHz 7501, with a character set generated on a
@@ -653,7 +682,7 @@ Everything is indexed at **[docs/index.md](docs/index.md)**.
 
 Working: the renderer, all three cameras, the city generator with six
 building archetypes, the procedural font, the weather, the driving physics,
-the fare loop, the terminal front end and the Plus/4 build. 288 tests.
+the fare loop, the terminal front end and the Plus/4 build. 289 tests.
 
 Not yet: sub-cell rooflines, proper roof surfaces, scoring and grades,
 sprites and driving on the Plus/4, and the assembly inner loop that would

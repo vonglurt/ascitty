@@ -125,6 +125,24 @@ its size on the stream its keys already arrive on, and one that does not is
 asked with `stty size`. Either way it is twice a second, not thirty times;
 the second one is a fork and an exec and used to happen every frame.
 
+### The arrow on the road
+
+The one piece of interface that is *in* the picture. A yellow arrow, twenty
+four cells long in the road's own plane, lying under the car and drawn over
+it, pointing at whatever end of the fare is current. It has a black outline,
+which is what keeps it legible over a yellow cab on a yellow-lit street: an
+arrow the same colour as what it is over is not an arrow.
+
+It is drawn as a *shape*, not as glyphs — every cell in its bounding box is
+rotated into the arrow's own coordinates, unsquashed, and tested against a
+shaft and a triangle — and it is drawn last, after the sprites and the
+weather. A decal on the road would disappear under the car at exactly the
+moment the car is what you are looking at.
+
+The squash is a constant rather than the real projection, because the arrow
+belongs to the screen: it has to read at any pitch, including the ones where
+the road under the car is not on screen at all.
+
 ### The driver's head
 
 The driving camera's pitch is not fixed. It carries a spring-damped head that

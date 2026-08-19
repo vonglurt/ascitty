@@ -58,7 +58,7 @@
 
 use crate::drive::{Car, Controls};
 use crate::fixed::{self, Fx, ONE};
-use crate::road::{centre, lane};
+use crate::road::{self, centre, lane};
 use crate::sim::{self, Sim};
 use crate::trig::{self, Ang};
 
@@ -196,6 +196,42 @@ const CRAWL: Fx = fixed::ratio(5, 2);
 /// it.
 const CREEP: Fx = fixed::ratio(3, 4);
 
+/// How far ahead the cab looks for something to go round.
+///
+/// Six cells is a second and a half at the speed it cruises, which is about
+/// as far ahead as a decision to change lanes is worth making: further out
+/// and it is dodging cars that will have moved by the time it arrives.
+const DODGE_LOOK: Fx = fixed::ratio(6, 1);
+/// Half the width of the corridor in front that counts as blocked.
+const DODGE_WIDE: Fx = fixed::ratio(11, 10);
+/// The most lock a dodge asks for, on top of whatever the lane wants.
+///
+/// Deliberately less than half.  A dodge is a *lean* past something, not a
+/// swerve round it: the lane controller is still steering, and a term that
+/// could overpower it would take the car across the crown of the road to
+/// avoid a parked van.
+const DODGE_LOCK: Fx = fixed::ratio(3, 10);
+/// How long a decision to go one way round is kept, in ticks at 30 Hz.
+const DODGE_HOLD: u32 = 24;
+/// How close something has to be in front before the cab lifts off for it.
+const DODGE_CLOSE: Fx = fixed::ratio(5, 2);
+/// Below this, a car is not slow, it is stopped - and worth crossing the
+/// crown of a narrow street to get round.
+const STOPPED: Fx = fixed::ratio(3, 4);
+/// How much slower than the cab a car has to be to be worth going round.
+const CLOSING: Fx = fixed::ratio(1, 2);
+/// How far ahead the cab will look for a coin.
+const COIN_LOOK: Fx = fixed::ratio(9, 1);
+/// And how far off its line one may be and still be worth having.
+///
+/// Two cells - a lane's width.  Wider than this is a detour, and a cab that
+/// detours for coins arrives late, which costs more than the coin is worth.
+const COIN_WIDE: Fx = fixed::ratio(2, 1);
+
+/// How far out to the side, and how far ahead, there has to be road for a
+/// dodge to be worth starting.
+const DODGE_ROOM: Fx = fixed::ratio(3, 2);
+
 /// How far the car may stray from its planned route before the route is
 /// assumed to be stale, in cells.
 ///
@@ -245,6 +281,13 @@ pub struct Cabbie {
     /// Which way the wheel goes on the next attempt to back out of a wedge.
     /// Flipped every attempt - see [`Cabbie::unstick`].
     wriggle: i32,
+    /// Which side it decided to pass the thing in front on: -1 left, +1
+    /// right, 0 not passing anything.
+    dodge: i32,
+    /// Ticks left on that decision.  A dodge is *committed to*, because the
+    /// alternative is a car that picks left, sees the gap on the right,
+    /// picks right, and drives into the middle of what it was avoiding.
+    dodge_for: u32,
 }
 
 impl Default for Cabbie {
@@ -265,6 +308,8 @@ impl Cabbie {
             backing: 0,
             committed: 0,
             wriggle: 1,
+            dodge: 0,
+            dodge_for: 0,
         }
     }
 
@@ -345,7 +390,18 @@ impl Cabbie {
                 (psi, self.hold_lane(psi, t.right_of_lane, taxi.speed()), CRUISE_MAX)
             }
             _ => {
-                let (ax, ay) = self.aim(goal);
+                // The route first, and a coin only if the route is
+                // more or less straight ahead.  Leaning at a coin while the
+                // car is already turning adds the two corners together and
+                // takes it over the kerb: measured, coin-seeking through
+                // corners spent 21 per cent of travelling ticks off the
+                // carriageway against 2.
+                let route = self.aim(goal);
+                let straight = bearing_error(taxi, route.0, route.1).abs() < LIFT;
+                let (ax, ay) = match self.coin(sim) {
+                    Some(c) if straight => c,
+                    _ => route,
+                };
                 // The lock band is set by how far away the point being
                 // steered at is, which is what makes this a pursuit rather
                 // than a bearing hold: the same lateral error needs more
@@ -360,14 +416,18 @@ impl Cabbie {
         };
         let _ = range;
 
-        // One speed target, from whichever of the two reasons to slow down
-        // is the more pressing: the corner being taken, and the circle being
-        // arrived at.  Expressing both as a speed rather than as competing
-        // throttle rules is what stops them from cancelling each other out.
-        let want = corner_speed(err).min(approach_speed(to_goal));
+        // Something in the way, and which side it is being passed on.
+        let (lean, cap) = self.avoid(city, sim, hz);
+
+        // One speed target, from whichever of the three reasons to slow down
+        // is the more pressing: the corner being taken, the circle being
+        // arrived at, and the car in front.  Expressing them as a speed
+        // rather than as competing throttle rules is what stops them from
+        // cancelling each other out.
+        let want = corner_speed(err).min(approach_speed(to_goal)).min(cap);
         Controls {
             throttle: pace(vf, taxi.speed(), want),
-            steer,
+            steer: fixed::clamp(steer + lean, -ONE, ONE),
             // Sideways on purpose, on the tightest corners only.  The car
             // has enough grip to take an ordinary junction without it, and a
             // demonstration that slides through every turn reads as broken
@@ -413,6 +473,45 @@ impl Cabbie {
         // of six.  The lane is regulated by `hold_lane` a moment later, from
         // the road under the car, where the heading is not a guess.
         centre(self.route[i].0, self.route[i].1)
+    }
+
+    /// A coin worth going slightly out of the way for.
+    ///
+    /// Coins are strung along the route the cab is already driving, so most
+    /// of them are collected by driving; this is for the ones a lane change
+    /// or a lane's width of drift would pick up.  It only looks at coins in
+    /// front, within a couple of car lengths of the line it is already on,
+    /// and it takes the nearest - so it is a *lean*, not a detour, and the
+    /// cab never turns round for money.
+    ///
+    /// Worth doing because a coin is worth three things: two seconds on the
+    /// clock, a unit of money, and three seconds of boost.  A cab that
+    /// drives past them because they are not exactly on its route is leaving
+    /// the fare's whole margin on the road.
+    fn coin(&self, sim: &Sim) -> Option<(Fx, Fx)> {
+        let fare = sim.fare.as_ref()?;
+        let taxi = &sim.taxi;
+        let (fx, fy) = (trig::cos(taxi.yaw), trig::sin(taxi.yaw));
+        let (rx, ry) = (-fy, fx);
+        let mut best: Option<(Fx, Fx, Fx)> = None;
+        for c in &fare.coins {
+            if c.taken {
+                continue;
+            }
+            let (dx, dy) = (c.x - taxi.x, c.y - taxi.y);
+            let lon = fixed::mul(dx, fx) + fixed::mul(dy, fy);
+            if lon <= 0 || lon > COIN_LOOK {
+                continue;
+            }
+            let lat = fixed::mul(dx, rx) + fixed::mul(dy, ry);
+            if fixed::abs(lat) > COIN_WIDE {
+                continue;
+            }
+            if best.is_none_or(|(l, _, _)| lon < l) {
+                best = Some((lon, c.x, c.y));
+            }
+        }
+        best.map(|(_, x, y)| (x, y))
     }
 
     /// Steer to sit on the lane line and point along it.
@@ -610,6 +709,144 @@ impl Cabbie {
         let a = self.route[i.saturating_sub(BASELINE)];
         let b = self.route[(i + BASELINE).min(n - 1)];
         (b.0 - a.0, b.1 - a.1)
+    }
+
+    /// Go round the thing in front rather than into it.
+    ///
+    /// Returns the lock to add to whatever the lane wants, and the fastest
+    /// it should be going.
+    ///
+    /// # Committing
+    ///
+    /// The decision is which *side* to pass on, and it is held for
+    /// [`DODGE_HOLD`] ticks whatever happens in between.  Deciding it fresh
+    /// every tick is the obvious version and it is much worse than doing
+    /// nothing: a car a little to the left is passed on the right, which
+    /// moves it to the right in the frame, which asks for a pass on the
+    /// left, and the cab drives up the middle of what it was avoiding at
+    /// full lock in alternating directions.
+    ///
+    /// The side is chosen from where the obstacle sits: something on your
+    /// left is passed on the right.  Where it is dead ahead, the tie is
+    /// broken towards the middle of the road rather than towards the kerb,
+    /// because the kerb is where the lamp posts are.
+    fn avoid(&mut self, city: &City, sim: &Sim, hz: i32) -> (Fx, Fx) {
+        let taxi = &sim.taxi;
+        let (fx, fy) = (trig::cos(taxi.yaw), trig::sin(taxi.yaw));
+        let (rx, ry) = (-fy, fx);
+
+        // The nearest thing in the corridor ahead.
+        // (how far up, how far right, how fast it is going)
+        let mut near: Option<(Fx, Fx, Fx)> = None;
+        for c in &sim.traffic {
+            let (dx, dy) = (c.x - taxi.x, c.y - taxi.y);
+            let lon = fixed::mul(dx, fx) + fixed::mul(dy, fy);
+            if lon <= 0 || lon > DODGE_LOOK {
+                continue;
+            }
+            let lat = fixed::mul(dx, rx) + fixed::mul(dy, ry);
+            let room = DODGE_WIDE + c.kind.half_len();
+            if fixed::abs(lat) > room {
+                continue;
+            }
+            // Only things it is actually catching.  A car ahead doing the
+            // same speed is not an obstacle, it is the traffic, and pulling
+            // out for it means spending the whole street in the wrong lane:
+            // measured, dodging everything in front took the cab's
+            // right-hand-lane figure from 85 per cent to 59.
+            let theirs = fixed::mul(c.vx, fx) + fixed::mul(c.vy, fy);
+            let mine = fixed::mul(taxi.vx, fx) + fixed::mul(taxi.vy, fy);
+            if theirs > mine - CLOSING {
+                continue;
+            }
+            // Bumper to bumper, so a bus is felt where its back is.
+            let gap = lon - taxi.kind.half_len() - c.kind.half_len();
+            if near.is_none_or(|(g, _, _)| gap < g) {
+                near = Some((gap, lat, c.speed()));
+            }
+        }
+
+        if self.dodge_for > 0 {
+            self.dodge_for -= 1;
+        }
+        let Some((gap, lat, _)) = near else {
+            if self.dodge_for == 0 {
+                self.dodge = 0;
+            }
+            return (0, CRUISE_MAX);
+        };
+
+        // On a two-cell street the only room to pass is the oncoming lane,
+        // and pulling into it to get round traffic that is merely slower
+        // than you is how a cab spends half its life on the wrong side of
+        // the road - measured, 57 per cent on the correct side against 85.
+        // So a narrow street is only overtaken on for something that has
+        // actually stopped: a wreck, a queue, a bus at a stop.
+        let (cx, cy) = (fixed::floor(taxi.x), fixed::floor(taxi.y));
+        let lanes = match road::street_axis(city, cx, cy) {
+            Some(true) => city.plan.rows.at(cy).width,
+            Some(false) => city.plan.cols.at(cx).width,
+            None => 2,
+        };
+        let stopped = near.map(|(_, _, v)| v < STOPPED).unwrap_or(false);
+        if lanes < 3 && !stopped {
+            self.dodge = 0;
+            self.dodge_for = 0;
+            let (gap, _, _) = near.unwrap();
+            let cap = if gap < DODGE_CLOSE {
+                fixed::div(fixed::mul(CRUISE_MAX, gap.max(0)), DODGE_CLOSE)
+            } else {
+                CRUISE_MAX
+            };
+            return (0, cap);
+        }
+
+        if self.dodge == 0 || self.dodge_for == 0 {
+            // Pass on the side it is not on, and take the kerb side when it
+            // is dead ahead.  The other way round is the tidier-looking
+            // choice and it is wrong: on a road where the traffic keeps
+            // right, the space to the left of the thing in front is the
+            // oncoming lane, and the space to the right is a kerb with lamp
+            // posts on it that go over when you touch them.
+            let first = if lat < -fixed::ratio(1, 8) { 1 } else { -1 };
+            // ...but only where there is road to do it on.  Without this the
+            // cab pulls out onto the pavement to get round a parked van,
+            // which is worse than waiting behind it: measured, dodging with
+            // no regard for the kerb spent 43 per cent of its travelling
+            // ticks off the carriageway, against 2.
+            let room = |side: i32| {
+                let (rx, ry) = (-fy, fx);
+                let out = fixed::mul(fixed::from_int(side), DODGE_ROOM);
+                let x = taxi.x + fixed::mul(rx, out) + fixed::mul(fx, DODGE_ROOM);
+                let y = taxi.y + fixed::mul(ry, out) + fixed::mul(fy, DODGE_ROOM);
+                city.drivable(fixed::floor(x), fixed::floor(y))
+            };
+            self.dodge = if room(first) {
+                first
+            } else if room(-first) {
+                -first
+            } else {
+                0
+            };
+            self.dodge_for = DODGE_HOLD * hz.max(1) as u32 / 30;
+        }
+
+        // Harder the closer it is, and nothing at all once it is behind the
+        // bumper - by then the lane controller has it.
+        let close = fixed::clamp(
+            fixed::div(DODGE_LOOK - gap.max(0), DODGE_LOOK),
+            0,
+            ONE,
+        );
+        let lean = fixed::mul(fixed::mul(fixed::from_int(self.dodge), DODGE_LOCK), close);
+        // And lift off if it is close enough that steering alone will not do
+        // it, which is what stops the cab from rear-ending a queue.
+        let cap = if gap < DODGE_CLOSE {
+            fixed::div(fixed::mul(CRUISE_MAX, gap.max(0)), DODGE_CLOSE)
+        } else {
+            CRUISE_MAX
+        };
+        (lean, cap)
     }
 
     /// Notice a car that is not going anywhere and back it out.
