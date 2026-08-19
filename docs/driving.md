@@ -332,6 +332,27 @@ The bus was twice as big as this and lost a quarter twice. An eight-cell bus
 is forty-eight metres, which is longer than most of the buildings it drives
 past are wide, and it filled a two-cell street end to end.
 
+## 7a. Lamps
+
+A car in this city has two bits of state that are only ever drawn: which end
+of it you are looking at, and whether it is on the brakes.
+
+| | |
+|---|---|
+| White | its headlights — it is coming towards you |
+| Dim red | its tail lamps — it is going away |
+| Bright red | it is braking, and you are behind it |
+
+That is the only cue in the frame that says which way a car is pointing. A
+box of body panels does not, and "am I about to hit that" is a question about
+direction rather than about position.
+
+On your own cab the rear lamps matter for a different reason: the chase
+camera looks at the back of it, so they are the part of the car you spend the
+game looking at, and they are the only thing in the frame that says the car
+heard the key. They come on when the brake is *asked for*, not when the car
+happens to be slowing.
+
 ## 8. No square roots
 
 `speed()` uses the octagonal approximation `max + 3/8 × min`: two

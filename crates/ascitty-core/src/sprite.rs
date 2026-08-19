@@ -265,7 +265,7 @@ const TAXI_ART: [&str; 8] = [
     " ###### ",
     "LkkkkkkR",
     "L######R",
-    "LL#  #RR",
+    "Lb#  #bR",
     " oo  oo ",
 ];
 
@@ -404,6 +404,17 @@ fn glyph_for(c: char, hue: u8, phase: u8) -> Option<(GlyphId, u8, u8)> {
         '.' => (catalog::shade(3), hue, 3),
         '|' => (catalog::ST_POST, palette::H_WHITE, 3),
         '=' => (catalog::G_CORNICE + 3, palette::H_WHITE, 2),
+        // The cab's own rear lamps.  Bit 1 of the phase is the brake, so
+        // they sit there dim and come up when you lift off - which is the
+        // only feedback in the frame that says the car heard you, and on a
+        // chase camera it is the part of the car you are looking at.
+        'b' => {
+            if phase & 2 == 2 {
+                (catalog::G_SOLID, palette::H_RED, 7)
+            } else {
+                (catalog::ST_LAMP, palette::H_RED, 4)
+            }
+        }
         // Lights, and which end of the car you are looking at.
         //
         // The low bit of the phase says the camera is in front of it.  White
@@ -414,6 +425,9 @@ fn glyph_for(c: char, hue: u8, phase: u8) -> Option<(GlyphId, u8, u8)> {
         'o' => {
             if phase & 1 == 1 {
                 (catalog::ST_LAMP, palette::H_WHITE, 7)
+            } else if phase & 2 == 2 {
+                // On the brakes, and you are behind it.
+                (catalog::G_SOLID, palette::H_RED, 7)
             } else {
                 (catalog::ST_LAMP, palette::H_RED, 5)
             }

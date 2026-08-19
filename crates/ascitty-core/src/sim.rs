@@ -296,6 +296,8 @@ pub struct Sim {
     traffic_cruise: Vec<Fx>,
     /// Ticks each of them has left to spend reversing out of a shunt.
     traffic_backing: Vec<u32>,
+    /// Whether the cab was on the brakes last tick, for its brake lights.
+    braking: bool,
     /// The street furniture.
     pub props: Vec<Prop>,
     /// The pedestrians.
@@ -331,6 +333,7 @@ impl Sim {
             traffic_ctl: vec![Controls::default(); TRAFFIC],
             traffic_cruise: vec![0; TRAFFIC],
             traffic_backing: vec![0; TRAFFIC],
+            braking: false,
             props: Vec::new(),
             peds: Vec::with_capacity(PEDS),
             fare: None,
@@ -737,6 +740,9 @@ impl Sim {
         self.tick = self.tick.wrapping_add(1);
 
         let before = self.taxi.damage;
+        // On the brakes, rather than merely not on the throttle: the lamps
+        // come on when the driver asks for them.
+        self.braking = c.throttle < 0;
         self.taxi.step(c, city, hz);
         if self.taxi.damage > before.saturating_add(3) {
             out.push(Event::Crunched);
@@ -1159,16 +1165,23 @@ impl Sim {
             // it side-on, but the thing you are chasing has to stay
             // recognisable as the thing you are chasing, and the checker
             // band and roof sign are what make it so.
-            self.boards.push(Billboard::upright(
+            let mut b = Billboard::upright(
                 Stamp::Taxi,
                 self.taxi.x,
                 self.taxi.y,
                 w,
                 h,
                 palette::H_YELLOW,
-            ));
+            );
+            // The same two bits every car uses: which end you are looking
+            // at, and whether it is on the brakes.  You are usually behind
+            // your own cab, but not after a spin.
+            let (tfx, tfy) = (trig::cos(self.taxi.yaw), trig::sin(self.taxi.yaw));
+            let toward = fixed::mul(cam.x - self.taxi.x, tfx) + fixed::mul(cam.y - self.taxi.y, tfy);
+            b.phase = u8::from(toward > 0) | (u8::from(self.braking) << 1);
+            self.boards.push(b);
         }
-        for c in &self.traffic {
+        for (i, c) in self.traffic.iter().enumerate() {
             if !near(c.x, c.y) {
                 continue;
             }
@@ -1194,7 +1207,10 @@ impl Sim {
             // points away from it.
             let (cfx, cfy) = (trig::cos(c.yaw), trig::sin(c.yaw));
             let toward = fixed::mul(cam.x - c.x, cfx) + fixed::mul(cam.y - c.y, cfy);
-            b.phase = u8::from(toward > 0);
+            // Bit 0: you are looking at its front.  Bit 1: it is braking,
+            // which is only worth showing on the end the lamps are on.
+            let braking = self.traffic_ctl[i].throttle < 0;
+            b.phase = u8::from(toward > 0) | (u8::from(braking && toward <= 0) << 1);
             self.boards.push(b);
         }
         for pd in &self.peds {
@@ -1624,6 +1640,49 @@ mod tests {
         assert!(
             sim.boards.iter().any(|b| b.stamp == crate::sprite::Stamp::Taxi),
             "the cab was not among the billboards"
+        );
+    }
+
+    /// The brake lights come on when you ask for the brakes.
+    ///
+    /// The chase camera looks at the back of the cab, so the rear lamps are
+    /// the part of the car you spend the game looking at: they are the only
+    /// feedback in the frame that says the car heard the key.
+    #[test]
+    fn the_cab_lights_up_when_it_brakes() {
+        let city = City::generate(99);
+        let mut sim = Sim::new(&city, 99);
+        let mut ev = Vec::new();
+        // A camera behind the cab, looking at it.
+        let mut cam = crate::camera::Camera::spawn(&city, 117, 117);
+        cam.yaw = sim.taxi.yaw;
+        let (dx, dy) = cam.dir();
+        cam.x = sim.taxi.x - fixed::mul(dx, fixed::from_int(4));
+        cam.y = sim.taxi.y - fixed::mul(dy, fixed::from_int(4));
+        cam.z = city.ground(fixed::floor(cam.x), fixed::floor(cam.y)) + fixed::ratio(4, 5);
+
+        let mut f = Frame::new(80, 30);
+        let mut depth = Vec::new();
+        let atmos = Atmos { rain: 0, ..Default::default() };
+        let lamps = |sim: &mut Sim, f: &mut Frame, depth: &mut Vec<Fx>| -> usize {
+            crate::raycast::render_to(&city, &cam, &atmos, f, depth);
+            let p = crate::raycast::projection(&city, &cam, f);
+            sim.draw(f, depth, &cam, &atmos, &p);
+            f.cels
+                .iter()
+                .filter(|c| {
+                    palette::hue_of(c.color) == palette::H_RED && palette::luma_of(c.color) >= 6
+                })
+                .count()
+        };
+
+        sim.step(&city, &Controls { throttle: ONE, ..Default::default() }, drive::HZ, &mut ev);
+        let rolling = lamps(&mut sim, &mut f, &mut depth);
+        sim.step(&city, &Controls { throttle: -ONE, ..Default::default() }, drive::HZ, &mut ev);
+        let braking = lamps(&mut sim, &mut f, &mut depth);
+        assert!(
+            braking > rolling,
+            "the brake lights did not come on: {braking} lit cells against {rolling}"
         );
     }
 
