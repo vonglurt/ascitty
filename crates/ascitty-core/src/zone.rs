@@ -82,11 +82,20 @@ pub const WORLD_EDGE: i32 = FARM_EDGE + OUTSKIRT_RINGS;
 /// The plan does not actually use a fixed pitch - roads are laid at varying
 /// spacing - but the map has to be *sized* for a whole number of blocks, and
 /// the rings have to be measured in something. This is that nominal figure:
-/// an eight-cell block, a cell of pavement each side, and a road.
-pub const BLOCK_PITCH: usize = 13;
+/// a sixteen-cell block, a cell of pavement each side, and a road.
+///
+/// It was thirteen, on an eight-cell block, and the city that came out of it
+/// was built to the wrong scale for the thing driving round it.  The cab is
+/// two cells long; a street was two cells wide.  A two-lane street the exact
+/// length of the car is one you cannot turn round in, cannot pass anything
+/// on, and cannot place a fare on the kerb of without stopping across both
+/// lanes - and every alley was one cell, which is to say narrower than the
+/// car is long by a factor of two.  Doubling the roads without doubling the
+/// blocks would have given a city that is all carriageway, so both went.
+pub const BLOCK_PITCH: usize = 26;
 
 /// The smallest a block may be, in buildable cells on a side.
-pub const MIN_BLOCK: usize = 8;
+pub const MIN_BLOCK: usize = 16;
 
 /// What a piece of ground is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

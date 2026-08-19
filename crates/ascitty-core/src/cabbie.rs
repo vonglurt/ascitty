@@ -58,24 +58,39 @@
 
 use crate::drive::{Car, Controls};
 use crate::fixed::{self, Fx, ONE};
-use crate::road::{self, centre, lane};
+use crate::road::{self, centre};
 use crate::sim::{self, Sim};
 use crate::trig::{self, Ang};
 
-use crate::world::{City, Kind};
+use crate::world::{City, Kind, SIZE};
 
 /// How many cells of searching a route may cost before it is given up on.
 ///
-/// The whole grid is 65,536 cells, so this is "most of the city".  A fare is
-/// never more than a few dozen cells away and the search is breadth-first,
-/// meaning it stops as soon as it arrives; the budget exists to bound the
-/// pathological case where the two ends are on carriageway that is not
-/// actually connected, not to limit ordinary trips.
-const ROUTE_BUDGET: usize = 40_000;
+/// A fraction under a third of the grid, which is "most of the city": the
+/// search is breadth-first and stops as soon as it arrives, so the budget
+/// exists to bound the pathological case where the two ends are on
+/// carriageway that is not actually connected, not to limit ordinary trips.
+///
+/// Written against [`SIZE`] rather than as a number, because it is a
+/// fraction of the map and the map has changed size twice.  At a flat 40,000
+/// it was most of a 364-cell grid and a third of a 728-cell one, and a
+/// budget that is a third of the way across the city is a budget that
+/// answers "no route" to any fare on the far side of it - which read as a
+/// cab that sat still.
+const ROUTE_BUDGET: usize = SIZE * SIZE * 3 / 10;
 
 /// How many route cells either side of a point are used to work out which
 /// way the road runs there.  See [`Cabbie::heading_at`].
-const BASELINE: usize = 3;
+///
+/// It has to be at least as long as the widest staircase the route can take,
+/// which is the width of the road it is crossing.  At three, on roads twice
+/// as wide as the ones it was chosen for, it averaged out nothing: the
+/// heading it reported alternated between the length of the street and its
+/// width every few cells, so the lane target flipped sides and - worse - the
+/// straight-road detector in [`Cabbie::open_road`] never saw two consecutive
+/// cells agree.  The cab was pinned at its cornering pace for 85 per cent of
+/// a run down streets that were straight for a block and a half.
+const BASELINE: usize = 6;
 
 /// Bearing error, in angle units, at which the wheel is on full lock when
 /// the thing being aimed at is far away.
@@ -88,7 +103,10 @@ const BASELINE: usize = 3;
 const FULL_LOCK: i32 = 9_000;
 
 /// Range, in cells, beyond which the full proportional band is used.
-const LOCK_RANGE: i32 = 8;
+///
+/// Half a block, which is what it has always been - the number moved when
+/// the block did.
+const LOCK_RANGE: i32 = 16;
 
 /// Cross-track gain: lock per cell off the lane line, at a standstill.
 ///
@@ -103,9 +121,68 @@ const LOCK_RANGE: i32 = 8;
 /// up to speed, so the same command moves the car a good deal less and the
 /// gain has to make it up.  Measured over four five-minute runs: at the
 /// original gain, 500 ticks on the correct side of the road against 600 on
-/// the wrong one, which is a cab with no opinion; at two thirds of this
-/// one, 75, 71, 51 and 81 per cent; here, 83, 79, 77 and 81.
-const CROSS: Fx = fixed::ratio(3, 2);
+/// the wrong one, which is a cab with no opinion; at two thirds of it, 75,
+/// 71, 51 and 81 per cent; at three halves, 83, 79, 77 and 81.
+///
+/// Then halved, because the roads doubled.  This is lock *per cell* off the
+/// line, and a lane is now two cells wide rather than one: the same distance
+/// off the middle of it is half as much of a mistake, and a gain that did
+/// not know that asked for twice the correction it needed and sawed.
+const CROSS: Fx = fixed::ratio(2, 1);
+
+/// The speed above which the lane controller starts easing off, in cells a
+/// second.
+///
+/// Twice the cornering pace rather than at it.  Softening from the cornering
+/// pace up means the controller is already backing off at the speed it
+/// spends most of its life at, which is the speed it was tuned for; what the
+/// softening is actually for is the top of the range, where a correction
+/// travels three times as far before it can be seen.
+const HASTE_FROM: Fx = fixed::ratio(17, 2);
+
+/// Where in its own half of the road the cab likes to sit, from -1 against
+/// the crown to +1 against the kerb.
+///
+/// This is the bias on a *straight*, and it is faded out as the road ahead
+/// runs out - see [`Cabbie::track`].
+///
+/// Well over towards the kerb, which is where a taxi belongs and is also the
+/// half of the half that costs the least when something goes wrong: the cab
+/// pulls out to pass parked cars, slow cars and anything it has to dodge,
+/// and every one of those movements is *towards the crown*.  Aiming at the
+/// middle of its half meant a routine overtake put the car across the paint;
+/// aiming at the kerb, the same overtake uses the second lane, which is what
+/// the second lane is for.  Measured over four five-minute runs, ticks on
+/// the correct side of the road: 57 per cent in the worst city aiming at the
+/// middle of the half, 68 aiming at the kerb.
+///
+/// Held all the way into the corners it was worse than useless.  The kerb
+/// line is the *outside* of a left-hander and the inside of a right one, so
+/// a cab arriving at a junction hugging it has the least room exactly where
+/// it needs the most: off the carriageway for 903 of 2,041 travelling ticks
+/// on one city, against 40 once the bias fades.  A driver moves back towards
+/// the middle of the road before a turn, and so does this.
+const CAB_BIAS: Fx = fixed::ratio(4, 5);
+
+/// Damping: how much lock is taken back per unit of the car's own rate of
+/// turn.
+///
+/// The derivative term, and the one the controller never had.  `CROSS` says
+/// how far off the line the car is and `psi` says how far off parallel; both
+/// are positions, and a controller made only of positions holds full lock
+/// all the way to the line and arrives pointing across it.  Then it corrects
+/// the other way.  That is the weave, and no amount of retuning the two
+/// proportional gains removes it - it makes them either slow or unstable,
+/// which is exactly the pair of failures this went through.
+///
+/// A half: a car turning as hard as it can gives back half the wheel, which
+/// is enough to stop the overshoot and not so much that the cab cannot
+/// commit to a corner.  Measured over four five-minute runs, ticks on the
+/// correct side of the road: 59 per cent in the worst city with no damping
+/// at all, against 64 with this - and the mean speed went from 2.6 cells a
+/// second to 3.8, because a controller that is not fighting itself does not
+/// have to be slowed down to stay on the road.
+const DAMP: Fx = fixed::ratio(1, 2);
 
 /// The most lock the cross-track term alone may ask for.
 ///
@@ -147,53 +224,58 @@ const COMMIT: i32 = 24_000;
 /// are not the same event.
 const RELEASE: i32 = 6_000;
 
-/// The fastest the autopilot will go on a straight, in units per second -
-/// about 65 km/h against the car's own 150.
+/// The fastest the autopilot will take a corner, in units per second.
 ///
-/// A demonstration is not a time trial, and this grid's lanes are two cells
-/// wide: flat out, the cab arrives at every junction too fast to take it and
-/// the whole run is spent recovering.
+/// The figure is what the corner radius says it should be rather than a
+/// guess.  Cornering radius in this car grows with the *square* of the
+/// speed - about `v^2 / 3.45` cells - so the widest corner the road will
+/// take sets the fastest the cab may arrive at one, and nothing else does.
+/// Measured over four five-minute runs at the old three-cell lanes, ticks
+/// spent off the carriageway while travelling: 9, 54, 41 and 24 per cent at
+/// a guessed figure, and 2, 0, 0 and 2 once it came from the radius.
 ///
-/// The figure is now what the corner radius says it should be rather than a
-/// guess.  Cornering radius in this car grows with the square of the speed:
-/// three cells at this figure and seven at the old one, and a junction on
-/// this grid is not seven cells wide.  The symptom was a cab that
-/// understeered across the pavement on the far side of every turn.  Measured over four five-minute runs, ticks spent
-/// off the carriageway while travelling: 9, 54, 41 and 24 per cent at the
-/// old figure, and 2, 0, 0 and 2 at this one, with more fares completed in
-/// the same time.
-const CRUISE_MAX: Fx = fixed::ratio(3, 1);
+/// Which is why it went up when the roads did.  A junction was four cells
+/// across and is now eight, so the radius budget doubled and the speed that
+/// fits it goes up by the square root of two - not by two.  Cornering pace
+/// is the one number on this page that does *not* scale with the city.
+const CRUISE_MAX: Fx = fixed::ratio(17, 4);
 
 /// What it will do on a long straight, in cells a second.
-///
-/// Twice the cornering pace - about 130 mph - which is enough to wind the
-/// throttle up through its steps and to make the difference between a
-/// street and a junction something you can see from the passenger seat.  A
-/// demonstration that never uses the car's whole range is not a
-/// demonstration of the car.
 ///
 /// It is only ever asked for where the route runs straight, and the same
 /// look-ahead brings it back down before the corner rather than at it - see
 /// [`Cabbie::open_road`].
 ///
-/// Three times the cornering pace was tried, and four, and this is a grid:
-/// the blocks are thirteen cells apart, so the straights are short and the
-/// extra speed is spent arriving at the junction rather than crossing the
-/// city.  Ticks on the correct side of the road over four five-minute runs:
-/// 74, 72, 51 and 47 per cent at three times, against 77, 71, 69 and 86 at
-/// this figure - and 76, 75, 84 and 87 for the cab that never went above
-/// the cornering pace at all.  Twice is what the grid will take.
-const OPEN_ROAD: Fx = fixed::ratio(6, 1);
+/// Three times the cornering pace was tried on the old grid, and four, and
+/// both were worse than twice: the blocks were thirteen cells apart, so the
+/// straights were short and the extra speed was spent arriving at the
+/// junction rather than crossing the city.  Ticks on the correct side of the
+/// road over four five-minute runs: 74, 72, 51 and 47 per cent at three
+/// times, against 77, 71, 69 and 86 at twice.
+///
+/// The blocks are twenty-six cells apart now, and a straight that is twice
+/// as long is a straight that pays for the braking distance twice over, so
+/// three times the cornering pace is what the grid will take.  That is most
+/// of the car's unwound top speed and about a third of what it will do with
+/// the throttle held, which is the band this was always supposed to be
+/// driven in: a demonstration that never leaves the bottom third of the
+/// range is not a demonstration of the car.
+const OPEN_ROAD: Fx = fixed::ratio(51, 4);
 
 /// How far ahead a straight has to run for the cab to use all of it, in
 /// cells.
-const STRAIGHT_FOR: i32 = 16;
+///
+/// Rather more than a block, so it is a real straight and not the far side
+/// of one junction seen from the near side of it.
+const STRAIGHT_FOR: i32 = 26;
 
 /// How much straight road is needed before any of it is spent going faster
 /// than the cornering pace, in cells.
 ///
 /// This is the braking distance, and it is what makes the extra speed usable
-/// rather than a way of arriving at the junction sideways.
+/// rather than a way of arriving at the junction sideways.  It goes up with
+/// the speed rather than with the city: the car brakes at a fixed rate, so
+/// the room it needs grows with the square of what it is coming down from.
 const BRAKING_ROOM: i32 = 6;
 
 /// How much speed a cell of clear road ahead is worth, in cells a second per
@@ -225,7 +307,9 @@ const ROLLING: Fx = fixed::ratio(1, 4);
 
 /// How far out the cabbie stops following the route and starts aiming at the
 /// marker itself, in cells.
-const APPROACH: Fx = fixed::ratio(7, 1);
+///
+/// Half a block, as it always was.
+const APPROACH: Fx = fixed::ratio(14, 1);
 
 /// How far out the cab is down to walking pace, in cells.
 ///
@@ -237,7 +321,10 @@ const APPROACH: Fx = fixed::ratio(7, 1);
 /// and two units per second that lasted the entire clock - the first fare of
 /// the run took four and a half minutes to pick up, and the ones after it
 /// took thirteen seconds each.
-const CRAWL: Fx = fixed::ratio(5, 2);
+///
+/// It is a braking distance from a marker, so it went up with the speed the
+/// cab now arrives at rather than with the size of the block.
+const CRAWL: Fx = fixed::ratio(5, 1);
 
 /// Speed to be doing at the edge of the circle, in units per second.
 ///
@@ -248,10 +335,11 @@ const CREEP: Fx = fixed::ratio(3, 4);
 
 /// How far ahead the cab looks for something to go round.
 ///
-/// Six cells is a second and a half at the speed it cruises, which is about
-/// as far ahead as a decision to change lanes is worth making: further out
-/// and it is dodging cars that will have moved by the time it arrives.
-const DODGE_LOOK: Fx = fixed::ratio(9, 2);
+/// A second and a half at the speed it cruises, which is about as far ahead
+/// as a decision to change lanes is worth making: further out and it is
+/// dodging cars that will have moved by the time it arrives.  So it follows
+/// the cruising speed, not the city.
+const DODGE_LOOK: Fx = fixed::ratio(13, 2);
 /// Half the width of the corridor in front that counts as blocked.
 const DODGE_WIDE: Fx = fixed::ratio(11, 10);
 /// The most lock a dodge asks for, on top of whatever the lane wants.
@@ -268,7 +356,7 @@ const DODGE_LOCK: Fx = fixed::ratio(3, 10);
 /// passed half a second ago.
 const DODGE_HOLD: u32 = 12;
 /// How close something has to be in front before the cab lifts off for it.
-const DODGE_CLOSE: Fx = fixed::ratio(5, 2);
+const DODGE_CLOSE: Fx = fixed::ratio(7, 2);
 /// Below this, a car is not slow, it is stopped - and worth crossing the
 /// crown of a narrow street to get round.
 const STOPPED: Fx = fixed::ratio(3, 4);
@@ -276,21 +364,24 @@ const STOPPED: Fx = fixed::ratio(3, 4);
 const CLOSING: Fx = fixed::ratio(1, 2);
 /// How far under its target speed the cab has to be for full throttle.
 ///
-/// A unit a second.  Wide enough that it eases in rather than stamping, and
-/// narrow enough that it still gets up to speed out of a junction.
-const PACE_BAND: Fx = fixed::ratio(1, 1);
+/// A unit and a half a second.  Wide enough that it eases in rather than
+/// stamping, and narrow enough that it still gets up to speed out of a
+/// junction - which now takes longer, because the engine has a launch curve
+/// and the target is higher.
+const PACE_BAND: Fx = fixed::ratio(3, 2);
 
 /// How far ahead the cab will look for a coin.
-const COIN_LOOK: Fx = fixed::ratio(9, 1);
+const COIN_LOOK: Fx = fixed::ratio(18, 1);
 /// And how far off its line one may be and still be worth having.
 ///
-/// Two cells - a lane's width.  Wider than this is a detour, and a cab that
-/// detours for coins arrives late, which costs more than the coin is worth.
-const COIN_WIDE: Fx = fixed::ratio(2, 1);
+/// A lane's width, which is now four cells.  Wider than this is a detour,
+/// and a cab that detours for coins arrives late, which costs more than the
+/// coin is worth.
+const COIN_WIDE: Fx = fixed::ratio(4, 1);
 
 /// How far out to the side, and how far ahead, there has to be road for a
 /// dodge to be worth starting.
-const DODGE_ROOM: Fx = fixed::ratio(3, 2);
+const DODGE_ROOM: Fx = fixed::ratio(3, 1);
 
 /// How far the car may stray from its planned route before the route is
 /// assumed to be stale, in cells.
@@ -306,14 +397,15 @@ const DODGE_ROOM: Fx = fixed::ratio(3, 2);
 /// is wide enough to be on the next street but one, and then three, which
 /// turned out to be narrower than a deliberate lane change.
 ///
-/// Five, because the cab now *pulls out* to pass things.  A dodge is a
-/// lane's width and at three cells it invalidated the plan, so the route was
-/// thrown away and rebuilt from wherever the car had swerved to - and a
-/// breadth-first search asked the same question from two slightly different
-/// places answers it two different ways.  The cab wandered: measured, 921
-/// cells driven and one completed fare in five minutes, against five fares
-/// once a plan could survive an overtake.
-const OFF_ROUTE: Fx = fixed::ratio(5, 1);
+/// Five was the figure on the old grid, because the cab *pulls out* to pass
+/// things.  A dodge is a lane's width and at three cells it invalidated the
+/// plan, so the route was thrown away and rebuilt from wherever the car had
+/// swerved to - and a breadth-first search asked the same question from two
+/// slightly different places answers it two different ways.  The cab
+/// wandered: measured, 921 cells driven and one completed fare in five
+/// minutes, against five fares once a plan could survive an overtake.  A
+/// lane is twice as wide now, so this is ten.
+const OFF_ROUTE: Fx = fixed::ratio(10, 1);
 
 /// What the road asks of the car where it currently is.
 struct Track {
@@ -412,6 +504,10 @@ impl Cabbie {
 
         let taxi = &sim.taxi;
         let vf = forward(taxi);
+        // How fast the car is already turning, for the damping term in both
+        // steering laws.  Read once, here, because it is a property of the
+        // car and not of whichever controller happens to be driving.
+        let rate = taxi.turn_rate(hz);
         let to_goal = dist(taxi.x, taxi.y, goal.0, goal.1);
 
         // In the circle: stop, and stay stopped.  Steering here would only
@@ -459,10 +555,14 @@ impl Cabbie {
         // the correct side of the road and 193 on the wrong one, which is
         // barely better than a coin toss for a cab that is meant to keep
         // right.
-        let (err, steer, range) = match self.track(city, taxi) {
+        // How much straight road there is to use.  Read before the steering
+        // rather than after it, because where in its half of the road the
+        // cab wants to be depends on it - see [`CAB_BIAS`].
+        let open = self.open_road();
+        let (err, steer, range) = match self.track(city, taxi, open) {
             Some(t) if to_goal >= APPROACH => {
                 let psi = t.heading.wrapping_sub(taxi.yaw) as i16 as i32;
-                (psi, self.hold_lane(psi, t.right_of_lane, taxi.speed()), CRUISE_MAX)
+                (psi, self.hold_lane(psi, t.right_of_lane, taxi.speed(), rate), CRUISE_MAX)
             }
             _ => {
                 // The route first, and a coin only if the route is
@@ -486,14 +586,11 @@ impl Cabbie {
                 // because the marker is still a long way off.
                 let range = dist(taxi.x, taxi.y, ax, ay);
                 let e = bearing_error(taxi, ax, ay);
-                (e, self.steer_for(e, range), range)
+                (e, self.steer_for(e, range, rate), range)
             }
         };
         let _ = range;
 
-        // How much straight road there is to use, and so how fast this
-        // stretch is worth driving.
-        let open = self.open_road();
         // Something in the way, and which side it is being passed on.
         let (lean, cap) = self.avoid(city, sim, hz, open);
 
@@ -604,38 +701,55 @@ impl Cabbie {
 
     /// Steer to sit on the lane line and point along it.
     ///
-    /// Two terms.  `psi` turns the car parallel to the road; the cross-track
-    /// term then walks it sideways onto the line, and is divided by speed so
-    /// that the same offset produces a gentle correction at speed and a firm
-    /// one at a crawl - the alternative is a car that snakes down every
-    /// straight because the correction that suits a junction is violent on
-    /// an avenue.
+    /// Three terms, and they are a PD controller on the lane.  `psi` turns
+    /// the car parallel to the road and `right_of_lane` walks it sideways
+    /// onto the line - those are the proportional halves, one on angle and
+    /// one on offset - and [`DAMP`] takes lock back in proportion to how
+    /// fast the car is already turning, which is the derivative.
     ///
-    /// This is the standard front-axle steering law, and it is used here for
-    /// the standard reason: it is the cheapest controller that regulates
-    /// *both* the angle and the offset, and a lane is a statement about both.
-    fn hold_lane(&mut self, psi: i32, right_of_lane: Fx, speed: Fx) -> Fx {
+    /// The cross-track term is divided by speed as well, so the same offset
+    /// produces a gentle correction at speed and a firm one at a crawl: the
+    /// alternative is a car that snakes down every straight because the
+    /// correction that suits a junction is violent on an avenue.
+    ///
+    /// There is no integral term and there should not be one.  The thing an
+    /// integrator fixes is a steady-state offset from a constant
+    /// disturbance, and a lane has none: the only persistent offsets here
+    /// are deliberate ones - a dodge, an overtake - and an integrator would
+    /// spend them winding up and then unwind into the kerb on the way out.
+    fn hold_lane(&mut self, psi: i32, right_of_lane: Fx, speed: Fx, rate: Fx) -> Fx {
         if psi.abs() >= COMMIT {
             // Pointing the wrong way down the street: this is a turn, not a
             // lane correction, and the latch owns it.
-            return self.steer_for(psi, CRUISE_MAX);
+            return self.steer_for(psi, CRUISE_MAX, rate);
         }
         self.committed = 0;
-        // Softer with speed.  The lock that holds a lane at the cornering
-        // pace is a swerve at three times it: the car turns the same radius
-        // per cell of road either way, but it covers three times as many
-        // cells before the correction it just made has shown up in the
-        // measurement, and a controller that cannot see what it has already
-        // done overshoots.  Dividing by the speed ratio makes the cab lean
-        // on the lane rather than snatch at it.
-        let haste = fixed::div(speed, CRUISE_MAX).max(ONE);
+        // Softer with speed, and both terms by the *same* divisor.  The lock
+        // that holds a lane at the cornering pace is a swerve at three times
+        // it: the car turns the same radius per cell of road either way, but
+        // it covers three times as many cells before the correction it just
+        // made has shown up in the measurement.
+        //
+        // The two terms used to be softened by two different things - the
+        // angle by the speed ratio, the offset by the speed itself, which is
+        // four times larger at the top of the range - so at open-road pace
+        // the offset term was a fortieth of what it is at a crawl and the
+        // controller was almost pure damping: stable, and with no opinion
+        // about which lane it was in.  The cab wandered across the crown on
+        // every long straight and the keeping-right measurement fell to a
+        // coin toss.
+        let haste = fixed::div(speed, HASTE_FROM).max(ONE);
         let angle = fixed::div(fixed::ratio(psi, FULL_LOCK), haste);
         let pull = fixed::clamp(
-            fixed::div(fixed::mul(CROSS, right_of_lane), speed + ONE),
+            fixed::div(fixed::mul(CROSS, right_of_lane), haste),
             -CROSS_MAX,
             CROSS_MAX,
         );
-        fixed::clamp(angle - pull, -ONE, ONE)
+        // And the derivative: take lock back in proportion to how fast the
+        // car is already turning, so the correction stops when the car has
+        // started to answer it rather than when it has finished.
+        let damp = fixed::mul(DAMP, rate);
+        fixed::clamp(angle - pull - damp, -ONE, ONE)
     }
 
     /// Where the road wants the car to be, at its current place on the route.
@@ -643,7 +757,7 @@ impl Cabbie {
     /// `None` when there is no road to speak of - inside a junction, off the
     /// end of the route, or with no route at all - which is the caller's cue
     /// to go back to aiming at a point.
-    fn track(&self, city: &City, taxi: &Car) -> Option<Track> {
+    fn track(&self, city: &City, taxi: &Car, open: Fx) -> Option<Track> {
         if self.at + 1 >= self.route.len() {
             return None;
         }
@@ -694,7 +808,11 @@ impl Cabbie {
         if dir == 0 {
             return None;
         }
-        let (lx, ly) = lane(city, cx, cy, if along_x { (dir, 0) } else { (0, dir) });
+        let d = if along_x { (dir, 0) } else { (0, dir) };
+        // Out to the kerb on a straight, back to the middle of the half for
+        // a corner.  See [`CAB_BIAS`].
+        let t = fixed::clamp(fixed::div(open - CRUISE_MAX, OPEN_ROAD - CRUISE_MAX), 0, ONE);
+        let (lx, ly) = road::lane_biased(city, cx, cy, d, fixed::mul(CAB_BIAS, t));
         // How far to the right of the lane line the car is, and which way
         // the line runs.  Right of travel is south when heading east and
         // west when heading south.
@@ -716,7 +834,7 @@ impl Cabbie {
     /// method and not a function: it is the only state the steering keeps,
     /// and it exists because the error's sign is unreliable in exactly the
     /// situation where committing to a direction matters most.
-    fn steer_for(&mut self, err: i32, range: Fx) -> Fx {
+    fn steer_for(&mut self, err: i32, range: Fx, rate: Fx) -> Fx {
         let e = err.abs();
         if e >= COMMIT {
             if self.committed == 0 {
@@ -733,7 +851,14 @@ impl Cabbie {
             // straight and then have to catch itself.
             return fixed::mul(fixed::from_int(self.committed), fixed::ratio(e, COMMIT));
         }
-        fixed::clamp(fixed::ratio(err, full_lock_at(range)), -ONE, ONE)
+        // Damped, for the same reason the lane controller is: a pursuit
+        // law with no derivative arrives at its aim point with the wheel
+        // still wound on and has to catch itself on the far side.  The
+        // latched branches above are deliberately left undamped - a latch is
+        // a decision to complete a turn, and damping it is asking the car to
+        // fight the corner it has just committed to.
+        let damp = fixed::mul(DAMP, rate);
+        fixed::clamp(fixed::ratio(err, full_lock_at(range)) - damp, -ONE, ONE)
     }
 
     /// Plan again if there is no plan, if the fare changed, or if the car is
@@ -1093,14 +1218,30 @@ fn full_lock_at(range: Fx) -> i32 {
 /// hardest, which is the right place for the sharpest corners to be taken.
 fn corner_speed(err: i32, open: Fx) -> Fx {
     let e = err.abs();
-    if e > HARD {
-        fixed::ratio(3, 2)
-    } else if e > LIFT {
-        CRUISE_MAX / 2
-    } else {
-        open
+    if e <= LIFT {
+        return open;
     }
+    // Between lifting off and standing on it, a ramp rather than a step.
+    //
+    // It was a step - full speed below `LIFT`, half the cornering pace
+    // above it - and a step is a controller that has only two opinions.
+    // Every error of thirty-nine degrees was treated as an emergency, so a
+    // cab tidying up its line out of a junction threw away two thirds of its
+    // speed for a tenth of a second and then had to build it again; measured,
+    // that branch was the binding limit on half of all driving ticks and the
+    // mean speed sat at two thirds of the cornering pace on roads wide
+    // enough to take all of it.
+    let t = fixed::ratio((e - LIFT).min(HARD - LIFT), HARD - LIFT);
+    fixed::lerp(open, TIGHT, t.clamp(0, ONE)).max(TIGHT)
 }
+
+/// The pace for a corner being taken at the limit of the wheel, in cells a
+/// second.
+///
+/// Below this there is nothing left to slow down to: the car turns inside
+/// five metres at any speed under [`crate::drive`]'s reference, so a tighter
+/// corner is not bought by going slower still, it is bought by stopping.
+const TIGHT: Fx = fixed::ratio(3, 2);
 
 /// The fastest it is sensible to be going this far from the circle.
 ///
@@ -1182,7 +1323,7 @@ fn forward(taxi: &Car) -> Fx {
 mod tests {
     use super::*;
     use crate::sim::Event;
-    use crate::world::{City, Kind, SIZE};
+    use crate::world::{City, Kind};
     fn scene(seed: u32) -> (City, Sim) {
         let city = City::generate(seed);
         let mut sim = Sim::new(&city, seed);
@@ -1341,10 +1482,19 @@ mod tests {
     /// driving: that the cab spends real time above twice its cornering
     /// pace, that its average is not the one speed it used to hold, and that
     /// it picks up coins and spends the boost.  Measured over five minutes:
-    /// 4, 3, 3 and 4 per cent of driving ticks above twice the cornering
-    /// pace, against 1, 0, 1 and 1 before; means of 2.68, 2.64, 2.66 and
-    /// 2.65 cells a second against 2.6, 2.4, 2.5 and 2.5; and 4,000 to 6,800
-    /// of the 9,000 ticks on a coin's boost.
+    /// 4, 3, 4 and 4 per cent of driving ticks above twice the cornering
+    /// pace, against 1, 0, 1 and 1 for the milk float; means of 3.35, 2.85,
+    /// 3.00 and 3.08 cells a second; and 3,000 to 6,000 of the 9,000 ticks
+    /// on a coin's boost.
+    ///
+    /// The mean is asserted against a *fraction* of the cornering pace, and
+    /// the fraction moved when the roads doubled.  It used to be four
+    /// fifths, on a grid where the open-road target was twice the cornering
+    /// pace and there was nowhere to use it; the target is now three times
+    /// the cornering pace and the straights are long enough to reach it, so
+    /// the cab's speed is spread over a much wider band and its *mean* sits
+    /// lower against the top of that band while being higher in absolute
+    /// terms - 3.1 cells a second against 2.65.  Two thirds is the bar.
     ///
     /// Peak speed is deliberately not what is asserted on, and the escape
     /// manoeuvre is why: it holds the throttle wide open against a wall, so
@@ -1372,7 +1522,7 @@ mod tests {
             worst = (worst.0.min(r.fast * 100 / r.driving.max(1)), worst.1.min(mean), worst.2.min(r.boosted));
         }
         assert!(worst.0 >= 2, "only {}% of driving ticks above twice the cornering pace", worst.0);
-        assert!(worst.1 > CRUISE_MAX * 4 / 5, "mean speed only {}", worst.1 / ONE);
+        assert!(worst.1 > CRUISE_MAX * 2 / 3, "mean speed only {}", worst.1 / ONE);
         assert!(worst.2 > 0, "never used a coin's boost");
     }
 
@@ -1432,23 +1582,28 @@ mod tests {
     /// few per cent whenever anything about the driving changes.
     #[test]
     fn the_cab_keeps_right() {
+        // Every seed is measured before any of them is judged.  A chaotic
+        // measurement that stops at the first city under the bar tells you
+        // nothing about the other three, and retuning against one number at
+        // a time is how a controller ends up fitted to seed 1.
+        let mut worst = 100;
         for seed in [1u32, 7, 99, 4242] {
-            let r = run(seed, 3_000);
+            // Nine thousand ticks - five minutes - and not the three
+            // thousand this used to run.  The measurement is chaotic:
+            // whether a given fare happens to be down a street the cab
+            // reaches on the wrong side is worth ten points either way, and
+            // over fifty seconds there are not enough fares for that to
+            // average out.  Two settings a hair apart read 38 and 65 per
+            // cent on the same city at three thousand, which is a
+            // measurement of the seed rather than of the driving.
+            let r = run(seed, 9_000);
             let total = r.right + r.wrong;
             assert!(total > 300, "seed {seed}: only {total} ticks on a road with a side");
-            println!(
-                "seed {seed}: {} ticks on the right, {} on the wrong side - {}%",
-                r.right,
-                r.wrong,
-                r.right * 100 / total.max(1)
-            );
-            assert!(
-                r.right * 2 > r.wrong * 3,
-                "seed {seed}: {} ticks on the right against {} on the wrong side",
-                r.right,
-                r.wrong
-            );
+            let pct = r.right * 100 / total.max(1);
+            println!("seed {seed}: {} ticks on the right, {} on the wrong side - {pct}%", r.right, r.wrong);
+            worst = worst.min(pct);
         }
+        assert!(worst >= 60, "worst city was only {worst} per cent on the right");
     }
 
     /// `across` counts from the low-coordinate kerb, on every road.

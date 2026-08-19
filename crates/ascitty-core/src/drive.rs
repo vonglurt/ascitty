@@ -471,6 +471,27 @@ impl Car {
         hi + (lo * 3 / 8)
     }
 
+    /// How fast the car is turning, as a signed fraction of the fastest it
+    /// can: +1 is a full-lock right-hander, -1 the same to the left.
+    ///
+    /// This is the derivative every steering controller in the game wants
+    /// and none of them had.  A controller with only position terms - how
+    /// far off the line, how far off parallel - cannot tell a car that is
+    /// heading back to the lane from one that is sitting still beside it,
+    /// so it asks for the same lock in both cases and arrives at the line
+    /// with the wheel still over.  That is the saw.
+    ///
+    /// Reported as a fraction rather than in angle units so the gain that
+    /// uses it means something: a damping gain of a half takes half the
+    /// wheel away from a car that is already turning as hard as it can.
+    ///
+    /// Clamped before it is scaled, because [`Car::spin`] is also where a
+    /// wall impact goes and an impact is not a steering input.
+    pub fn turn_rate(&self, hz: i32) -> Fx {
+        let per_s = (self.spin as i64 * hz.max(1) as i64).clamp(-32_767, 32_767) as i32;
+        fixed::div(fixed::from_int(per_s), fixed::from_int(TURN_RATE))
+    }
+
     /// Speed along the car's own nose, signed: positive going forwards,
     /// negative in reverse.
     ///

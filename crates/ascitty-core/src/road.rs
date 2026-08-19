@@ -107,6 +107,53 @@ pub fn lane(city: &City, x: i32, y: i32, (rx, ry): (i32, i32)) -> (Fx, Fx) {
     }
 }
 
+/// A place in the same half of the road as [`lane`], chosen by `bias`.
+///
+/// `bias` runs from -1 (the lane against the crown) through 0 to +1 (the
+/// outermost lane this function will use), and it is what stops a street
+/// from being a single-file queue.  Every car asking [`lane`] for its target
+/// gets the *same* target, so on a four-cell street a dozen cars sat nose to
+/// tail on one painted line with two cells of empty carriageway beside them,
+/// and any car that could not get past the one in front simply stopped.  A
+/// road wide enough for two abreast has to be driven two abreast or it is
+/// not wide enough for anything.
+///
+/// The half is divided into whole one-cell lanes and the car is put in the
+/// *middle* of one, which is the part that matters and the part the first
+/// attempt got wrong.  Interpolating smoothly across the half puts cars half
+/// a cell from the crown, and half a cell is inside the wobble of a car
+/// being jostled: measured, traffic on the correct side of the road fell
+/// from 94, 92, 91 and 94 per cent to 72 with a smooth spread, and holds at
+/// the same figures with lanes.  A lane has a middle for a reason.
+pub fn lane_biased(city: &City, x: i32, y: i32, dir: (i32, i32), bias: Fx) -> (Fx, Fx) {
+    let (lx, ly) = lane(city, x, y, dir);
+    let Some(along_x) = street_axis(city, x, y) else { return (lx, ly) };
+    let cell = if along_x { city.plan.rows.at(y) } else { city.plan.cols.at(x) };
+    if !cell.class.is_street() {
+        return (lx, ly);
+    }
+    // How many whole lanes this half has, capped: an arterial has twelve
+    // cells a side and traffic strung across all of them never meets
+    // anything, which is not traffic, it is scenery.
+    let lanes = (cell.width as i32 / 2).clamp(1, LANES_MAX);
+    // Bias to a lane index, then to the middle of that lane, measured out
+    // from the crown.
+    let pick = fixed::mul(fixed::clamp(bias + ONE, 0, 2 * ONE) / 2, fixed::from_int(lanes - 1));
+    let out = fixed::HALF + pick;
+    // Which way "out from the crown" is depends on the direction of travel,
+    // exactly as it does in `lane`.
+    let kerb = fixed::from_int(if along_x { y } else { x } - cell.across as i32);
+    let mid = kerb + fixed::from_int(cell.width as i32) / 2;
+    if along_x {
+        (lx, if dir.0 > 0 { mid + out } else { mid - out })
+    } else {
+        (if dir.1 > 0 { mid - out } else { mid + out }, ly)
+    }
+}
+
+/// The most lanes of a single carriageway the traffic will spread across.
+const LANES_MAX: i32 = 3;
+
 /// Which way the traffic on this half of the carriageway is going.
 ///
 /// The inverse of [`lane`]: it reads which side of the crown the cell is on

@@ -1335,7 +1335,11 @@ mod tests {
         let mut near = Frame::new(80, 30);
         let mut far = Frame::new(80, 30);
         let mut cam = Camera::spawn(&city, SIZE as i32 / 2, SIZE as i32 / 2);
-        cam.z = crate::camera::EYE;
+        // Standing on whatever [`Camera::spawn`] found, rather than at a
+        // fixed height above sea level: the ground under the middle of the
+        // city is a metre up, so a camera pinned to `EYE` was inside it and
+        // the frame was a flat wall that no amount of haze could darken.
+        cam.stand(&city);
         render(&city, &cam, &atmos, &mut near);
         // The pitch is zero here, so the horizon is the middle row.
         let ground = |f: &Frame| -> u32 {

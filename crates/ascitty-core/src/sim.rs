@@ -48,21 +48,33 @@ use crate::world::{City, Kind, SIZE};
 
 /// How many other vehicles are in the pool.
 ///
-/// Twelve, down from thirty-six, because the cars are now twice as long.
-/// The pool is recycled within `RECYCLE` cells of the cab, so the count is
-/// really a *density*, and the same count of vehicles at twice the length is
-/// twice the traffic in the same streets - which on a two-cell carriageway
-/// is not traffic, it is a queue.  The autopilot's completion rate was the
-/// measurement that caught it, and it is unusually sharp: at thirty-six the
-/// cab managed one fare in five minutes, at twenty and at sixteen it managed
-/// two, and at twelve it is back to six.  A cab that cannot get down the
-/// street is not a traffic-density problem you can tune your way around by
-/// a few per cent.
-pub const TRAFFIC: usize = 12;
+/// This is really a *density*: the pool is recycled within [`RECYCLE`] cells
+/// of the cab, so what the number sets is how many cars share that disc.
+/// Twelve was right when the disc was thirty-four cells across and the
+/// streets were two cells wide - and it was arrived at the hard way, because
+/// the autopilot's completion rate is an unusually sharp measurement of
+/// traffic density: at thirty-six the cab managed one fare in five minutes,
+/// at twenty and sixteen it managed two, and at twelve it was back to six.
+/// A cab that cannot get down the street is not something you tune your way
+/// out of by a few per cent.
+///
+/// The disc is now four blocks, because cars have to appear at the far end
+/// of the street rather than in the lane beside you, and four blocks of
+/// doubled streets is nine times the road.  Sixty-four keeps the same cars
+/// per cell of carriageway as twelve did, and the streets are twice as wide,
+/// so the queue that number was defending against cannot form: there is room
+/// to go round.
+pub const TRAFFIC: usize = 64;
 /// How many pedestrians are in the pool.
 pub const PEDS: usize = 48;
 /// Beyond this many cells, a pooled actor is recycled somewhere nearer.
-pub const RECYCLE: i32 = 34;
+///
+/// Four blocks, and it has to be more than [`SPAWN_NEAR`] or the pool would
+/// recycle a car the moment it arrived.  What sets it is the draw distance:
+/// a car that vanishes while you can still see it is the same failure as one
+/// that appears while you can, so this is beyond where the haze has taken
+/// the city.
+pub const RECYCLE: i32 = 4 * crate::zone::BLOCK_PITCH as i32;
 /// How near the cab the next fare may be waiting, in cells.
 ///
 /// A block.  It was four cells - the length of two cars - which puts the
@@ -181,6 +193,25 @@ const LANE_LOCK: i32 = 6_500;
 /// that a car knocked a long way off line rejoins its lane at an angle
 /// rather than turning across the road to get back to it.
 const LANE_CROSS: Fx = fixed::ratio(1, 2);
+
+/// Damping on the traffic's steering: lock given back per unit of the car's
+/// own rate of turn.
+///
+/// The same term, and for the same reason, as the autopilot's - see
+/// `cabbie::DAMP`.  Half rather than two fifths because traffic has no
+/// route to commit to and nothing it needs to throw the car into: for a car
+/// whose only job is to sit in its lane, more damping is strictly better.
+const LANE_DAMP: Fx = fixed::ratio(1, 2);
+
+/// How near the cab a recycled vehicle may be put down, in cells.
+///
+/// Three blocks.  It was eight cells - a car length and a half - so the pool
+/// spent its life materialising a saloon in the next lane while you were
+/// looking at it, which is the one thing a traffic system must never do.  At
+/// three blocks a car appears at or beyond the far end of the street you are
+/// on, where the frame is already a haze of distant buildings, and drives
+/// towards you the way traffic does.
+pub const SPAWN_NEAR: i32 = 3 * crate::zone::BLOCK_PITCH as i32;
 
 /// A piece of street furniture.
 #[derive(Clone, Copy, Debug)]
@@ -313,6 +344,9 @@ pub struct Sim {
     /// How fast each of them would like to be going with a clear road.
     /// Varied per car, so a street is not a convoy at one speed.
     traffic_cruise: Vec<Fx>,
+    /// Where in its own half of the road each car likes to sit, -1 against
+    /// the crown to +1 against the kerb.  See [`road::lane_biased`].
+    traffic_bias: Vec<Fx>,
     /// Ticks each of them has left to spend reversing out of a shunt.
     traffic_backing: Vec<u32>,
     /// Whether the cab was on the brakes last tick, for its brake lights.
@@ -351,6 +385,7 @@ impl Sim {
             traffic: Vec::with_capacity(TRAFFIC),
             traffic_ctl: vec![Controls::default(); TRAFFIC],
             traffic_cruise: vec![0; TRAFFIC],
+            traffic_bias: vec![0; TRAFFIC],
             traffic_backing: vec![0; TRAFFIC],
             braking: false,
             props: Vec::new(),
@@ -373,9 +408,10 @@ impl Sim {
         // would seed the traffic and the fare off the road as well.
         sim.park_near(city, fixed::floor(start.x), fixed::floor(start.y));
         for i in 0..TRAFFIC {
-            let (c, cruise) = sim.spawn_car(city);
+            let (c, cruise, bias) = sim.spawn_car(city);
             sim.traffic.push(c);
             sim.traffic_cruise[i] = cruise;
+            sim.traffic_bias[i] = bias;
         }
         for _ in 0..PEDS {
             let p = sim.spawn_ped(city);
@@ -573,7 +609,7 @@ impl Sim {
     /// stream for anyone - the player included - to join.  Reading the side
     /// of the crown first and taking the heading from that is the whole
     /// difference between a road and a car park with lines on it.
-    fn spawn_car(&mut self, city: &City) -> (Car, Fx) {
+    fn spawn_car(&mut self, city: &City) -> (Car, Fx, Fx) {
         const HUES: [u8; 6] = [
             palette::H_WHITE,
             palette::H_RED,
@@ -587,23 +623,31 @@ impl Sim {
         // A cruising speed per car, so the traffic has to overtake and give
         // way to itself rather than moving as one block.
         let cruise = fixed::ratio(self.rng.range(18, 32), 10);
+        // And a place in its own half of the road, for the same reason.  A
+        // bus takes the middle of its half because it does not fit anywhere
+        // else; everything smaller picks a line and keeps it.
+        let bias = if kind == CarKind::Bus {
+            0
+        } else {
+            fixed::ratio(self.rng.range(-8, 9), 10)
+        };
         // If no lane turned up, put the car on top of the taxi rather than
         // at the origin: it will be recycled on the next tick, whereas a
         // fallback in the corner of the map is a car that is instantly and
         // permanently a straggler.
-        let Some(((x, y), dir)) = self.lane_near(city, 8, RECYCLE) else {
+        let Some(((x, y), dir)) = self.lane_near(city, SPAWN_NEAR, RECYCLE) else {
             let c = Car::new(kind, self.taxi.x, self.taxi.y, self.taxi.yaw, hue);
-            return (c, cruise);
+            return (c, cruise, bias);
         };
         let yaw = road::heading(dir.0, dir.1);
         // On the lane line, not merely on the cell: a car that starts
         // straddling the paint spends its first second steering back onto
         // its own side, in front of whoever is behind it.
-        let (lx, ly) = road::lane(city, x, y, dir);
+        let (lx, ly) = road::lane_biased(city, x, y, dir, bias);
         let mut c = Car::new(kind, lx, ly, yaw, hue);
         c.vx = fixed::mul(trig::cos(yaw), cruise);
         c.vy = fixed::mul(trig::sin(yaw), cruise);
-        (c, cruise)
+        (c, cruise, bias)
     }
 
     /// Somewhere a person could plausibly be walking to, near the taxi.
@@ -823,13 +867,14 @@ impl Sim {
             let far = fixed::abs(self.traffic[i].x - self.taxi.x)
                 + fixed::abs(self.traffic[i].y - self.taxi.y);
             if far > fixed::from_int(RECYCLE + 12) {
-                let (c, cruise) = self.spawn_car(city);
+                let (c, cruise, bias) = self.spawn_car(city);
                 self.traffic[i] = c;
                 self.traffic_cruise[i] = cruise;
+                self.traffic_bias[i] = bias;
                 self.traffic_backing[i] = 0;
                 continue;
             }
-            let ctl = self.traffic_controls(city, i);
+            let ctl = self.traffic_controls(city, i, hz);
             self.traffic_ctl[i] = ctl;
             self.traffic[i].step(&ctl, city, hz);
 
@@ -869,7 +914,7 @@ impl Sim {
     /// Two jobs, and they are independent: keep the lane, and do not run
     /// into anything.  Neither of them is a route - this car has no idea
     /// where it is going and does not need one.
-    fn traffic_controls(&mut self, city: &City, i: usize) -> Controls {
+    fn traffic_controls(&mut self, city: &City, i: usize, hz: i32) -> Controls {
         // Backing out of a shunt.  A driver who has just been hit does not
         // carry on as though nothing happened: they reverse, with the wheel
         // over, until they are clear - and on a street the player is still
@@ -916,7 +961,7 @@ impl Sim {
         // empty.
         let (lx, ly) = match road::flow(city, cx, cy) {
             Some(f) if f == dir => road::centre(cx, cy),
-            _ => road::lane(city, cx, cy, dir),
+            _ => road::lane_biased(city, cx, cy, dir, self.traffic_bias[i]),
         };
         // How far to the right of that line the car is, and how far its nose
         // is off the way the street runs.
@@ -928,7 +973,14 @@ impl Sim {
         // a crawl does not snake the car at speed.
         let angle = fixed::ratio(psi, LANE_LOCK);
         let pull = fixed::clamp(fixed::div(off, c.speed() + ONE), -LANE_CROSS, LANE_CROSS);
-        let steer = fixed::clamp(angle - pull, -ONE, ONE);
+        // The derivative, the same one the autopilot has: lock back in
+        // proportion to how fast the car is already coming round.  Without
+        // it a car nudged off its line answers with full lock, arrives
+        // pointing across the road, and answers that - which is a car
+        // weaving down a straight street, and twelve of them weaving is a
+        // street nobody can get down.
+        let damp = fixed::mul(LANE_DAMP, c.turn_rate(hz));
+        let steer = fixed::clamp(angle - pull - damp, -ONE, ONE);
 
         Controls { throttle: pace(vf, self.give_way(i)), steer, handbrake: false }
     }
@@ -1989,14 +2041,21 @@ mod tests {
                 }
             }
         }
-        // A hundred car-ticks in a hundred thousand.  Not zero: a shunt is
+        // One overlap in a thousand pair-ticks.  Not zero: a shunt is
         // resolved over a tick or two and being inside each other for part
-        // of one is what a collision *is*.  Measured at 33 with the drivers
-        // giving way and 366 with them ignoring each other, which is the
-        // difference the rule makes.
+        // of one is what a collision *is*.  Measured at 33 in 66,000 with
+        // the drivers giving way and 366 with them ignoring each other,
+        // which is the difference the rule makes.
+        //
+        // Counted against the *pairs* sampled rather than as a flat number,
+        // because the pool went from twelve cars to sixty-four and the pairs
+        // with it - from 66 to 2,016 - so a bar written as a count would
+        // have tightened thirtyfold without anybody deciding to tighten it.
+        let pairs = sim.traffic.len() * (sim.traffic.len() - 1) / 2;
+        let ticks = pairs as u32 * 1_000;
         assert!(
-            overlapping < 100,
-            "{overlapping} car-ticks spent inside another car"
+            overlapping * 1_000 < ticks,
+            "{overlapping} car-ticks spent inside another car, of {ticks}"
         );
     }
 
@@ -2005,8 +2064,15 @@ mod tests {
     fn a_driver_lifts_off_for_the_car_in_front() {
         let city = City::generate(3);
         let mut sim = Sim::new(&city, 3);
-        // Put two cars nose to tail in the same lane, the front one parked.
+        // Two cars and nobody else.  The pool is sixty-four deep and spread
+        // over four blocks, so a third car happening to sit in front of the
+        // one being measured makes both halves of the comparison come back
+        // the same and the test says nothing.
         let lead = sim.traffic[0];
+        for k in 2..sim.traffic.len() {
+            sim.traffic[k].x = fixed::from_int(SIZE as i32 - 2);
+            sim.traffic[k].y = fixed::from_int(SIZE as i32 - 2);
+        }
         let (fx, fy) = (trig::cos(lead.yaw), trig::sin(lead.yaw));
         let back = fixed::from_int(4);
         sim.traffic[0].vx = 0;

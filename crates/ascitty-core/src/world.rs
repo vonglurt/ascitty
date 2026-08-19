@@ -20,11 +20,14 @@ use crate::zone::{self, Use, Zone, ZoneMap, BLOCK_PITCH, MIN_BLOCK};
 
 /// The city is this many cells on a side.
 ///
-/// Derived rather than chosen: sixteen blocks of built city, plus a block of
-/// outskirts on each side so that the built area has an edge you can walk to
-/// rather than one that coincides with the end of the world.  The lot record
-/// stores its footprint corners as `u8`, so this must stay under 256, which
-/// eighteen blocks of thirteen cells comfortably does.
+/// Derived rather than chosen: sixteen blocks of built city, plus rings of
+/// suburb, farmland and outskirts on each side so that the built area has an
+/// edge you can drive to rather than one that coincides with the end of the
+/// world.
+///
+/// Twenty-eight blocks of twenty-six cells, which is 728 - so a lot's
+/// footprint corners are stored as `u16` and not, as they once were, as
+/// bytes.
 pub const SIZE: usize = BLOCK_PITCH * (zone::WORLD_BLOCKS as usize + 2);
 
 /// A cell is about this many metres across.  Not used in any calculation -
@@ -219,18 +222,19 @@ pub const EDGE_STEPS: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
 pub enum RoadClass {
     /// Not a road at all.
     None = 0,
-    /// One cell.  Service access between buildings; no pavement, no paint.
+    /// Two cells.  Service access between buildings; no pavement, no paint,
+    /// and exactly as wide as the cab is long.
     Alley = 1,
-    /// Two cells - one lane each way.
+    /// Four cells - two lanes each way, or one lane and somewhere to stop.
     Street = 2,
-    /// Three cells.
+    /// Six cells.
     Avenue = 3,
-    /// Four or five cells.
+    /// Eight or ten cells.
     Boulevard = 4,
-    /// Twelve to sixteen cells - the better part of a hundred metres of
-    /// carriageway, kerb to kerb.  There are one or two of these in a city
-    /// and they run its whole length; everything about the core is arranged
-    /// around them.
+    /// Twenty-four to thirty-two cells - the better part of two hundred
+    /// metres of carriageway, kerb to kerb.  There are one or two of these
+    /// in a city and they run its whole length; everything about the core is
+    /// arranged around them.
     Arterial = 5,
 }
 
@@ -386,14 +390,19 @@ fn pick_class(rng: &mut Rng, long: bool) -> RoadClass {
 }
 
 /// How wide a road of this class is, in cells.
+///
+/// Every figure here is twice what it was, along with the blocks between
+/// them - see [`zone::BLOCK_PITCH`] for why.  A cell is six metres, so a
+/// street is now twenty-four metres kerb to kerb, which is a two-lane street
+/// with parking; it was twelve, which is a car and a half.
 fn road_width(rng: &mut Rng, c: RoadClass) -> usize {
     match c {
         RoadClass::None => 0,
-        RoadClass::Alley => 1,
-        RoadClass::Street => 2,
-        RoadClass::Avenue => 3,
-        RoadClass::Boulevard => 4 + rng.below(2) as usize,
-        RoadClass::Arterial => 12 + rng.below(5) as usize,
+        RoadClass::Alley => 2,
+        RoadClass::Street => 4,
+        RoadClass::Avenue => 6,
+        RoadClass::Boulevard => 8 + 2 * rng.below(2) as usize,
+        RoadClass::Arterial => 24 + 2 * rng.below(5) as usize,
     }
 }
 
@@ -406,16 +415,16 @@ fn road_width(rng: &mut Rng, c: RoadClass) -> usize {
 /// service road splitting one block rather than as a thin street.
 fn gap_after(rng: &mut Rng, c: RoadClass, long: bool) -> usize {
     let (lo, hi) = match (c, long) {
-        (RoadClass::Alley, _) => (4, 8),
-        (RoadClass::Street, true) => (10, 16),
-        (RoadClass::Street, false) => (7, 12),
-        (RoadClass::Avenue, true) => (12, 20),
-        (RoadClass::Avenue, false) => (8, 14),
-        (RoadClass::Boulevard, true) => (16, 26),
-        (RoadClass::Boulevard, false) => (10, 17),
-        (RoadClass::Arterial, true) => (18, 28),
-        (RoadClass::Arterial, false) => (14, 22),
-        (RoadClass::None, _) => (10, 14),
+        (RoadClass::Alley, _) => (8, 16),
+        (RoadClass::Street, true) => (20, 32),
+        (RoadClass::Street, false) => (14, 24),
+        (RoadClass::Avenue, true) => (24, 40),
+        (RoadClass::Avenue, false) => (16, 28),
+        (RoadClass::Boulevard, true) => (32, 52),
+        (RoadClass::Boulevard, false) => (20, 34),
+        (RoadClass::Arterial, true) => (36, 56),
+        (RoadClass::Arterial, false) => (28, 44),
+        (RoadClass::None, _) => (20, 28),
     };
     // Clamped, not merely chosen, so the guarantee holds however the figures
     // above are retuned: a block is at least `MIN_BLOCK` cells of buildable
@@ -657,8 +666,15 @@ impl City {
         to: (i32, i32),
         budget: usize,
     ) -> Option<Vec<(i32, i32)>> {
-        let from = self.nearest_road(from.0, from.1, 8)?;
-        let to = self.nearest_road(to.0, to.1, 8)?;
+        // Half a block, so a point dropped anywhere at all - the middle of a
+        // park, the far corner of a lot - reaches the carriageway around it.
+        // It was a flat eight cells, which was most of a block when a block
+        // was thirteen and a third of one now that it is twenty-six: routes
+        // between perfectly ordinary places started coming back as "the city
+        // is not connected".
+        let reach = BLOCK_PITCH as i32 / 2;
+        let from = self.nearest_road(from.0, from.1, reach)?;
+        let to = self.nearest_road(to.0, to.1, reach)?;
         if from == to {
             return Some(vec![from]);
         }
