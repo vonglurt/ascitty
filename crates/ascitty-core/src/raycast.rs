@@ -497,6 +497,26 @@ fn ground(city: &City, atmos: &Atmos, light: &Light, wx: Fx, wy: Fx, dist: Fx) -
             }
         }
         Kind::Plaza => (catalog::ROAD_PAVING, palette::H_WHITE, 4),
+        // Standing crop: the colour of a field in late summer, in rows,
+        // with the rows running the way the drill went rather than along
+        // the grid - which is the difference between a field and a lawn.
+        Kind::Field => {
+            let h = hash3(gx as u32, gy as u32, 0x_c0_5e_ed);
+            let drill = (fixed::floor(fx * 8) + fixed::floor(fy * 8)) as u32;
+            if (drill ^ (h >> 3)) & 3 == 0 {
+                (catalog::FLORA_GRASS, palette::H_ORANGE, 4)
+            } else {
+                (catalog::FLORA_GRASS, palette::H_YELLOW, 5)
+            }
+        }
+        // The treeline round it, which is the one soft thing on the map
+        // that stops a car.  Dark, dense and unmistakably not a way through.
+        Kind::Hedge => (catalog::FLORA_HEDGE, palette::H_GREEN, 2),
+        // The bottom of a light well, which is a place daylight does not
+        // reach.  Dark paving, and the fact that it is dark is what makes
+        // the slot read as a slot from the street rather than as a mistake
+        // in the pavement.
+        Kind::Gap => (catalog::ROAD_PAVING, palette::H_BLACK, 1),
         // The beach: pale, grainy, with the odd darker patch of wet sand
         // where the tide has been.
         Kind::Sand => {

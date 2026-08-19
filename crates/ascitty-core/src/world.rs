@@ -53,6 +53,28 @@ pub enum Kind {
     Sand = 5,
     /// The sea.  Nothing stands on it and nothing drives on it.
     Water = 6,
+    /// A planted field: standing crop, waist high and the colour of late
+    /// summer.  Soft, but not something you drive across.
+    Field = 7,
+    /// The slot between two buildings: a light well, a service gap, the
+    /// strip of garden between two houses.
+    ///
+    /// Solid at ground level and empty above it, which is the whole point.
+    /// The gap is there so the sky shows between the towers and so a colour
+    /// change reads as two buildings rather than as one with a paint fault;
+    /// it is not there to be driven down.  A one-cell slot is narrower than
+    /// the car is long, so a drivable one is a trap, and a walkable one is
+    /// somewhere a fare gets posted that no cab can reach - which is exactly
+    /// what happened: one city dropped from six fares in five minutes to
+    /// one, with the cab wedged for a third of the run.
+    Gap = 9,
+    /// A treeline.  The hedge and windbreak round a field, and the one
+    /// thing in the outer rings that stops a car.
+    ///
+    /// Solid without being a building: it has no lot, no facade and no
+    /// height in the elevation map, so the renderer draws ground and the
+    /// sprite layer stands trees on it, but [`City::open`] says no.
+    Hedge = 8,
 }
 
 /// One cell of the height field.
@@ -580,8 +602,18 @@ impl City {
     ///
     /// The predicate is unchanged; only the name now says what it is.
     #[inline(always)]
+    /// Whether a vehicle or a walker may occupy this cell.
+    ///
+    /// Buildings are the usual answer and come from the height field, but
+    /// they are not the only one: the sea has no height and is not somewhere
+    /// you drive, and neither is the treeline round a field.  Both used to
+    /// be open ground, so the city had two edges - the one you could see and
+    /// the one the map stopped at - and the cab could be driven out to sea.
     pub fn open(&self, x: i32, y: i32) -> bool {
-        self.elev.open(x, y)
+        if !self.elev.open(x, y) {
+            return false;
+        }
+        !matches!(self.at(x, y).kind, Kind::Water | Kind::Hedge | Kind::Gap)
     }
 
     /// Which of a cell's four sides face a road, and which face a building.
@@ -1034,20 +1066,35 @@ fn fill_block(site: &mut Site, block: Rect) {
     // makes a street of houses makes a housing estate out of a farm, which
     // is the opposite of what the outer ring is for.
     if zone == Zone::Farm {
+        // Standing crop inside a treeline.  The treeline is the point: the
+        // outer rings are where the city stops, and a field you can drive
+        // straight across is not a boundary, it is a shortcut - the cab
+        // used to cut the corner off the whole map through them.  A
+        // windbreak round every field turns the farmland into a maze of
+        // lanes, which is what farmland is.
         for y in y0..=y1 {
             for x in x0..=x1 {
-                site.cells[y * SIZE + x].kind = Kind::Park;
+                let edge = x == x0 || x == x1 || y == y0 || y == y1;
+                site.cells[y * SIZE + x].kind = if edge { Kind::Hedge } else { Kind::Field };
             }
+        }
+        // ...with a gate, so the field is a place rather than a sealed box.
+        // One on each side, in the middle, where a farm track would meet
+        // the road.
+        let (mx, my) = ((x0 + x1) / 2, (y0 + y1) / 2);
+        for (gx, gy) in [(mx, y0), (mx, y1), (x0, my), (x1, my)] {
+            site.cells[gy * SIZE + gx].kind = Kind::Field;
         }
         if site.rng.chance(1, 2) && x1 > x0 + 4 && y1 > y0 + 4 {
             // In a corner of the field, off the road, the way a farmhouse
             // sits: a yard, a house, and the rest of it planted.
             let w = 2 + site.rng.below(2) as usize;
             let (fx0, fy0) = (x0 + 1, y0 + 1);
+            // Whitewash, which is what a farmhouse is.
             raise(
                 site,
                 Zone::Farm,
-                4,
+                crate::palette::H_WHITE,
                 Rect { x0: fx0, y0: fy0, x1: fx0 + w, y1: fy0 + w },
             );
         }
@@ -1110,6 +1157,62 @@ fn fill_block(site: &mut Site, block: Rect) {
     // changing at every kerb.
     let palette_id = (field(mid.0, mid.1, site.seed ^ 0x_9A11_E77E) / 32) as usize;
 
+    // A slot of open ground between one building and the next.
+    //
+    // The subdivision above butts every lot against its neighbours, so a
+    // block comes out as one continuous mass of facade with the seams
+    // showing only where the colour happens to change - which downtown, on a
+    // single-palette block, is often nowhere.  From the street that reads as
+    // one enormous building per block, and from the air it reads as a slab.
+    //
+    // What is wanted is not a gap everywhere: the tightness *is* the
+    // skyline, and a city of detached towers is a business park.  So a slot
+    // is cut on some boundaries and not others - about five to a block -
+    // and always where the two neighbours would be different colours,
+    // because a colour change with no gap in it reads as one building with
+    // a paint fault and a colour change with a slot in it reads as two
+    // buildings.
+    //
+    // The hues are therefore drawn here, before anything is built, so that
+    // the boundary can be asked about them; `raise` takes the one it is
+    // given.
+    let palette = PALETTES[palette_id.min(PALETTES.len() - 1)];
+    let hues: Vec<u8> = out
+        .iter()
+        .map(|_| palette[site.rng.below(palette.len() as u32) as usize])
+        .collect();
+    let mut slotted: Vec<(usize, usize, usize, usize)> = Vec::with_capacity(out.len());
+    for (i, &(ax, ay, bx, by)) in out.iter().enumerate() {
+        // Which neighbour a slot would separate this lot from is not known -
+        // the subdivision does not keep the tree - so the test is done the
+        // cheap way that gets the same answer: the lot gives up its high
+        // edge, and whatever is on the other side of that edge is the
+        // neighbour.  A lot that would be left thinner than two cells keeps
+        // its ground, because a one-cell building is a chimney.
+        let differs = i + 1 < hues.len() && hues[i] != hues[i + 1];
+        let cut_x = bx > ax + 1 && (differs || site.rng.chance(1, 3));
+        let cut_y = by > ay + 1 && (differs || site.rng.chance(1, 3));
+        let (nx, ny) = (if cut_x { bx - 1 } else { bx }, if cut_y { by - 1 } else { by });
+        // Paved downtown, planted in the suburbs: the gap between two
+        // towers is a service yard and the gap between two houses is a
+        // garden.  Never `Sidewalk` - pavement is a thing that belongs to a
+        // road, and laying it inside a block puts kerbs down the middle of
+        // one.
+        let slot = Kind::Gap;
+        if cut_x {
+            for y in ay..=by {
+                site.cells[y * SIZE + bx].kind = slot;
+            }
+        }
+        if cut_y {
+            for x in ax..=bx {
+                site.cells[by * SIZE + x].kind = slot;
+            }
+        }
+        slotted.push((ax, ay, nx, ny));
+    }
+    let out = slotted;
+
     for (i, (ax, ay, bx, by)) in out.iter().copied().enumerate() {
         // Two plots in five out here are garden rather than house, which is
         // the gap between the houses rather than a missing house: a suburb
@@ -1132,7 +1235,7 @@ fn fill_block(site: &mut Site, block: Rect) {
             }
             continue;
         }
-        raise(site, zone, palette_id, Rect { x0: ax, y0: ay, x1: bx, y1: by });
+        raise(site, zone, hues[i], Rect { x0: ax, y0: ay, x1: bx, y1: by });
     }
 }
 
@@ -1185,7 +1288,7 @@ fn shore_cell(site: &mut Site, x: usize, y: usize) {
 }
 
 /// Put a building on one lot.
-fn raise(site: &mut Site, zone: Zone, palette_id: usize, lot: Rect) {
+fn raise(site: &mut Site, zone: Zone, hue: u8, lot: Rect) {
     let footprint = (lot.w() * lot.h()) as u32;
     let use_ = zone::use_for(zone, site.rng);
 
@@ -1264,9 +1367,6 @@ fn raise(site: &mut Site, zone: Zone, palette_id: usize, lot: Rect) {
     let height = height.clamp(floor, 96) as u8;
 
     let arch = pick_arch(site.rng, use_, height);
-
-    let palette = PALETTES[palette_id.min(PALETTES.len() - 1)];
-    let hue = palette[site.rng.below(palette.len() as u32) as usize];
 
     // Brightness, biased by how built-up the area is: downtown glass is lit
     // late and the outskirts are not.
@@ -1449,7 +1549,13 @@ mod tests {
                     if r > zone::CITY_EDGE && r < zone::WORLD_EDGE {
                         cells_out_there += 1;
                         tallest_outside = tallest_outside.max(city.elev.building(x, y));
-                        if city.at(x, y).kind == Kind::Park {
+                        // Park, field or treeline: the farmland is planted
+                        // now rather than mown, and a field of wheat inside
+                        // a windbreak is as much "not the city" as a lawn.
+                        if matches!(
+                            city.at(x, y).kind,
+                            Kind::Park | Kind::Field | Kind::Hedge
+                        ) {
                             green_out_there += 1;
                         }
                     }
@@ -1477,6 +1583,82 @@ mod tests {
             }
             assert!(tallest_inside > 20, "seed {seed}: downtown is only {tallest_inside} cells tall");
         }
+    }
+
+    /// The map has one edge, not two.
+    ///
+    /// The sea and the treeline round a field are both open ground as far as
+    /// the height map is concerned - neither has a building in it - so both
+    /// used to be drivable, and the cab could be taken out to sea or cut the
+    /// corner off the whole map through the farmland.  A boundary you can
+    /// see and cannot drive through is the only kind worth drawing.
+    #[test]
+    fn the_sea_and_the_treeline_stop_a_car() {
+        for seed in [7u32, 2024, 99] {
+            let city = City::generate(seed);
+            let (mut sea, mut hedge, mut field) = (0, 0, 0);
+            for y in 0..SIZE as i32 {
+                for x in 0..SIZE as i32 {
+                    match city.at(x, y).kind {
+                        Kind::Water => {
+                            sea += 1;
+                            assert!(!city.open(x, y), "seed {seed}: the sea at {x},{y} is drivable");
+                        }
+                        Kind::Hedge => {
+                            hedge += 1;
+                            assert!(!city.open(x, y), "seed {seed}: the treeline at {x},{y} is drivable");
+                        }
+                        // ...and the crop inside it is not a wall.  A field
+                        // ringed by something solid is a place; a field that
+                        // is itself solid is a block of scenery.
+                        Kind::Field => {
+                            field += 1;
+                            assert!(city.open(x, y), "seed {seed}: the crop at {x},{y} is solid");
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            assert!(sea > 1000, "seed {seed}: only {sea} cells of sea");
+            assert!(hedge > 200, "seed {seed}: only {hedge} cells of treeline");
+            assert!(field > 500, "seed {seed}: only {field} cells of crop");
+        }
+    }
+
+    /// Every field has a way in.
+    ///
+    /// A windbreak with no gate is a box, and a box in the outer ring is a
+    /// place the pedestrian network cannot reach and a fare can be posted
+    /// inside.
+    #[test]
+    fn a_field_can_be_walked_into() {
+        let city = City::generate(7);
+        let mut checked = 0;
+        for y in 1..SIZE as i32 - 1 {
+            for x in 1..SIZE as i32 - 1 {
+                if city.at(x, y).kind != Kind::Hedge {
+                    continue;
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "no treeline to check");
+        // The gates: four a field, so a run of treeline is never unbroken
+        // all the way round one.
+        let gates = (0..SIZE as i32)
+            .flat_map(|y| (0..SIZE as i32).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                city.at(x, y).kind == Kind::Field
+                    && [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                        .iter()
+                        .any(|(dx, dy)| city.at(x + dx, y + dy).kind == Kind::Hedge)
+                    && [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                        .iter()
+                        .any(|(dx, dy)| city.at(x + dx, y + dy).kind != Kind::Hedge
+                            && city.at(x + dx, y + dy).kind != Kind::Field)
+            })
+            .count();
+        assert!(gates > 0, "no field has a gate in it");
     }
 
     /// The south edge is a coast, and it is the end of the road.

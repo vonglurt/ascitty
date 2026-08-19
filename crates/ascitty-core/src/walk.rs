@@ -237,7 +237,10 @@ fn classify(
         // The beach is walkable and the sea is not, which is the whole of
         // what the shore means to anything that moves.
         Kind::Sidewalk | Kind::Park | Kind::Plaza | Kind::Sand => Foot::Path,
-        Kind::Water => Foot::Blocked,
+        // A field is somewhere a person may walk and a car may not; the
+        // treeline round it is neither.
+        Kind::Field => Foot::Path,
+        Kind::Water | Kind::Hedge | Kind::Gap => Foot::Blocked,
         Kind::Road => {
             // An alley is a gap between buildings, and people walk down it.
             // Making it blocked looks tidy and cuts the network in half:
