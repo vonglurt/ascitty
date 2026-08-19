@@ -1341,10 +1341,10 @@ mod tests {
     /// driving: that the cab spends real time above twice its cornering
     /// pace, that its average is not the one speed it used to hold, and that
     /// it picks up coins and spends the boost.  Measured over five minutes:
-    /// 10, 4, 6 and 6 per cent of driving ticks above twice the cornering
-    /// pace, against 1, 0, 1 and 1 before; means of 3.2, 2.7, 2.9 and 2.9
-    /// cells a second against 2.6, 2.4, 2.5 and 2.5; and 5,500 to 7,300 of
-    /// the 9,000 ticks on a coin's boost.
+    /// 4, 3, 3 and 4 per cent of driving ticks above twice the cornering
+    /// pace, against 1, 0, 1 and 1 before; means of 2.68, 2.64, 2.66 and
+    /// 2.65 cells a second against 2.6, 2.4, 2.5 and 2.5; and 4,000 to 6,800
+    /// of the 9,000 ticks on a coin's boost.
     ///
     /// Peak speed is deliberately not what is asserted on, and the escape
     /// manoeuvre is why: it holds the throttle wide open against a wall, so

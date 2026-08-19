@@ -140,16 +140,30 @@ enum Ctl {
     Gas,
     /// Brake, or backwards.
     Brake,
-    /// Steer or turn.
+    /// Turn, on foot and in the air.  Behind the wheel it is the armful of
+    /// lock you take when a corner has already started: it goes to full
+    /// immediately rather than winding on - see [`Hands::tick`].
     Left,
-    /// Steer or turn.
+    /// Turn, or all of the lock at once.
     Right,
-    /// Sideways.  Steering as well, when driving: a car cannot strafe, so
-    /// the keys that would do it are the second pair of steering keys.
+    /// Sideways.  The wheel, when driving: a car cannot strafe, so the keys
+    /// that would do it are the ones that wind lock on the way an arcade
+    /// car's steering always has.
     StrafeLeft,
-    /// Sideways.
+    /// Sideways, or the wheel.
     StrafeRight,
-    /// Up, and the handbrake when there is one to pull.
+    /// The footbrake: it slows the car and stops there.
+    ///
+    /// Separate from [`Ctl::Brake`], which is the same pedal with reverse
+    /// behind it.  Coming to a stop and staying stopped is most of what a
+    /// brake is asked for - lining up on a fare, waiting at a light - and a
+    /// pedal that pulls away backwards the moment the car is still is a
+    /// pedal you have to let go of at exactly the right moment.
+    Foot,
+    /// The handbrake, which is a different thing again: it removes the grip
+    /// rather than the speed.
+    Handbrake,
+    /// Up.
     Up,
     /// Down.
     Down,
@@ -164,7 +178,7 @@ enum Ctl {
 }
 
 /// How many there are.
-const CTLS: usize = 12;
+const CTLS: usize = 14;
 
 /// Everything the driver is holding this frame.
 #[derive(Default)]
@@ -173,6 +187,11 @@ struct Hands {
     /// Whether key releases are reported, in which case a held key is held
     /// and the grace period is not used.
     trust_release: bool,
+    /// Whether these hands are on a steering wheel, which is the one thing
+    /// that changes what a control *is* rather than merely which key
+    /// reaches it: `q` and `e` snap to full lock in the car and turn at a
+    /// walking pace out of it.
+    driving: bool,
 }
 
 impl Hands {
@@ -203,6 +222,13 @@ impl Hands {
     /// grace - it is a terminal that reports releases, where none of this is
     /// consulted.  See [`term::Term::holds_keys`].
     const GRACE: Fx = fixed::ratio(1, 2);
+    /// How slowly the car has to be rolling before the footbrake counts it
+    /// as stopped, in units per second - about seven miles an hour.
+    ///
+    /// It is a hair above the speed at which [`ascitty_core::drive`] hands
+    /// the pedal over to reverse, so the footbrake lets go a moment before
+    /// the gearbox would have taken it.
+    const STOPPED: Fx = fixed::ratio(3, 10);
 
     fn at(&self, c: Ctl) -> Fx {
         self.axes[c as usize].level
@@ -225,26 +251,55 @@ impl Hands {
 
     /// One frame of ramp, at whatever rate the program is running.
     fn tick(&mut self, hz: i32) {
+        let (driving, trust_release) = (self.driving, self.trust_release);
         let hz = fixed::from_int(hz.max(1));
         let up = fixed::div(ONE, fixed::mul(Hands::RISE, hz)).max(1);
         let down = fixed::div(ONE, fixed::mul(Hands::FALL, hz)).max(1);
         let grace = fixed::floor(fixed::mul(Hands::GRACE, hz)).clamp(1, 254) as u8;
-        for a in self.axes.iter_mut() {
-            a.tick(up, down, grace, self.trust_release);
+        for (i, a) in self.axes.iter_mut().enumerate() {
+            // The hard-lock keys have no ramp on the way in.  That is the
+            // whole difference between them and the wheel: `a` and `d` wind
+            // lock on over a fifth of a second, which is the steering, and
+            // `q` and `e` have all of it on the frame you press them, which
+            // is the armful you take when the corner is already happening.
+            // They still bleed away rather than snapping back, because on a
+            // terminal that cannot report a release the bleed *is* the
+            // release.
+            let snap = driving && (i == Ctl::Left as usize || i == Ctl::Right as usize);
+            let up = if snap { ONE } else { up };
+            a.tick(up, down, grace, trust_release);
         }
     }
 
     /// What the car is being asked to do.
     ///
     /// Both pairs of steering keys add, and the sum is clamped, so holding
-    /// `q` and `Left` is not two lots of lock.
-    fn controls(&self) -> Controls {
+    /// `q` and `a` is not two lots of lock.
+    ///
+    /// `forward` is the car's own speed along its nose, signed, which the
+    /// footbrake needs and nothing else does.  It is the pedal that stops
+    /// the car and then leaves it stopped, so it has to know which way the
+    /// car is going: the pedal that slows a car rolling forwards is the one
+    /// that would drive it backwards once it is still, and the way to slow a
+    /// car that is already rolling backwards is the throttle.  So the
+    /// footbrake is whichever of the two opposes the motion, and below a
+    /// crawl it is neither and the car simply sits there.
+    fn controls(&self, forward: Fx) -> Controls {
         let left = self.at(Ctl::Left) + self.at(Ctl::StrafeLeft);
         let right = self.at(Ctl::Right) + self.at(Ctl::StrafeRight);
+        let foot = match forward {
+            v if v > Hands::STOPPED => -self.at(Ctl::Foot),
+            v if v < -Hands::STOPPED => self.at(Ctl::Foot),
+            _ => 0,
+        };
         Controls {
-            throttle: fixed::clamp(self.at(Ctl::Gas) - self.at(Ctl::Brake), -ONE, ONE),
+            throttle: fixed::clamp(
+                self.at(Ctl::Gas) - self.at(Ctl::Brake) + foot,
+                -ONE,
+                ONE,
+            ),
             steer: fixed::clamp(right - left, -ONE, ONE),
-            handbrake: self.at(Ctl::Up) > fixed::HALF,
+            handbrake: self.at(Ctl::Handbrake) > fixed::HALF,
         }
     }
 }
@@ -255,6 +310,18 @@ impl Hands {
 /// meaning whatever left and right mean to the thing you are in: the wheel
 /// in the cab, a step sideways on foot and in the air.  It never changes,
 /// which is the point of it.
+///
+/// Behind the wheel there are two pairs of steering keys and they are not
+/// the same control.  `a` and `d` are the wheel: lock winds on while they
+/// are held, which is the corner you set up for.  `q` and `e` are all of
+/// the lock at once, which is the corner that has already happened - the
+/// junction you were going to miss, the alley you are being pushed into.
+/// Having both means the car can be placed and also thrown.
+///
+/// The pedals split the same way.  `s` is the brake with reverse behind it,
+/// for backing out of things; the space bar is the brake on its own, which
+/// stops the car and leaves it stopped.  The handbrake, which takes the
+/// grip away rather than the speed, is `z`.
 ///
 /// The arrows are the *view*, and what a view is differs by mode.  Behind
 /// the cab they swing the camera round the car - the driver looking about
@@ -272,6 +339,8 @@ fn control_for(k: Key, view: View) -> Option<Ctl> {
         Key::Char('d') => Ctl::StrafeRight,
         Key::Char('q') => Ctl::Left,
         Key::Char('e') => Ctl::Right,
+        Key::Char(' ') if driving => Ctl::Foot,
+        Key::Char('z') if driving => Ctl::Handbrake,
         Key::Char(' ') => Ctl::Up,
         Key::Char('z') => Ctl::Down,
         Key::Left if driving => Ctl::PanLeft,
@@ -610,14 +679,22 @@ CONTROLS
 
   DRIVING
   w  or up        throttle           s  or down      brake, then reverse
-  a  or q         steer left         d  or e         steer right
+  a               steer left         d               steer right
+  q               hard left          e               hard right
+  space           brake              z               handbrake
   left  right     swing the camera round the cab, and let go to centre it
-  space           handbrake          t               get out and walk
+  t               get out and walk
 
-  Hold them.  The throttle winds on while it is down and the engine pulls
-  hardest low down, so the top of the range takes about a second and three
-  quarters to reach - and `a` and `w` together is a left-hander taken under
-  power, which is what holding two keys at once is for.
+  Hold them.  The throttle winds on while it is down and the engine has to
+  get the car rolling before it pulls, so pulling away takes a second and
+  the top of the range takes four - and `a` and `w` together is a
+  left-hander taken under power, which is what holding two keys at once is
+  for.
+
+  There are two pairs of steering keys because there are two kinds of
+  corner.  `a` and `d` are the wheel: lock winds on while you hold them,
+  which is the corner you saw coming.  `q` and `e` are all of the lock on
+  the frame you press them, which is the one you did not.
 
   ON FOOT AND IN THE AIR
   w s             forward, back      q e             turn
@@ -1054,6 +1131,11 @@ fn run(mut o: Opts) -> Result<(), String> {
         // down and bleeds away when it is not - see `Axis` - so holding two
         // of them at once is two controls held, and the throttle is
         // something you lean on rather than something you switch.
+        // Which controls the hands are on is a property of the view, and
+        // the view can change under them: `q` is a hard lock in the cab and
+        // a turn on foot, and the difference has to be true on the frame
+        // the key arrives rather than the frame after.
+        hands.driving = view == View::Drive;
         hands.tick(o.fps.max(1) as i32);
         for st in keys.drain() {
             let down = st.edge != Edge::Release;
@@ -1202,7 +1284,7 @@ fn run(mut o: Opts) -> Result<(), String> {
                 let ctl = if autopilot {
                     cabbie.drive(&city, &sim, hz)
                 } else {
-                    hands.controls()
+                    hands.controls(sim.taxi.forward())
                 };
                 sim.step(&city, &ctl, hz, &mut events);
                 for e in &events {
@@ -1349,7 +1431,7 @@ mod tests {
         for _ in 0..HZ {
             h.tick(HZ);
         }
-        let c = h.controls();
+        let c = h.controls(ONE);
         assert_eq!(c.throttle, ONE, "not accelerating");
         assert_eq!(c.steer, -ONE, "not turning left");
     }
@@ -1377,10 +1459,6 @@ mod tests {
 
     /// Both pairs of steering keys reach the wheel, and holding both is not
     /// two lots of lock.
-    ///
-    /// `a` and `d` are the wheel, and `q` and `e` are the same wheel: the
-    /// second pair is there because it is where a walker's turn keys are,
-    /// and getting into the cab should not move your hand.
     #[test]
     fn both_pairs_of_steering_keys_reach_the_wheel() {
         assert_eq!(control_for(Key::Char('q'), View::Drive), Some(Ctl::Left));
@@ -1391,7 +1469,60 @@ mod tests {
         for _ in 0..HZ {
             h.tick(HZ);
         }
-        assert_eq!(h.controls().steer, -ONE);
+        assert_eq!(h.controls(ONE).steer, -ONE);
+    }
+
+    /// `q` and `e` are all of the lock on the frame they are pressed; `a`
+    /// and `d` wind it on.
+    ///
+    /// The distinction is the whole reason there are two pairs, and it only
+    /// exists behind the wheel: on foot the same keys turn at a walking
+    /// pace, ramp and all.
+    #[test]
+    fn the_hard_lock_keys_do_not_wind_on() {
+        let mut hard = Hands { trust_release: true, driving: true, ..Default::default() };
+        let mut wheel = Hands { trust_release: true, driving: true, ..Default::default() };
+        hard.press(Ctl::Left);
+        wheel.press(Ctl::StrafeLeft);
+        hard.tick(HZ);
+        wheel.tick(HZ);
+        assert_eq!(hard.controls(ONE).steer, -ONE, "the hard lock wound on instead of arriving");
+        let wound = wheel.controls(ONE).steer;
+        assert!(wound < 0 && wound > -ONE / 2, "the wheel arrived all at once: {}", fixed::to_f32(wound));
+
+        // Out of the car it is a turn like any other, and it ramps.
+        let mut walking = Hands { trust_release: true, ..Default::default() };
+        walking.press(Ctl::Left);
+        walking.tick(HZ);
+        assert!(walking.at(Ctl::Left) < ONE / 2, "a walker's turn snapped to full");
+    }
+
+    /// The space bar stops the car and leaves it stopped; `s` backs it up.
+    #[test]
+    fn the_footbrake_does_not_reverse() {
+        let mut h = Hands { trust_release: true, driving: true, ..Default::default() };
+        held(&mut h, Ctl::Foot, HZ as u32);
+        assert_eq!(h.controls(ONE).throttle, -ONE, "the footbrake does not brake");
+        assert_eq!(h.controls(0).throttle, 0, "the footbrake reversed out of a standstill");
+        // Rolling backwards, the pedal that slows the car is the other one.
+        assert_eq!(h.controls(-ONE).throttle, ONE, "the footbrake will not stop a car backing up");
+
+        // The pedal with reverse behind it is a different key, and it does.
+        let mut h = Hands { trust_release: true, driving: true, ..Default::default() };
+        held(&mut h, Ctl::Brake, HZ as u32);
+        assert_eq!(h.controls(0).throttle, -ONE, "`s` will not reverse");
+    }
+
+    /// The space bar is the footbrake in the cab and the way up out of it.
+    #[test]
+    fn the_pedals_and_the_handbrake_have_a_key_each() {
+        assert_eq!(control_for(Key::Char(' '), View::Drive), Some(Ctl::Foot));
+        assert_eq!(control_for(Key::Char('z'), View::Drive), Some(Ctl::Handbrake));
+        assert_eq!(control_for(Key::Char(' '), View::Copter), Some(Ctl::Up));
+        assert_eq!(control_for(Key::Char('z'), View::Copter), Some(Ctl::Down));
+        let mut h = Hands { trust_release: true, driving: true, ..Default::default() };
+        held(&mut h, Ctl::Handbrake, HZ as u32);
+        assert!(h.controls(ONE).handbrake, "the handbrake is not pulled");
     }
 
     /// `wasd` is the vehicle in every mode; the arrows are the view.
@@ -1546,8 +1677,12 @@ mod tests {
         let rows = 40;
         // Positive pitch is up, so flat out is the *high* pitch and hard on
         // the brakes is the low one.
+        //
+        // Two seconds of it, because the engine's launch curve means the car
+        // is still only doing a town speed after one and there is nothing to
+        // stand on the brakes from.
         let mut sky = i32::MIN;
-        for _ in 0..HZ {
+        for _ in 0..HZ * 2 {
             sim.step(&city, &Controls { throttle: ONE, ..Default::default() }, HZ, &mut ev);
             chase(&mut cam, &sim, &city, rows, &mut head, HZ, 0);
             sky = sky.max(cam.pitch);

@@ -74,10 +74,17 @@ pub const fn ratio(num: i32, den: i32) -> Fx {
 }
 
 /// Absolute value.
+///
+/// Saturating, because there is one number this type cannot negate - the
+/// most negative one - and [`div`] produces it: a division that overflows
+/// truncates to it, and a division that overflows is one whose answer was
+/// enormous, so [`FX_MAX`] is not a fudge but the value that was meant.  A
+/// ray a hair off a grid axis is enough to reach it, and it used to take the
+/// whole program down.
 #[inline(always)]
 pub const fn abs(a: Fx) -> Fx {
     if a < 0 {
-        -a
+        a.saturating_neg()
     } else {
         a
     }
@@ -117,6 +124,18 @@ pub fn from_f64(v: f64) -> Fx {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The one number that cannot be negated is the one a division by
+    /// almost-nothing lands on, so it has to have an answer.
+    #[test]
+    fn the_absolute_value_of_the_most_negative_number_is_a_number() {
+        assert_eq!(abs(Fx::MIN), FX_MAX);
+        // Which is where a ray very slightly off an axis puts it: a
+        // reciprocal whose answer does not fit is truncated to exactly that
+        // number rather than to something merely large.
+        assert_eq!(div(ONE, -2), Fx::MIN);
+        assert_eq!(abs(div(ONE, -2)), FX_MAX);
+    }
 
     #[test]
     fn round_trips_whole_numbers() {

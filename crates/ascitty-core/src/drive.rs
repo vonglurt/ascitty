@@ -29,7 +29,10 @@
 //!    present because without it a car with grip pivots on the spot at
 //!    150 km/h, which is what a tank does.
 //! 5. **Buildings are rigid and everything else is not.**  A wall stops the
-//!    car and costs it speed and paint.  A lamp post does not.
+//!    car and costs it speed and paint - and then turns it to run along
+//!    itself, because a city this tight is mostly alleys and a car that
+//!    rebounds off one wall is a car aimed at the other.  A lamp post does
+//!    none of that.
 //!
 //! Reality is not a goal.  Pace is.
 
@@ -43,28 +46,57 @@ pub const HZ: i32 = 60;
 
 /// Engine force at a standstill, in units per second per second.
 ///
-/// It is not the force at every speed - see [`ENGINE_CEILING`].  A constant
-/// force is what this was, and it is why the car had no acceleration to
-/// speak of: at twenty-six units per second per second against a top speed
-/// of seven, the car was at the clamp in a quarter of a second, from any
-/// speed, in any gear it does not have.  There was nothing to hold the
-/// throttle *down* for, which is most of what driving one of these is.
+/// Peak force, and the car does not have it at a standstill: it is scaled
+/// down at the bottom of the range by [`LAUNCH_BITE`] and tapered away at
+/// the top by [`ENGINE_CEILING`], so the most the engine pushes is somewhere
+/// in the middle.  A constant force is what this was, and it is why the car
+/// had no acceleration to speak of: at twenty-six units per second per
+/// second against a top speed of seven, the car was at the clamp in a
+/// quarter of a second, from any speed, in any gear it does not have.  There
+/// was nothing to hold the throttle *down* for, which is most of what
+/// driving one of these is.
 const ACCEL: Fx = fixed::ratio(10, 1);
 /// The speed at which the engine has nothing left to give, in units per
 /// second.
 ///
-/// Force falls off linearly from [`ACCEL`] at a standstill to nothing here,
-/// which is the shape of a torque curve through a gearbox and, more to the
-/// point, the shape that makes speed something the car *builds*.  The
-/// approach is exponential, so what this really sets is a time constant:
-/// half of top speed in about half a second, top speed itself in about one
-/// and three quarters.
+/// Force falls off linearly from [`ACCEL`] at the top of the engine's bite
+/// to nothing here, which is the upper half of a torque curve through a
+/// gearbox and, more to the point, the half that makes the last of the speed
+/// something the car has to *hold* the throttle for.  The approach is
+/// exponential, so what this really sets is a time constant.
 ///
 /// A quarter above [`VMAX`] rather than equal to it, because the engine has
 /// to out-pull the drag at the top of the range or the car never reaches
 /// the speed it is supposed to have.  With the ceiling at the top speed,
 /// force and drag balance a little under it and the clamp never binds.
 const ENGINE_CEILING: Fx = fixed::ratio(35, 4);
+/// The speed by which the engine is pulling with everything it has, in
+/// units per second.
+///
+/// See [`LAUNCH_BITE`].  About 90 mph, which is a whole town speed range
+/// spent building rather than a moment spent arriving.
+const LAUNCH: Fx = fixed::ratio(3, 1);
+/// What fraction of its force the engine has at a standstill.
+///
+/// This is the missing half of the curve, and it is the half you feel most,
+/// because it is the only half that happens while you are looking at the
+/// road rather than at a blur.  [`ACCEL`] against [`ENGINE_CEILING`] is a
+/// force that is *largest* at a standstill and only ever falls: the car left
+/// the line harder than it did anything else afterwards, reached 60 mph in a
+/// third of a second and the base top speed inside one, so pulling away was
+/// a cut rather than a launch and the throttle had no bottom half.
+///
+/// A real drivetrain is the other way up at the bottom: a stationary engine
+/// is off its torque, the clutch is slipping, and the force arrives as the
+/// car starts moving.  So the force is scaled from this fraction at rest up
+/// to all of it by [`LAUNCH`], and the product of a rising bite and a
+/// falling taper is a hump - which is what a torque curve through a gearbox
+/// is, and what makes the middle of the range the part that shoves.
+///
+/// A fifth.  Measured: 60 mph in about a second and a half rather than a
+/// third of one, and the top speeds are untouched, because above [`LAUNCH`]
+/// this term is one and the engine is exactly the engine it was.
+const LAUNCH_BITE: Fx = fixed::ratio(1, 3);
 /// Braking is stronger than the engine, as it is on every car.
 const BRAKE: Fx = fixed::ratio(44, 1);
 /// Reverse is weak, as it is on every car.
@@ -133,14 +165,22 @@ const TURN_RATE: i32 = 24_000;
 /// How far down the throttle has to be to count as pinned.
 const PIN_DOWN: Fx = fixed::ratio(3, 4);
 /// How long one step of the wind-up takes, in ticks at [`HZ`].
-const PIN_STEP: u32 = HZ as u32 / 2;
+///
+/// A second.  It was half of one, which was quicker than the car itself: the
+/// cap had finished tripling before the engine had got the car to a third of
+/// the first cap, so all three steps landed on a car that was nowhere near
+/// any of them and the whole wind-up read as one long pull.  A second apiece
+/// gives the car time to arrive at each ceiling and sit on it, which is what
+/// makes the next step a step.
+const PIN_STEP: u32 = HZ as u32;
 /// How many steps there are.
 ///
-/// Three, half a second apart.  Each one raises the ceiling and arrives as a
+/// Three, a second apart.  Each one raises the ceiling and arrives as a
 /// shove - see [`SURGE`] - so the build is something you feel three times
-/// rather than a number going up: measured from a standstill, 93 mph at half
-/// a second, 147 and 185 either side of one, 262 and 306 either side of one
-/// and a half, settling at 311.
+/// rather than a number going up: measured from a standstill, 83 mph at one
+/// second, 171 by two, 242 by three, settling at 311 a second after that.
+/// Each of those is a plateau the car reaches and holds before the next step
+/// lands, which is what makes the build four moments rather than one ramp.
 ///
 /// It is worth about twice the unwound top speed rather than the three times
 /// the multiplier says, and that is the air drag rather than a bug.  Drag
@@ -198,8 +238,35 @@ const WIND_MAX: Fx = fixed::ratio(1, 4);
 /// the square of the speed.  The alternative - the flat plateau this had -
 /// lets the car spin on its own axis at any speed you like.
 const TURN_REF: Fx = fixed::ratio(3, 2);
-/// How much speed a wall takes.
-const WALL_BOUNCE: Fx = fixed::ratio(-35, 100);
+/// What is left of the speed *into* a wall after hitting it.
+///
+/// Nothing.  It was -0.35, which is a bounce: the car came off the wall
+/// backwards, and in an alley - two walls a car and a half apart - the
+/// bounce off one is the run-up to the other, so a single clip became a
+/// pinball rally that ended with the cab facing the way it came.  A
+/// building is not a bumper.  It takes the speed you drove into it and
+/// leaves you the speed you had along it, which is the difference between
+/// hitting a wall and scraping one.
+///
+/// The speed along the wall is untouched here, and that is the point: it is
+/// what [`WALL_ALIGN`] then has something to steer.
+const WALL_BOUNCE: Fx = fixed::ratio(-5, 100);
+/// How fast a wall turns the car to run along it, in angle units per second.
+///
+/// A wall you are still touching is a wall you are still scraping, so this
+/// is applied every tick of contact and stops of its own accord the moment
+/// the car is parallel - which makes it a *lean*, not a snap: hit a wall
+/// square and it does nothing, because square has no wall to point along;
+/// clip one at twenty degrees and the car is straight again in a third of a
+/// second, still moving, still yours.
+///
+/// About seventy degrees a second, which is a little over half of what the
+/// car's own wheel can do.  Faster and the wall drives for you; slower and
+/// an alley eats the whole fare.  What it replaces is a flat 120 units of
+/// spin per hit in whichever direction the impact happened to be, which
+/// knocked the car crooked - fine on an open street, fatal between two
+/// buildings, where crooked is how you hit the next one.
+const WALL_ALIGN: i32 = 13_000;
 /// How much of the car's body a wall claims per impact, per unit of speed.
 const WALL_DAMAGE: i32 = 9;
 /// How much of a car's own length is its bumper, for deciding that two of
@@ -404,6 +471,17 @@ impl Car {
         hi + (lo * 3 / 8)
     }
 
+    /// Speed along the car's own nose, signed: positive going forwards,
+    /// negative in reverse.
+    ///
+    /// [`Car::speed`] is the magnitude and cannot tell the two apart, which
+    /// is fine for a speedometer and no use at all to a control that has to
+    /// know whether it is slowing the car down or backing it up.
+    pub fn forward(&self) -> Fx {
+        let (fx, fy) = (trig::cos(self.yaw), trig::sin(self.yaw));
+        fixed::mul(self.vx, fx) + fixed::mul(self.vy, fy)
+    }
+
     /// How sideways the car is, 0 (tracking straight) to 1 (fully broadside).
     /// This is what a scoring layer would read to award a drift.
     pub fn slip(&self) -> Fx {
@@ -483,12 +561,17 @@ impl Car {
 
         let t = c.throttle;
         let force = if t > 0 {
-            // The engine, on its curve: everything it has from a standstill,
-            // tapering to nothing at `ENGINE_CEILING`.  Never negative -
-            // past the ceiling the engine simply stops pushing, it does not
-            // start braking.
+            // The engine, on its curve: pulling harder the further up the
+            // rev range it gets, and tapering to nothing at
+            // `ENGINE_CEILING`.  Never negative - past the ceiling the
+            // engine simply stops pushing, it does not start braking.
             let left = (ONE - fixed::div(vf.max(0), ceiling)).max(0);
-            fixed::mul(fixed::mul(t, accel), left)
+            let bite = LAUNCH_BITE
+                + fixed::mul(
+                    ONE - LAUNCH_BITE,
+                    fixed::div(vf.max(0), LAUNCH).min(ONE),
+                );
+            fixed::mul(fixed::mul(fixed::mul(t, accel), left), bite)
         } else if vf > fixed::ratio(1, 4) {
             fixed::mul(t, BRAKE)
         } else {
@@ -628,28 +711,44 @@ impl Car {
         if probe(self.x + dx, self.y) {
             self.x += dx;
         } else {
-            self.hit(true);
+            self.hit(true, inv);
         }
         if probe(self.x, self.y + dy) {
             self.y += dy;
         } else {
-            self.hit(false);
+            self.hit(false, inv);
         }
     }
 
     /// Take a wall impact on one axis.
-    fn hit(&mut self, on_x: bool) {
+    ///
+    /// The city is a grid, so the wall that stopped this axis runs along the
+    /// other one and there is no normal to work out: blocked going east, the
+    /// wall runs north-south.  That is what makes the alignment below
+    /// cheap enough to do every tick of contact.
+    fn hit(&mut self, on_x: bool, inv: Fx) {
         let v = if on_x { self.vx } else { self.vy };
         let sev = fixed::floor(fixed::abs(v)) * WALL_DAMAGE;
         self.damage = self.damage.saturating_add(sev.clamp(0, 40) as u8);
-        // A wall also knocks the car crooked, which is most of why hitting
-        // one is exciting rather than merely a stop.
-        self.spin += if v > 0 { 120 } else { -120 };
         if on_x {
             self.vx = fixed::mul(self.vx, WALL_BOUNCE);
         } else {
             self.vy = fixed::mul(self.vy, WALL_BOUNCE);
         }
+        // And point the car along the wall rather than into it.  There are
+        // two ways to run along any wall and the nearer of the two is the
+        // one taken, which is what makes this a car being turned *away* from
+        // what it hit rather than a car being turned round: whichever end
+        // was leading stays leading.
+        let along = if on_x { trig::QUARTER as Ang } else { 0 };
+        let mut off = along.wrapping_sub(self.yaw) as i16 as i32;
+        // Half a turn from the nearer heading is the other one, and it is
+        // never further than a quarter turn away.
+        if off.abs() > trig::QUARTER as i32 {
+            off -= off.signum() * trig::HALF as i32;
+        }
+        let most = fixed::floor(fixed::mul(fixed::from_int(WALL_ALIGN), inv));
+        self.yaw = self.yaw.wrapping_add(off.clamp(-most, most) as Ang);
     }
 
     /// Take an impulse - from another car, or from something you flattened.
@@ -897,9 +996,9 @@ mod tests {
     ///
     /// Measured once the wind-up has finished, because there are two builds
     /// on top of each other and this is about the other one: for the first
-    /// second and a half the *cap* is still rising - see
+    /// three seconds the *cap* is still rising - see
     /// `holding_the_throttle_winds_the_speed_up` - so the car re-accelerates
-    /// every half second and nothing tapers at all.  Past that the cap is
+    /// every second and nothing tapers at all.  Past that the cap is
     /// fixed and what is left is the engine's own curve, which is the thing
     /// that makes the last few miles an hour cost more than the first.
     #[test]
@@ -907,7 +1006,7 @@ mod tests {
         let city = open_ground();
         let mut car = Car::new(CarKind::Taxi, fixed::HALF, fixed::HALF, 0, 7);
         // Get the wind-up out of the way.
-        flat_out(&mut car, &city, HZ as u32 * 3 / 2);
+        flat_out(&mut car, &city, PIN_STEP * PIN_STEPS);
         let mut gains = Vec::new();
         let mut last = car.speed();
         for _ in 0..6 {
@@ -969,10 +1068,9 @@ mod tests {
         let city = open_ground();
         let mut car = Car::new(CarKind::Taxi, fixed::HALF, fixed::HALF, 0, 7);
         let mut at = Vec::new();
-        for half in 0..4 {
-            flat_out(&mut car, &city, HZ as u32 / 2);
+        for _ in 0..4 {
+            flat_out(&mut car, &city, PIN_STEP);
             at.push(car.speed());
-            let _ = half;
         }
         // Every half second is faster than the one before it, and the last
         // is past the base top speed by a good margin.
@@ -981,7 +1079,7 @@ mod tests {
         }
         assert!(
             at[3] > fixed::mul(VMAX, fixed::ratio(3, 2)),
-            "a second and a half of throttle only reached {}",
+            "a full wind-up only reached {}",
             fixed::to_f32(at[3])
         );
 
@@ -1275,6 +1373,58 @@ mod tests {
                 fixed::to_f32(car.y)
             );
         }
+    }
+
+    /// A wall points the car along itself instead of throwing it back.
+    ///
+    /// The alley case, which is the one that matters: two buildings a couple
+    /// of cells apart and a car that arrives at an angle.  What used to
+    /// happen is the rebound - a third of the impact speed straight back
+    /// across the alley, into the far wall, and out of that one into the
+    /// first, until the cab was pointing the way it came with the fare still
+    /// running.
+    #[test]
+    fn a_wall_turns_the_car_to_run_along_it() {
+        // An alley: a solid column of building either side of a clear one,
+        // running north.
+        let mut city = open_ground();
+        let lane = 20i32;
+        for y in 0..40 {
+            city.elev.build(lane - 1, y, 12);
+            city.elev.build(lane + 1, y, 12);
+        }
+        // In the middle of it, doing 20 degrees off the alley - pointing at
+        // the right-hand wall and travelling that way too.
+        let head = trig::QUARTER.wrapping_sub(trig::from_degrees(20.0));
+        let mut car = Car::new(
+            CarKind::Taxi,
+            fixed::from_int(lane) + fixed::HALF,
+            fixed::from_int(4) + fixed::HALF,
+            head,
+            7,
+        );
+        let speed = fixed::from_int(3);
+        car.vx = fixed::mul(trig::cos(head), speed);
+        car.vy = fixed::mul(trig::sin(head), speed);
+        let hands = Controls { throttle: ONE, ..Default::default() };
+        let mut worst_back = 0;
+        for _ in 0..HZ * 2 {
+            car.step(&hands, &city, HZ);
+            // It never gets sent back down the alley.
+            worst_back = worst_back.min(car.vy);
+        }
+        assert!(worst_back >= 0, "the wall sent it back down the alley");
+        // And it comes out of the alley pointing along it, within a few
+        // degrees, rather than crabbed across it.
+        let off = (car.yaw.wrapping_sub(trig::QUARTER) as i16 as i32).abs();
+        assert!(
+            off < trig::from_degrees(10.0) as i32,
+            "it is still {} degrees off the alley",
+            off as f64 * 360.0 / 65536.0
+        );
+        // ...having actually gone somewhere, rather than stopping dead
+        // against the wall it clipped.
+        assert!(car.y > fixed::from_int(12), "it never got up the alley: {}", fixed::to_f32(car.y));
     }
 
     #[test]
