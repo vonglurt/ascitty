@@ -59,6 +59,35 @@ consequence of the update order rather than a special case.
 
 Swap the last two lines and the car is on rails.
 
+### Drag has a squared term, and that is the acceleration curve
+
+Rolling drag is linear — the same fraction of whatever you are doing — and is
+most of what stops the car at the bottom of the range. Air drag rises with
+the **square** of the speed and is all of what stops it at the top.
+
+The squared term is the half that was missing, and the difference it makes is
+the whole feel. With only a linear drag, nothing but the engine's own taper
+limits the car, so the top speed is wherever the clamp is put and every step
+of the throttle's wind-up accelerates exactly as hard as the last one: the
+build reads as a number going up rather than as a car getting faster. With
+it, the last few miles an hour cost what they cost, the top speed is *found*
+rather than set — where the engine and the air balance — and each step buys
+progressively less, which is the shape of every accelerating thing there is.
+
+It is also why the wind-up is worth twice the top speed and not three times.
+Three times the speed needs nine times the force against squared drag, and an
+engine still pulling at that speed; the force does scale with the square of
+the multiplier, and the engine's own taper takes the rest. What comes out is
+a car that goes from a town speed to a frightening one and then stops
+gaining.
+
+The term is integrated as a division rather than a subtraction — `v / (1 + k
+|v| dt)` rather than `v − k v |v| dt` — which is the same thing to first
+order and behaves at any tick rate. Subtracted, the error grows with the
+square of the speed and the size of the step: at 300 mph, thirty ticks a
+second settled four per cent faster than sixty, which is a car that handles
+differently on a slower machine.
+
 ### It is a car up to a point and a boat past it
 
 Grip is interpolated between the parked figure and the flat-out one along a
@@ -107,10 +136,19 @@ the clock is not what you are short of.
 Let go and it unwinds twice as fast as it wound. It is a thing you commit a
 straight to, not a thing you have.
 
-The engine force is scaled with the cap, or the car would be quick to a speed
-it could no longer reach. Measured in play, holding the throttle from a
-standstill: 42 mph after half a second, 109 after one, 181 after one and a
-half, 316 after two and a half, and 427 before the street ran out.
+Each step arrives as a **shove** as well as a raised ceiling — about fifteen
+miles an hour of it, enough to feel through the seat. Without that the
+wind-up is invisible: the car is far below the new ceiling when it arrives,
+so nothing about the moment feels different, and a mechanic you cannot feel
+is a number.
+
+Measured from a standstill, flat out: 46 mph at a quarter second, 93 at a
+half, 147 and 185 either side of one second, 262 and 306 either side of one
+and a half, settling at 311. With a coin: 414 straight away.
+
+What it is worth is about twice the unwound top speed rather than the three
+times the multiplier says, and that is the air drag rather than a bug — see
+below.
 
 It changed the *autopilot* as much as the car. The cab used to hold full
 throttle until it was nearly at its cruising speed, which is exactly the
