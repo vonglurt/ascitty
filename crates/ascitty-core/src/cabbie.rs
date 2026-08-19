@@ -128,7 +128,7 @@ const LOCK_RANGE: i32 = 16;
 /// line, and a lane is now two cells wide rather than one: the same distance
 /// off the middle of it is half as much of a mistake, and a gain that did
 /// not know that asked for twice the correction it needed and sawed.
-const CROSS: Fx = fixed::ratio(2, 1);
+const CROSS: Fx = fixed::ratio(3, 1);
 
 /// The speed above which the lane controller starts easing off, in cells a
 /// second.
@@ -980,7 +980,7 @@ impl Cabbie {
     /// Returns the look-ahead distance itself when the line is clear.
     fn room_ahead(city: &City, taxi: &Car, look: Fx) -> Fx {
         let (fx, fy) = (trig::cos(taxi.yaw), trig::sin(taxi.yaw));
-        let nose = taxi.kind.half_len();
+        let nose = taxi.half_len();
         let mut d = 0;
         while d < look {
             let ahead = nose + d;
@@ -1038,7 +1038,7 @@ impl Cabbie {
                 continue;
             }
             let lat = fixed::mul(dx, rx) + fixed::mul(dy, ry);
-            let room = DODGE_WIDE + c.kind.half_len();
+            let room = DODGE_WIDE + c.half_len();
             if fixed::abs(lat) > room {
                 continue;
             }
@@ -1053,7 +1053,7 @@ impl Cabbie {
                 continue;
             }
             // Bumper to bumper, so a bus is felt where its back is.
-            let gap = lon - taxi.kind.half_len() - c.kind.half_len();
+            let gap = lon - taxi.half_len() - c.half_len();
             if near.is_none_or(|(g, _, _)| gap < g) {
                 near = Some((gap, lat, c.speed()));
             }

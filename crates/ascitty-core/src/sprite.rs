@@ -48,14 +48,12 @@ pub enum Stamp {
     Bollard,
     /// A parking meter.
     Meter,
-    /// A car, seen from behind or in front.
+    /// A three-box saloon.
     Car,
-    /// A boxy four-wheel-drive, seen from the side.
-    JeepSide,
-    /// A long, low car of about 1972, seen from the side.
-    MuscleSide,
-    /// A bus, seen from the side.
-    BusSide,
+    /// A boxy four-wheel-drive: short, tall, upright glass.
+    Jeep,
+    /// A land yacht of about 1972: very long, very low, most of it bonnet.
+    Boat,
     /// The cab.  Longer than a saloon, with a checker band and a sign on
     /// the roof, because a taxi you are chasing has to be identifiable at a
     /// glance among a street full of traffic.
@@ -98,12 +96,15 @@ pub struct Billboard {
     /// How far over it has been knocked, 0 upright to 8 flat.  Knocked-over
     /// things lean, which is cheaper and reads better than an animation.
     pub lean: u8,
+    /// Which way round a vehicle is.  Ignored by everything else - a
+    /// hydrant has no far side.
+    pub view: Aspect,
 }
 
 impl Billboard {
     /// An upright thing on the pavement.
     pub fn upright(stamp: Stamp, x: Fx, y: Fx, w: Fx, h: Fx, hue: u8) -> Billboard {
-        Billboard { x, y, base: 0, w, h, stamp, hue, phase: 0, lean: 0 }
+        Billboard { x, y, base: 0, w, h, stamp, hue, phase: 0, lean: 0, view: Aspect::END_ON }
     }
 }
 
@@ -282,9 +283,8 @@ impl Stamp {
             Stamp::Pickup | Stamp::Dropoff => &PICKUP_ART,
             Stamp::Debris => &DEBRIS_ART,
             Stamp::Car
-            | Stamp::JeepSide
-            | Stamp::MuscleSide
-            | Stamp::BusSide
+            | Stamp::Jeep
+            | Stamp::Boat
             | Stamp::Taxi
             | Stamp::Wreck
             | Stamp::Bus => &NO_ART,
@@ -407,6 +407,61 @@ fn glyph_for(c: char, hue: u8, phase: u8) -> Option<(GlyphId, u8, u8)> {
 /// Exact, and it costs two multiplies.  There is no approximation here to
 /// justify - the projection of a rectangle onto a line really is this.
 pub fn silhouette(len: Fx, wid: Fx, yaw: Ang, vx: Fx, vy: Fx) -> (Fx, bool) {
+    let a = aspect(len, wid, yaw, vx, vy);
+    (a.width, a.end < fixed::HALF)
+}
+
+/// Which way round a car is, as the card sees it.
+///
+/// See [`aspect`].
+#[derive(Clone, Copy, Debug)]
+pub struct Aspect {
+    /// How wide the card is, in world units.
+    pub width: Fx,
+    /// What fraction of the card is the *end* of the car rather than its
+    /// flank, from 0 (broadside) to 1 (dead astern or dead ahead).
+    pub end: Fx,
+    /// Whether that end band is on the left of the card.
+    pub end_left: bool,
+    /// Whether the end you can see is the front of the car.
+    pub front: bool,
+}
+
+impl Aspect {
+    /// Looked at down its own length: what everything that is not a vehicle
+    /// gets, and what a vehicle gets before anybody has worked out where the
+    /// camera is.
+    pub const END_ON: Aspect = Aspect { width: 0, end: ONE, end_left: false, front: false };
+}
+
+/// Where the camera is standing relative to a car, in the terms the painter
+/// needs.
+///
+/// # Why a fraction and not eight sprites
+///
+/// A car used to be drawn from one of two pictures - end-on or broadside -
+/// chosen by which of the two was larger, so a car at any angle at all was
+/// drawn as whichever extreme it was nearer.  At forty-five degrees, where
+/// half of what you can see is the flank and half is the boot, it flipped
+/// between them: the same car crossing a junction turned from a rear view
+/// into a side view in one frame, at exactly the moment you were watching
+/// it.  The silhouette was already exact - it is the projection of a
+/// rectangle and always has been - so the *width* was right and the picture
+/// inside it was not.
+///
+/// Eight fixed aspects at forty-five degrees apart is the usual fix and is
+/// still a fix for a problem that does not need one.  The card is painted by
+/// a function, so it can simply be told how much of each view to draw: the
+/// end band is `wid * |cos t|` of the width and the flank is `len * |sin t|`
+/// of it, which are the two terms the width is already the sum of.  At
+/// forty-five degrees that is a boot and a flank side by side in the
+/// proportions a boot and a flank appear in, and it moves continuously
+/// through every angle rather than in eight steps.
+///
+/// Which side the end band goes on is the one thing left, and it is a sign:
+/// the end is on the left of the card when the car's nose points to the
+/// right of the view, which is a cross product.
+pub fn aspect(len: Fx, wid: Fx, yaw: Ang, vx: Fx, vy: Fx) -> Aspect {
     // The car's own axis, and the axis across it.
     let (ax, ay) = (trig::cos(yaw), trig::sin(yaw));
     // Normalise the view direction, cheaply: the octagonal norm is within
@@ -416,14 +471,27 @@ pub fn silhouette(len: Fx, wid: Fx, yaw: Ang, vx: Fx, vy: Fx) -> (Fx, bool) {
     let (hi, lo) = if a > b { (a, b) } else { (b, a) };
     let n = hi + fixed::mul(lo, fixed::ratio(3, 8));
     if n <= 0 {
-        return (wid, false);
+        return Aspect { width: wid, end: ONE, end_left: false, front: false };
     }
     let (ux, uy) = (fixed::div(vx, n), fixed::div(vy, n));
-    // |cos t| is the view along the car's axis; |sin t| is across it.
-    let along = fixed::abs(fixed::mul(ux, ax) + fixed::mul(uy, ay));
-    let across = fixed::abs(fixed::mul(ux, -ay) + fixed::mul(uy, ax));
-    let width = fixed::mul(len, across) + fixed::mul(wid, along);
-    (width, across > along)
+    // The signed view along the car's axis and across it.  `vx, vy` runs
+    // from the camera to the car, so a positive `along` means the car is
+    // pointing away and you are looking at its back.
+    let along = fixed::mul(ux, ax) + fixed::mul(uy, ay);
+    let across = fixed::mul(ux, -ay) + fixed::mul(uy, ax);
+    let (fa, fc) = (fixed::abs(along), fixed::abs(across));
+    let end_w = fixed::mul(wid, fa);
+    let side_w = fixed::mul(len, fc);
+    let width = end_w + side_w;
+    Aspect {
+        width,
+        end: if width > 0 { fixed::div(end_w, width) } else { ONE },
+        // The end is on the left of the card when the flank you can see is
+        // the car's left, which is the sign of the same cross product that
+        // gave `across`.
+        end_left: across > 0,
+        front: along < 0,
+    }
 }
 
 
@@ -443,8 +511,12 @@ pub fn silhouette(len: Fx, wid: Fx, yaw: Ang, vx: Fx, vy: Fx) -> (Fx, bool) {
 /// What kind of thing is being painted, and from which side.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Body {
-    /// Somebody else's car.
+    /// Somebody else's car: a three-box saloon.
     Saloon,
+    /// Short, tall and square: a four-wheel-drive.
+    Jeep,
+    /// Long and low: the land yacht.
+    Boat,
     /// The one you are driving: chequer band, roof sign.
     Taxi,
     /// Longer, taller, flatter.
@@ -454,15 +526,20 @@ pub enum Body {
 }
 
 impl Body {
-    /// Which body a stamp is, and whether it is seen along its length.
-    fn of(stamp: Stamp) -> Option<(Body, bool)> {
+    /// Which body a stamp is.
+    ///
+    /// No longer "and from which side": which side you are looking from is
+    /// [`Aspect`], it varies continuously, and a stamp that named one of two
+    /// fixed views is exactly the thing that made a car flip from a rear
+    /// view to a side view in a single frame.
+    fn of(stamp: Stamp) -> Option<Body> {
         Some(match stamp {
-            Stamp::Taxi => (Body::Taxi, false),
-            Stamp::Car => (Body::Saloon, false),
-            Stamp::JeepSide | Stamp::MuscleSide => (Body::Saloon, true),
-            Stamp::Bus => (Body::Bus, false),
-            Stamp::BusSide => (Body::Bus, true),
-            Stamp::Wreck => (Body::Wreck, false),
+            Stamp::Taxi => Body::Taxi,
+            Stamp::Car => Body::Saloon,
+            Stamp::Jeep => Body::Jeep,
+            Stamp::Boat => Body::Boat,
+            Stamp::Bus => Body::Bus,
+            Stamp::Wreck => Body::Wreck,
             _ => return None,
         })
     }
@@ -478,6 +555,10 @@ fn body_half(body: Body, side: bool, v: Fx) -> Fx {
     let (roof_top, shoulder, sill) = match (body, side) {
         // A bus is a box: it is nearly the same width all the way up.
         (Body::Bus, _) => (fixed::ratio(42, 100), fixed::ratio(48, 100), fixed::ratio(46, 100)),
+        // A jeep is a smaller box.  Upright glass, no tumblehome, and the
+        // roof as wide as the waist - which is the whole of what tells a
+        // four-wheel-drive from a saloon at thirty characters.
+        (Body::Jeep, _) => (fixed::ratio(40, 100), fixed::ratio(47, 100), fixed::ratio(45, 100)),
         // Along its length, a car is long and low, and the greenhouse is a
         // smaller box on top of it.
         (_, true) => (fixed::ratio(30, 100), fixed::ratio(50, 100), fixed::ratio(48, 100)),
@@ -515,18 +596,65 @@ const ARCH: Fx = fixed::ratio(20, 100);
 fn waist_of(body: Body, side: bool) -> Fx {
     match (body, side) {
         (Body::Bus, _) => fixed::ratio(55, 100),
+        // A jeep is glass down to the waist and the waist is high, so it is
+        // mostly window; a land yacht is the opposite - a low roof over a
+        // great deal of flank.
+        (Body::Jeep, _) => fixed::ratio(58, 100),
+        (Body::Boat, true) => fixed::ratio(34, 100),
+        (Body::Boat, false) => fixed::ratio(32, 100),
         (_, true) => fixed::ratio(42, 100),
         (_, false) => fixed::ratio(38, 100),
     }
 }
 
-/// Paint one point of a car.
+/// Paint one point of a car, from wherever you happen to be standing.
 ///
 /// `u` and `v` are where on the card you are, from 0 to 1, left to right and
-/// top to bottom.  `sky` is what the windows are reflecting.  `phase` is the
-/// two bits every car carries: bit 0 that you are looking at its front, bit
-/// 1 that it is braking.
+/// top to bottom.  `view` says how much of the card is the end of the car
+/// and how much is its flank - see [`aspect`] - and this function's only job
+/// beyond painting is to split the card between the two and hand each half
+/// to [`paint_face`] with its own local `u`.
+///
+/// That split is the three-quarter view.  At forty-five degrees the card is
+/// a boot and a flank side by side in the proportions a boot and a flank
+/// appear in, with the boot on whichever side the car's nose is turned away
+/// from, and the seam between them is the corner of the car.  It moves
+/// continuously: a car turning across a junction rolls from one view into
+/// the other rather than cutting between two pictures.
 pub fn paint_car(
+    body: Body,
+    view: Aspect,
+    u: Fx,
+    v: Fx,
+    hue: u8,
+    phase: u8,
+    sky: (u8, u8),
+) -> Option<(GlyphId, u8, u8)> {
+    // A band narrower than this is not worth a seam: at a hair off dead
+    // astern the flank is a fraction of a character wide, and drawing it
+    // costs a pillar down the edge of every car in the city.
+    const SLIVER: Fx = fixed::ratio(12, 100);
+    let end = view.end.clamp(0, ONE);
+    if end >= ONE - SLIVER {
+        return paint_face(body, false, u, v, hue, phase, sky);
+    }
+    if end <= SLIVER {
+        return paint_face(body, true, u, v, hue, phase, sky);
+    }
+    let (in_end, local) = if view.end_left {
+        (u < end, if u < end { fixed::div(u, end) } else { fixed::div(u - end, ONE - end) })
+    } else {
+        let seam = ONE - end;
+        (u >= seam, if u >= seam { fixed::div(u - seam, end) } else { fixed::div(u, seam) })
+    };
+    paint_face(body, !in_end, local.clamp(0, ONE), v, hue, phase, sky)
+}
+
+/// Paint one point of one face of a car - the end of it, or the flank.
+///
+/// `side` is true for the flank.  `phase` is the two bits every car carries:
+/// bit 0 that you are looking at its front, bit 1 that it is braking.
+pub fn paint_face(
     body: Body,
     side: bool,
     u: Fx,
@@ -748,9 +876,9 @@ pub fn draw(f: &mut Frame, depth: &[Fx], cam: &Camera, atmos: &Atmos, p: &Proj, 
                 continue; // a building is in the way
             }
             let paint = match painted {
-                Some((body, side)) => {
+                Some(body) => {
                     let uf = fixed::div(fixed::from_int(sx - left) + fixed::HALF, span);
-                    paint_car(body, side, uf, vf, b.hue, b.phase, sky)
+                    paint_car(body, b.view, uf, vf, b.hue, b.phase, sky)
                 }
                 None => {
                     let u = ((sx - left) * 8 / (2 * half_w).max(1)).clamp(0, 7) as usize;
@@ -959,7 +1087,7 @@ mod tests {
                 let v = fixed::div(fixed::from_int(r) + fixed::HALF, fixed::from_int(rows));
                 for c in 0..rows * 2 {
                     let u = fixed::div(fixed::from_int(c) + fixed::HALF, fixed::from_int(rows * 2));
-                    let Some((_, hue, luma)) = paint_car(Body::Taxi, false, u, v, palette::H_YELLOW, 2, sky)
+                    let Some((_, hue, luma)) = paint_face(Body::Taxi, false, u, v, palette::H_YELLOW, 2, sky)
                     else {
                         continue;
                     };
@@ -1004,7 +1132,7 @@ mod tests {
             let mut body = 0;
             for c in 0..rows * 2 {
                 let u = fixed::div(fixed::from_int(c) + fixed::HALF, fixed::from_int(rows * 2));
-                match paint_car(Body::Saloon, true, u, v, palette::H_RED, 0, sky) {
+                match paint_face(Body::Saloon, true, u, v, palette::H_RED, 0, sky) {
                     Some((_, palette::H_BLACK, _)) => black += 1,
                     Some((_, h, _)) if h == palette::H_RED => body += 1,
                     _ => {}
@@ -1028,7 +1156,7 @@ mod tests {
             let mut found = false;
             for r in 0..16 {
                 let v = fixed::div(fixed::from_int(r) + fixed::HALF, fixed::from_int(16));
-                let got = paint_car(Body::Saloon, false, fixed::HALF, v, palette::H_RED, 0, (hue, 5));
+                let got = paint_face(Body::Saloon, false, fixed::HALF, v, palette::H_RED, 0, (hue, 5));
                 if let Some((_, h, _)) = got {
                     if h == hue {
                         found = true;
@@ -1119,5 +1247,95 @@ mod silhouette_tests {
             }
         }
     }
+    /// Three quarters of the way round a car you see three quarters of it.
+    ///
+    /// The property that matters is not any one number: it is that the card
+    /// changes *continuously* with the angle.  What it replaced flipped
+    /// between two pictures at forty-five degrees, so the test is that
+    /// nothing flips.
+    #[test]
+    fn a_car_is_seen_from_wherever_you_are_standing() {
+        let (len, wid) = (fixed::from_int(2), fixed::from_int(1));
+        // The car points east; walk the camera round it.
+        let mut last: Option<Fx> = None;
+        let mut worst = 0;
+        for deg in 0..360 {
+            let a = trig::from_degrees(deg as f64);
+            // From the car to the camera is the opposite of camera to car.
+            let (vx, vy) = (-trig::cos(a), -trig::sin(a));
+            let asp = aspect(len, wid, 0, vx, vy);
+            assert!(asp.end >= 0 && asp.end <= ONE, "{deg}: end fraction {}", fixed::to_f32(asp.end));
+            if let Some(p) = last {
+                worst = worst.max(fixed::abs(asp.end - p));
+            }
+            last = Some(asp.end);
+        }
+        // A degree of camera movement never moves the seam by more than a
+        // tenth of the card.  It moves fastest near dead ahead, where a
+        // degree of turn is `len/wid` degrees' worth of flank appearing, and
+        // that is the honest rate; a *flip* moves it by the whole card, so
+        // the bar is ten times the real motion and a tenth of the failure.
+        assert!(
+            worst < ONE / 10,
+            "the view jumped by {} of a card in one degree",
+            fixed::to_f32(worst)
+        );
+    }
+
+    /// Dead astern is all boot, broadside is all flank, and the corner is
+    /// where the two meet.
+    #[test]
+    fn the_seam_is_where_the_corner_of_the_car_is() {
+        let (len, wid) = (fixed::from_int(2), fixed::from_int(1));
+        let at = |deg: f64| {
+            let a = trig::from_degrees(deg);
+            aspect(len, wid, 0, -trig::cos(a), -trig::sin(a))
+        };
+        // The car points east, so a camera due east of it is looking at its
+        // nose: all end, and the end is the front.
+        let front = at(0.0);
+        assert!(front.end > ONE - ONE / 20, "ahead is {} end", fixed::to_f32(front.end));
+        assert!(front.front, "standing in front reports the back");
+        // Due west, behind it: all end, and the end is the back.
+        let back = at(180.0);
+        assert!(back.end > ONE - ONE / 20, "astern is {} end", fixed::to_f32(back.end));
+        assert!(!back.front, "standing behind reports the front");
+        // Broadside: no end at all.
+        let side = at(90.0);
+        assert!(side.end < ONE / 20, "broadside is {} end", fixed::to_f32(side.end));
+        // And three-quarter rear: a real share of each, with the end band
+        // on the side the nose is turned away from.
+        let q = at(45.0);
+        assert!(q.end > ONE / 5 && q.end < ONE * 3 / 5, "three-quarters is {} end", fixed::to_f32(q.end));
+        let other = at(-45.0);
+        assert_ne!(q.end_left, other.end_left, "the boot is on the same side from both quarters");
+    }
+
+    /// A jeep, a saloon and a land yacht are different shapes.
+    ///
+    /// Not different colours - the traffic is already every colour there is
+    /// and it does not help at forty columns.  What has to differ is the
+    /// silhouette, so this measures the one number that carries it: how far
+    /// down the card the glass stops.
+    #[test]
+    fn the_three_bodies_have_three_silhouettes() {
+        let sky = (palette::H_BLUE, 5u8);
+        let glass_ends = |body: Body| -> Fx {
+            let mut last = 0;
+            for i in 0..100 {
+                let v = fixed::ratio(i, 100);
+                if let Some((_, hue, _)) = paint_face(body, true, fixed::HALF, v, palette::H_RED, 0, sky) {
+                    if hue == sky.0 {
+                        last = v;
+                    }
+                }
+            }
+            last
+        };
+        let (jeep, saloon, boat) = (glass_ends(Body::Jeep), glass_ends(Body::Saloon), glass_ends(Body::Boat));
+        assert!(jeep > saloon, "a jeep is not glassier than a saloon: {} against {}", fixed::to_f32(jeep), fixed::to_f32(saloon));
+        assert!(saloon > boat, "a land yacht is not lower than a saloon: {} against {}", fixed::to_f32(saloon), fixed::to_f32(boat));
+    }
+
 }
 

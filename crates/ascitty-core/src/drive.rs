@@ -272,13 +272,20 @@ const WALL_DAMAGE: i32 = 9;
 /// How much of a car's own length is its bumper, for deciding that two of
 /// them have touched.
 ///
-/// Three quarters.  The bodies are drawn as boxes and collided as circles,
-/// and a circle round a box that is twice as long as it is wide is a great
-/// deal of empty air at the corners: at the full half-length two cars
-/// passing in opposite lanes of a two-cell street clipped each other, which
-/// is not a near miss, it is a phantom.  Three quarters lets them pass and
-/// still stops a rear-ending from being a drive-through.
-const CONTACT: Fx = fixed::ratio(3, 4);
+/// Five eighths, which is the wheelbase.  The bodies are drawn as boxes and
+/// collided as circles, and a circle round a box that is twice as long as it
+/// is wide is a great deal of empty air at the corners: at the full
+/// half-length two cars passing in opposite lanes clipped each other, which
+/// is not a near miss, it is a phantom.
+///
+/// It was three quarters, which is the body.  A car's *overhangs* are the
+/// part you can put past another car without touching it - it is why two
+/// cars can turn across each other in a junction - so the circle belongs on
+/// the wheels, and the wheelbase of an American car of this period is about
+/// five eighths of its length.  On a four-cell street with two lanes each
+/// way it is the difference between traffic that passes and traffic that
+/// queues.
+const CONTACT: Fx = fixed::ratio(5, 8);
 
 /// How far past merely-not-touching the car that gives ground is pushed.
 ///
@@ -296,6 +303,36 @@ pub struct Controls {
     pub steer: Fx,
     /// Handbrake.
     pub handbrake: bool,
+}
+
+/// Which body a car has.
+///
+/// A property of the vehicle rather than of the moment, drawn once when it
+/// is put down and kept for as long as it exists.  Three of them, because a
+/// street where every car is the same shape is a street of one car repeated,
+/// and the shapes have to differ in *silhouette* - not in colour, which is
+/// already varied and does not help at forty columns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Style {
+    /// The ordinary thing: a three-box saloon.
+    Sedan,
+    /// Boxy, short and tall.  A four-wheel-drive.
+    Jeep,
+    /// The land yacht: very long, very low, and it takes a whole alley to
+    /// turn round in.
+    Boat,
+}
+
+impl Style {
+    /// One of the three, from a number that is already stable for the life
+    /// of the vehicle.
+    pub fn of(n: u32) -> Style {
+        match n % 3 {
+            0 => Style::Sedan,
+            1 => Style::Jeep,
+            _ => Style::Boat,
+        }
+    }
 }
 
 /// What kind of thing is being driven or shoved around.
@@ -347,7 +384,12 @@ impl CarKind {
         }
     }
 
-    /// Half-length of the body, in world units.
+    /// Half-length of the body, in world units, for a car of no particular
+    /// style.
+    ///
+    /// [`Car::half_len`] is what anything holding an actual vehicle should
+    /// ask - a land yacht is half a cell longer than a jeep and the
+    /// collision has to know.
     ///
     /// A cell is about six metres, so these are: a saloon at 9.6 m, the cab
     /// at 12 m, a bus at 24 m.  Long, deliberately - these are American cars
@@ -394,7 +436,7 @@ impl CarKind {
         match self {
             CarKind::Bus => (fixed::ratio(9, 4), fixed::from_int(1), fixed::ratio(27, 20)),
             CarKind::Taxi => (fixed::from_int(2), fixed::ratio(6, 5), fixed::ratio(9, 10)),
-            CarKind::Traffic => (fixed::ratio(8, 5), fixed::from_int(1), fixed::ratio(13, 10)),
+            CarKind::Traffic => (fixed::ratio(8, 5), fixed::from_int(1), fixed::ratio(19, 20)),
         }
     }
 
@@ -424,6 +466,8 @@ pub struct Car {
     pub yaw: Ang,
     /// Angular velocity, in angle units per tick, for the spin after a hit.
     pub spin: i32,
+    /// Which body it has.  Fixed for the life of the vehicle.
+    pub style: Style,
     /// How hard the driver is on the throttle, 0 to [`ONE`], recorded on the
     /// last tick.  Only the collision solver reads it - see
     /// [`Car::impact_mass`].
@@ -470,6 +514,11 @@ impl Car {
             vy: 0,
             yaw,
             spin: 0,
+            // From the hue, which is already a stable per-vehicle number and
+            // costs nothing to look at.  Deliberately not a fresh roll: a
+            // car whose shape changed when it was recycled would be a
+            // different car wearing the same paint.
+            style: Style::of(hue as u32 + 7 * (kind == CarKind::Bus) as u32),
             push: 0,
             damage: 0,
             hue,
@@ -511,6 +560,44 @@ impl Car {
     pub fn turn_rate(&self, hz: i32) -> Fx {
         let per_s = (self.spin as i64 * hz.max(1) as i64).clamp(-32_767, 32_767) as i32;
         fixed::div(fixed::from_int(per_s), fixed::from_int(TURN_RATE))
+    }
+
+    /// The body as a box: length, width and height, in world units.
+    ///
+    /// The style is the whole of what this adds to [`CarKind::hull`], and it
+    /// only applies to traffic: the cab and the bus are the two vehicles
+    /// that have to be recognised on sight, so neither of them is allowed to
+    /// be a different shape from one city to the next.
+    ///
+    /// A jeep is short and tall, a land yacht is long and low, and a saloon
+    /// is the figure in the middle.  The height matters more than it sounds
+    /// like it should: traffic used to stand a third taller than the cab,
+    /// which from the chase camera meant the street ahead was a wall of
+    /// roofs with the road behind them.
+    pub fn hull(&self) -> (Fx, Fx, Fx) {
+        let (len, wid, h) = self.kind.hull();
+        if self.kind != CarKind::Traffic {
+            return (len, wid, h);
+        }
+        match self.style {
+            Style::Sedan => (len, wid, h),
+            Style::Jeep => (
+                fixed::mul(len, fixed::ratio(17, 20)),
+                fixed::mul(wid, fixed::ratio(21, 20)),
+                fixed::mul(h, fixed::ratio(23, 20)),
+            ),
+            Style::Boat => (
+                fixed::mul(len, fixed::ratio(5, 4)),
+                wid,
+                fixed::mul(h, fixed::ratio(17, 20)),
+            ),
+        }
+    }
+
+    /// Half the length of this particular vehicle, which is what a collision
+    /// reaches with.
+    pub fn half_len(&self) -> Fx {
+        self.hull().0 / 2
     }
 
     /// Speed along the car's own nose, signed: positive going forwards,
@@ -729,7 +816,7 @@ impl Car {
     /// makes glancing a building feel like glancing a building rather than
     /// like hitting a full stop.
     fn integrate(&mut self, city: &City, inv: Fx) {
-        let nose = self.kind.half_len();
+        let nose = self.half_len();
         let (fx, fy) = (trig::cos(self.yaw), trig::sin(self.yaw));
 
         let dx = fixed::mul(self.vx, inv);
@@ -863,7 +950,7 @@ const PLOUGH: Fx = fixed::ratio(3, 1);
 /// spinning; a bus barely notices either.
 pub fn collide(a: &mut Car, b: &mut Car, city: &City) -> Option<Fx> {
     let (dx, dy) = (b.x - a.x, b.y - a.y);
-    let reach = fixed::mul(a.kind.half_len() + b.kind.half_len(), CONTACT);
+    let reach = fixed::mul(a.half_len() + b.half_len(), CONTACT);
     let (nx, ny, dist) = normalise(dx, dy);
     if dist > reach {
         return None;
@@ -1430,7 +1517,7 @@ mod tests {
             // The invariant, every tick and whatever the car has rotated to:
             // the back bumper is not inside a building.
             let (fx, fy) = (trig::cos(car.yaw), trig::sin(car.yaw));
-            let half = car.kind.half_len();
+            let half = car.half_len();
             let (bx, by) = (car.x - fixed::mul(fx, half), car.y - fixed::mul(fy, half));
             assert!(
                 city.open(fixed::floor(bx), fixed::floor(by)),

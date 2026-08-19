@@ -519,7 +519,7 @@ fn chase(cam: &mut Camera, sim: &Sim, city: &City, rows: i32, head: &mut Head, h
         + fixed::mul(sim.taxi.vy, trig::sin(sim.taxi.yaw));
     let backing = fixed::clamp(fixed::div(-vf, fixed::from_int(2)), 0, ONE);
     let want = fixed::mul(
-        fixed::mul(sim.taxi.kind.half_len(), fixed::from_int(2)) + fixed::ratio(1, 4),
+        fixed::mul(sim.taxi.half_len(), fixed::from_int(2)) + fixed::ratio(1, 4),
         ONE + backing,
     );
     let mut boom = want;

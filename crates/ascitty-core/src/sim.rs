@@ -1019,7 +1019,7 @@ impl Sim {
             let (dx, dy) = (o.x - c.x, o.y - c.y);
             let lon = fixed::mul(dx, fx) + fixed::mul(dy, fy);
             let lat = fixed::mul(dx, rx) + fixed::mul(dy, ry);
-            if lon > -c.kind.half_len() && lon < reach && fixed::abs(lat) < CORRIDOR {
+            if lon > -c.half_len() && lon < reach && fixed::abs(lat) < CORRIDOR {
                 return true;
             }
         }
@@ -1060,7 +1060,7 @@ impl Sim {
             // Bumper to bumper, so the gap is between the cars rather than
             // between their middles - a bus is four cells long and closing
             // to two of them is already a collision.
-            let gap = lon - c.kind.half_len() - o.kind.half_len();
+            let gap = lon - c.half_len() - o.half_len();
             if fixed::abs(lat) < CORRIDOR && lon < LOOK {
                 want = want.min(follow(gap));
             } else if lat > 0
@@ -1083,7 +1083,7 @@ impl Sim {
             if p.standing {
                 let dx = p.board.x - self.taxi.x;
                 let dy = p.board.y - self.taxi.y;
-                let reach = self.taxi.kind.half_len() + p.board.w;
+                let reach = self.taxi.half_len() + p.board.w;
                 if fixed::abs(dx) < reach && fixed::abs(dy) < reach && speed > ONE {
                     // Over it goes, in the direction the car was travelling,
                     // and the car does not slow down at all - which is the
@@ -1269,19 +1269,20 @@ impl Sim {
         // Leaving it out is easy to do - you are notionally inside it - and
         // the result is a camera following an invisible car.
         if near(self.taxi.x, self.taxi.y) {
-            let (len, wid, h) = self.taxi.kind.hull();
-            let (w, _) = crate::sprite::silhouette(
+            let (len, wid, h) = self.taxi.hull();
+            let view = crate::sprite::aspect(
                 len,
                 wid,
                 self.taxi.yaw,
                 self.taxi.x - cam.x,
                 self.taxi.y - cam.y,
             );
-            // The cab keeps its own picture whichever way it is pointing.
-            // Everything else in the street gets a side profile when you see
-            // it side-on, but the thing you are chasing has to stay
-            // recognisable as the thing you are chasing, and the checker
-            // band and roof sign are what make it so.
+            let w = view.width;
+            // The cab keeps its own *body* whichever way it is pointing -
+            // the chequer band and the roof sign are what make the thing you
+            // are chasing recognisable - but it is seen from the same angles
+            // as everything else, and from behind and slightly to one side
+            // is most of them.
             let mut b = Billboard::upright(
                 Stamp::Taxi,
                 self.taxi.x,
@@ -1290,6 +1291,7 @@ impl Sim {
                 h,
                 palette::H_YELLOW,
             );
+            b.view = view;
             // The same two bits every car uses: which end you are looking
             // at, and whether it is on the brakes.  You are usually behind
             // your own cab, but not after a spin.
@@ -1302,23 +1304,21 @@ impl Sim {
             if !near(c.x, c.y) {
                 continue;
             }
-            let (len, wid, h) = c.kind.hull();
-            let (w, side) = crate::sprite::silhouette(len, wid, c.yaw, c.x - cam.x, c.y - cam.y);
-            // Which picture, from the same angle that decided the width.
-            //
-            // Two body styles, and which one a car has is a property of the
-            // car rather than of the moment: the low bit of its hue is
-            // already stable for the life of the vehicle and is as good a
-            // coin as any, and it costs nothing to look at.
-            let stamp = match (c.kind, c.damage, side) {
-                (CarKind::Bus, _, true) => Stamp::BusSide,
-                (CarKind::Bus, _, false) => Stamp::Bus,
+            let (len, wid, h) = c.hull();
+            let view = crate::sprite::aspect(len, wid, c.yaw, c.x - cam.x, c.y - cam.y);
+            // Which picture.  No longer "and from which side": the side is
+            // continuous now - see [`crate::sprite::aspect`] - so a stamp
+            // names the *body* and nothing else, and the body is a property
+            // of the vehicle rather than of the moment.
+            let stamp = match (c.kind, c.damage, c.style) {
+                (CarKind::Bus, _, _) => Stamp::Bus,
                 (_, d, _) if d > 60 => Stamp::Wreck,
-                (_, _, false) => Stamp::Car,
-                (_, _, true) if c.hue & 1 == 0 => Stamp::JeepSide,
-                (_, _, true) => Stamp::MuscleSide,
+                (_, _, drive::Style::Jeep) => Stamp::Jeep,
+                (_, _, drive::Style::Boat) => Stamp::Boat,
+                (_, _, drive::Style::Sedan) => Stamp::Car,
             };
-            let mut b = Billboard::upright(stamp, c.x, c.y, w, h, c.hue);
+            let mut b = Billboard::upright(stamp, c.x, c.y, view.width, h, c.hue);
+            b.view = view;
             // Which end of it you are looking at, for the lights: the
             // camera is in front of the car when the car's own heading
             // points away from it.
@@ -2060,7 +2060,7 @@ mod tests {
             for i in 0..sim.traffic.len() {
                 for j in i + 1..sim.traffic.len() {
                     let (a, b) = (&sim.traffic[i], &sim.traffic[j]);
-                    let reach = a.kind.half_len() + b.kind.half_len();
+                    let reach = a.half_len() + b.half_len();
                     // Well inside each other, not merely touching: a
                     // collision is resolved over a tick or two and touching
                     // during it is the point.
