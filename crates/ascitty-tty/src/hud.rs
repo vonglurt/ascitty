@@ -60,6 +60,15 @@ const ARROW_BARB: Fx = fixed::ratio(11, 10);
 const ARROW_NECK: Fx = fixed::ratio(2, 5);
 /// How thick the black outline is, in cells of road.
 const ARROW_EDGE: Fx = fixed::ratio(1, 6);
+/// How far back from the point the tip is a different colour, in cells of
+/// road.
+///
+/// Half a cell.  An arrow is symmetrical enough at a glance that the head
+/// and the tail can be read the wrong way round in the corner of your eye,
+/// and the whole job of this thing is to be read in the corner of your eye.
+/// One end being a different colour settles it without needing a second
+/// look.
+const ARROW_TIP: Fx = fixed::ratio(3, 5);
 
 /// Whether a point in the arrow's own coordinates is inside it.
 ///
@@ -119,6 +128,12 @@ pub fn arrow_on_the_road(f: &mut Frame, p: &Proj, fov: Fx, bearing: i32, tick: u
     // A slow pulse, so it reads as an instrument rather than as scenery.
     let luma = if (tick >> 4) & 3 == 0 { 6 } else { 7 };
     let body = Cel { glyph: catalog::G_SOLID, color: palette::rgb_index(palette::H_YELLOW, luma) };
+    // A step down the ramp from the body rather than up it.  This palette
+    // scales chroma with luminance, so at the top of it every hue is nearly
+    // white and an orange tip on a yellow arrow is a cream tip on a cream
+    // arrow - measured, (255,245,193) against (255,255,157).  One step down
+    // is (232,192,151), which is orange.
+    let tip = Cel { glyph: catalog::G_SOLID, color: palette::rgb_index(palette::H_ORANGE, 6) };
     let outline = Cel { glyph: catalog::G_SOLID, color: palette::rgb_index(palette::H_BLACK, 0) };
 
     let half = fixed::from_int(p.w / 2);
@@ -141,7 +156,9 @@ pub fn arrow_on_the_road(f: &mut Frame, p: &Proj, fov: Fx, bearing: i32, tick: u
             let u = fixed::mul(ahead, cos) + fixed::mul(across, sin);
             let v = fixed::mul(across, cos) - fixed::mul(ahead, sin);
             if in_arrow(u, v, 0) {
-                f.put(x, y, body);
+                // The point itself, and only the point.
+                let end = u > ARROW_LONG - ARROW_TIP;
+                f.put(x, y, if end { tip } else { body });
             } else if in_arrow(u, v, ARROW_EDGE) {
                 f.put(x, y, outline);
             }

@@ -1,6 +1,6 @@
 # ASCITTY — a raytraced ASCII city
 
-**v0.4.2 · 19 August 2026**
+**v0.4.3 · 19 August 2026**
 
 A city built entirely out of typeable characters, rendered in real time, on a
 colour terminal and on a **Commodore Plus/4** — and a taxi game inside it.
@@ -17,13 +17,13 @@ the same string.
 
 *Street level in block elements and colour, which is what you actually get.
 `ascitty --shot 520 --size 140x40 --seed 99 --tour --walk --sky 0 --day 0` —
-**v0.4.2**, 19 Aug 2026.*
+**v0.4.3**, 19 Aug 2026.*
 
 ## Watch it drive itself
 
 ![The cab driving itself down a street, traffic ahead of it, the fare marker glowing on the pavement](docs/media/demo.gif)
 
-*Eight seconds of `make demo`, recorded by `make gif` — **v0.4.2**, 19 Aug
+*Eight seconds of `make demo`, recorded by `make gif` — **v0.4.3**, 19 Aug
 2026. Small and short because a GIF is a whole frame every frame; `make
 cast` records the same run as an asciinema file, which stays sharp at any
 size and is a tenth of the bytes.*
@@ -45,7 +45,7 @@ make gif       # ...or to docs/media/demo.gif
 
 ![The taxi from behind, chequer band along its flank, a saloon alongside on the avenue](docs/media/drive.png)
 
-*The chase camera, from `make demo` at `--sky 3` — **v0.4.2**, 19 Aug 2026.
+*The chase camera, from `make demo` at `--sky 3` — **v0.4.3**, 19 Aug 2026.
 The cab's
 heading and the camera's are not the same thing: the boom lags a turn by a
 few frames, so a slide is watched from outside the spin.*
@@ -79,7 +79,7 @@ It starts in the first one.
 
 ![The city from above the tallest roof: towers seen down their faces, rooftops and fire escapes below](docs/media/copter.png)
 
-*The copter, from `--copter --haze 1 --sky 5` — **v0.4.2**, 19 Aug 2026. How
+*The copter, from `--copter --haze 1 --sky 5` — **v0.4.3**, 19 Aug 2026. How
 far
 down it looks is worked out from how high it is, how far the haze lets it
 see and how many rows the frame has, rather than being a fixed tilt — see
@@ -220,7 +220,7 @@ prints them.
 
 ![The cab at a green sunset, the sky pale at the horizon and darkening above it](docs/media/sunset.png)
 
-*`--sky 8 --day 0` — **v0.4.2**, 19 Aug 2026. The green sunset, held still
+*`--sky 8 --day 0` — **v0.4.3**, 19 Aug 2026. The green sunset, held still
 for the picture.*
 
 A phase change does not cross-fade. Two hues cannot be mixed in a palette
@@ -318,7 +318,7 @@ all:
 ```
 
 *`ascitty --shot 520 --size 92x20 --seed 99 --tour --walk --mode ascii` —
-**v0.4.2**, 19 Aug 2026. The mode the name is about, and the one that runs
+**v0.4.3**, 19 Aug 2026. The mode the name is about, and the one that runs
 anywhere a terminal runs.*
 
 ## Downloads
@@ -428,7 +428,9 @@ A yellow arrow **lies on the road** in front of the cab, pointing at the
 fare — projected through the same arithmetic the ground is drawn with, so it
 converges with the street it is lying on and swings across the road the way a
 compass needle laid flat would. It runs from the bottom of the frame to about
-the middle of the taxi. "Which way now" is a question you ask at ninety miles
+the middle of the taxi, and its point is orange, because an arrow is
+symmetrical enough at a glance to be read the wrong way round in the corner
+of your eye. "Which way now" is a question you ask at ninety miles
 an hour, and reading a word is not an answer you have time for.
 
 Driving:
@@ -525,10 +527,10 @@ place to start.
 
 ```sh
 $ ascitty --version
-ascitty 0.4.2 (seed 0xa5c1771e)
+ascitty 0.4.3 (seed 0xa5c1771e)
 ```
 
-Releases are tagged `v0.4.2` and so on, and every picture in this README
+Releases are tagged `v0.4.3` and so on, and every picture in this README
 says which build drew it. Regenerating them is `make shot` and `make gif`;
 the seed is fixed, so the same tag renders the same frames.
 
@@ -537,7 +539,7 @@ the seed is fixed, so the same tag renders the same frames.
 ![The Plus/4 build running in VICE](docs/media/plus4.png)
 
 *The `.prg` booted in VICE and photographed by `tools/viceshot.sh` — a
-40×25 city on a 1.76 MHz 7501. **v0.4.2**, 19 Aug 2026.*
+40×25 city on a 1.76 MHz 7501. **v0.4.3**, 19 Aug 2026.*
 
 `build/ascitty.prg` and `build/ascitty.d64` are the real thing: a 40×25
 city, in colour, on a 1.76 MHz 7501, with a character set generated on a
