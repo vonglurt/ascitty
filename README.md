@@ -82,11 +82,15 @@ Full instructions, including the Plus/4, are in
 ### Watch it walk itself
 
 ```sh
-make demo                    # the camera walks the streets and looks around
+make demo                    # the cab takes fares on its own
+make walk                    # ...or the camera walks the streets instead
 make cast                    # record it to build/tour.cast (asciinema)
 ```
 
-`--tour` hands the camera to a walker that reads the city rather than
+`--demo` hands over to a cab that picks up a fare, plans a route over the
+carriageway, drives to it and parks in the painted circle — then does it
+again. `--demo --walk` gives the older walking tour, which reads the city
+rather than
 following a baked path: it probes ahead, turns at junctions, keeps to the
 middle of the street, and stops to look up at whatever is tallest nearby.
 Touch any movement key and you take over; `\` hands it back.
@@ -130,9 +134,10 @@ descends where you might expect Shift to.
 --size WxH        override the terminal size
 --rain 0..8   --haze 0..8   --stars 0..8   --no-moon
 --drive  --copter
---tour            let the camera walk itself
---anim            play the tour and exit
---record FILE     write the tour to an asciinema .cast
+--demo, --tour    let the cab drive itself, taking fares
+--walk            make the demonstration a walking tour instead
+--anim            play the demonstration and exit
+--record FILE     write the demonstration to an asciinema .cast
 --frames N        how long, for --anim and --record   (default 900)
 --shot [N]        render N frames, print the last as plain text, exit
 --bench           200 frames as fast as possible, and report
@@ -297,7 +302,7 @@ make disk     # ...on a .d64
 make test     # 131 tests, about a tenth of a second
 make check    # the gate: tests, both builds, and both actually rendering
 make bench    # frames per second here
-make demo     # watch it walk itself
+make demo     # watch it drive itself
 make cast     # record the walk as an asciinema file
 make sheet    # print the glyph catalogue
 make shot     # regenerate docs/media

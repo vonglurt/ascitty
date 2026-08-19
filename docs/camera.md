@@ -92,12 +92,47 @@ stutters; much longer and it will not stop.
 
 ## The autopilot
 
-`--tour`, or `\` at any time, hands the camera to a walker that reads the
-city and drives itself. Any movement key takes it back off — there is no mode
-to leave, you just start walking.
+`--demo` (or `--tour`), and `\` at any time, hands over to something that
+reads the city and drives itself. Any movement key takes it back off — there
+is no mode to leave, you just start driving.
 
-It is in [`crates/ascitty-core/src/tour.rs`](../crates/ascitty-core/src/tour.rs),
-and it is not a scripted path: a path baked for one city is wrong for every
+There are two of them, and which you get is what `--demo` means:
+
+| | what it does | where |
+|---|---|---|
+| `--demo` | the cab takes fares | `cabbie.rs` |
+| `--demo --walk` | the camera walks the streets | `tour.rs` |
+
+### The cabbie
+
+The default, because it is what the thing is for and a camera walking past
+parked cars does not show it. It picks up whatever fare the simulation is
+offering, plans a route over the carriageway, drives it, and stops inside the
+painted circle at the far end — at which point the simulation hands over the
+passenger and issues another, so it runs indefinitely.
+
+Two layers, and the split is the design. `City::drive_route` is a
+breadth-first search over road cells, run **once per fare**: far too
+expensive per frame, and the only thing that can be trusted to arrive, since
+a greedy stepper cannot leave a U-shaped block and this grid is full of them.
+The steering is then a pure function of that plan and the car's state.
+
+It steers on two terms — how far the car is from the middle of its lane, and
+how far it is from pointing along it — because a lane is a statement about
+both. Aiming at a point some cells down the road, which is the obvious way to
+follow one, has no term for lateral offset at all: a car parallel to its lane
+but a lane and a half wide of it reports almost no error and stays there.
+
+Two things about it do not work well yet and are in the backlog: its
+preference for the right-hand lane measures between 25 and 63 per cent across
+four cities, and about 40 per cent of travelling ticks have the car's centre
+on a cell that is not carriageway.
+
+### The walking tour
+
+`--demo --walk`. It is in
+[`crates/ascitty-core/src/tour.rs`](../crates/ascitty-core/src/tour.rs), and
+it is not a scripted path: a path baked for one city is wrong for every
 other seed. This one probes ahead, turns at junctions, keeps to the middle of
 the street, and stops to look up at whatever is tallest nearby.
 

@@ -175,9 +175,22 @@ pub struct City {
     /// sweep of the whole grid, which is nothing once and far too much per
     /// frame.
     pub shadow: ShadowMap,
+    /// Which sides of each cell face a road, and which face a building.
+    ///
+    /// Eight bits a cell: the low four are road to the west, east, north and
+    /// south, the high four are building in the same order.  See
+    /// [`City::edges`].
+    edges: Vec<u8>,
     /// The seed it was generated from.
     pub seed: u32,
 }
+
+/// Bit positions in [`City::edges`].
+pub const EDGE_ROAD: u8 = 0;
+/// Bit positions in [`City::edges`], for a building rather than a road.
+pub const EDGE_BUILT: u8 = 4;
+/// The four neighbours, in the order the edge bits are packed.
+pub const EDGE_STEPS: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
 
 // --- the street plan -------------------------------------------------------
 //
@@ -553,6 +566,132 @@ impl City {
         self.elev.open(x, y)
     }
 
+    /// Which of a cell's four sides face a road, and which face a building.
+    ///
+    /// The pavement is drawn in bands - kerb, planted verge, paving - and
+    /// which band a point falls in depends on how far it is from the nearest
+    /// road edge and from the nearest building edge.  Working that out from
+    /// [`City::at`] costs up to eight grid lookups *per ground character*,
+    /// and the ground is most of the screen: it took the host frame from
+    /// 0.16 ms to 0.23.
+    ///
+    /// It is also a property of the map, which does not change.  So it is
+    /// computed once, when the city is generated, and the renderer reads one
+    /// byte and tests bits.
+    #[inline(always)]
+    pub fn edges(&self, x: i32, y: i32) -> u8 {
+        if x < 0 || y < 0 || x >= SIZE as i32 || y >= SIZE as i32 {
+            0
+        } else {
+            self.edges[y as usize * SIZE + x as usize]
+        }
+    }
+
+    /// Whether a vehicle may be on this cell.
+    ///
+    /// The carriageway and nothing else.  A car is not blocked by a park
+    /// bench, it is blocked by the park: `open` is the wrong test for
+    /// anything that is supposed to stay on the road, and using it is how
+    /// you get a taxi driving across a plaza to save four cells.
+    #[inline(always)]
+    pub fn drivable(&self, x: i32, y: i32) -> bool {
+        x >= 0
+            && y >= 0
+            && x < SIZE as i32
+            && y < SIZE as i32
+            && self.at(x, y).kind == Kind::Road
+            && self.open(x, y)
+    }
+
+    /// The nearest carriageway cell to a point, or `None` within `limit`.
+    ///
+    /// Used to put both ends of a route on the road before searching:
+    /// a fare marker is placed on the road, but a taxi that has been driven
+    /// into a plaza is not, and a search that starts off the network finds
+    /// nothing and reports the city disconnected.
+    pub fn nearest_road(&self, x: i32, y: i32, limit: i32) -> Option<(i32, i32)> {
+        if self.drivable(x, y) {
+            return Some((x, y));
+        }
+        for r in 1..=limit {
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    // Only the ring, not the filled square: the interior was
+                    // covered by a smaller `r`.
+                    if dx.abs() != r && dy.abs() != r {
+                        continue;
+                    }
+                    if self.drivable(x + dx, y + dy) {
+                        return Some((x + dx, y + dy));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// A driving route between two cells, as a list of cells.
+    ///
+    /// Breadth-first over the carriageway, so the route is the shortest one
+    /// in cells.  It is not the shortest in *time* - it does not know that
+    /// an arterial is faster than an alley - and it is not run per frame:
+    /// a cabbie plans once per fare and then follows what it planned.
+    ///
+    /// The walking network has [`crate::walk::WalkMap::route`], which is the
+    /// same search over a different set of cells.  They are deliberately not
+    /// shared code: the two networks disagree about almost every cell in the
+    /// city, and a single `route` taking a predicate would invite exactly
+    /// the confusion that [`City::open`] already cost once.
+    pub fn drive_route(
+        &self,
+        from: (i32, i32),
+        to: (i32, i32),
+        budget: usize,
+    ) -> Option<Vec<(i32, i32)>> {
+        let from = self.nearest_road(from.0, from.1, 8)?;
+        let to = self.nearest_road(to.0, to.1, 8)?;
+        if from == to {
+            return Some(vec![from]);
+        }
+        let idx = |x: i32, y: i32| y as usize * SIZE + x as usize;
+        // `came` doubles as the visited set: usize::MAX means unseen.
+        let mut came = vec![usize::MAX; SIZE * SIZE];
+        let mut queue = std::collections::VecDeque::new();
+        came[idx(from.0, from.1)] = idx(from.0, from.1);
+        queue.push_back(from);
+        let mut seen = 0usize;
+
+        while let Some((x, y)) = queue.pop_front() {
+            seen += 1;
+            if seen > budget {
+                return None;
+            }
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let (nx, ny) = (x + dx, y + dy);
+                if !self.drivable(nx, ny) {
+                    continue;
+                }
+                let ni = idx(nx, ny);
+                if came[ni] != usize::MAX {
+                    continue;
+                }
+                came[ni] = idx(x, y);
+                if (nx, ny) == to {
+                    let mut path = vec![to];
+                    let mut cur = ni;
+                    while came[cur] != cur {
+                        cur = came[cur];
+                        path.push(((cur % SIZE) as i32, (cur / SIZE) as i32));
+                    }
+                    path.reverse();
+                    return Some(path);
+                }
+                queue.push_back((nx, ny));
+            }
+        }
+        None
+    }
+
     /// Generate a city from a seed.
     ///
     /// Four layers, in the order they depend on each other: the roads decide
@@ -654,7 +793,31 @@ impl City {
         // Pass 4: sweep the shadows for the default light.
         let shadow = ShadowMap::cast(&elev, shadow::DEFAULT_AZ, shadow::DEFAULT_SLOPE);
 
-        City { cells, lots, plan, zones, elev, walk, shadow, seed }
+        // Which sides of each cell face a road and which face a building.
+        // Once, here, rather than eight grid lookups per ground character in
+        // the renderer - see [`City::edges`].
+        let mut edges = vec![0u8; SIZE * SIZE];
+        for y in 0..SIZE as i32 {
+            for x in 0..SIZE as i32 {
+                let mut bits = 0u8;
+                for (i, (dx, dy)) in EDGE_STEPS.iter().enumerate() {
+                    let (nx, ny) = (x + dx, y + dy);
+                    let kind = if nx < 0 || ny < 0 || nx >= SIZE as i32 || ny >= SIZE as i32 {
+                        Kind::Road
+                    } else {
+                        cells[ny as usize * SIZE + nx as usize].kind
+                    };
+                    match kind {
+                        Kind::Road => bits |= 1 << (EDGE_ROAD + i as u8),
+                        Kind::Building => bits |= 1 << (EDGE_BUILT + i as u8),
+                        _ => {}
+                    }
+                }
+                edges[y as usize * SIZE + x as usize] = bits;
+            }
+        }
+
+        City { cells, lots, plan, zones, elev, walk, shadow, edges, seed }
     }
 }
 

@@ -13,6 +13,7 @@ mod term;
 
 use ascitty_core::atmos::Atmos;
 use ascitty_core::camera::{Camera, TURN_SPEED, WALK_SPEED};
+use ascitty_core::cabbie::Cabbie;
 use ascitty_core::drive::Controls;
 use ascitty_core::fixed::{self, Fx, ONE};
 use ascitty_core::frame::Frame;
@@ -122,7 +123,12 @@ fn chase(cam: &mut Camera, sim: &Sim, city: &City, rows: i32) {
     cam.yaw = cam.yaw.wrapping_add((delta / 6) as u16);
 
     let (dx, dy) = cam.dir();
-    let want = fixed::ratio(9, 4);
+    // Measured from the car rather than fixed, because the car changed
+    // length and this did not: at two and a quarter cells the boom was
+    // barely longer than the cab's own half-length once the vehicles were
+    // doubled, so the camera sat inside the boot and the frame was a
+    // yellow wall.  Two and a half car-lengths back.
+    let want = fixed::mul(sim.taxi.kind.half_len(), fixed::from_int(5)) + fixed::ratio(1, 2);
     let mut boom = want;
     while boom > fixed::ratio(1, 4) {
         let x = sim.taxi.x - fixed::mul(dx, boom);
@@ -155,6 +161,8 @@ struct Opts {
     view: View,
     fov: f64,
     tour: bool,
+    /// Whether the demonstration walks rather than drives.
+    walk_demo: bool,
     anim: bool,
     frames: u32,
     record: Option<std::path::PathBuf>,
@@ -174,6 +182,7 @@ impl Default for Opts {
             view: View::Walk,
             fov: 67.0,
             tour: false,
+            walk_demo: false,
             anim: false,
             frames: 900,
             record: None,
@@ -202,11 +211,13 @@ USAGE: ascitty [options]
   --bench           render 200 frames as fast as possible and report
   -h, --help        this
 
-WALKING ITSELF
-  --tour, --demo    the camera walks the streets and looks around on its own.
-                    Touch any movement key and you take over.
-  --anim            play the tour and exit; --frames says for how long
-  --record FILE     write the tour to an asciinema .cast file and exit
+DRIVING ITSELF
+  --tour, --demo    the cab takes fares on its own: it picks a random one,
+                    plans a route, drives the right-hand lane to it and
+                    parks in the circle.  Touch any key and you take over.
+  --walk            make the demonstration a walking tour instead
+  --anim            play the demonstration and exit; --frames says how long
+  --record FILE     write the demonstration to an asciinema .cast file
   --frames N        frames for --anim and --record   (default: 900, 30 s)
 
 CONTROLS
@@ -260,6 +271,7 @@ fn parse_args() -> Result<Opts, String> {
             "--no-moon" => o.atmos.moon = false,
             "--copter" => o.view = View::Copter,
             "--drive" => o.view = View::Drive,
+            "--walk" => o.walk_demo = true,
             // Both words, because both are in use: the Makefile target and
             // the Plus/4 build call it a demo, this flag called it a tour,
             // and a user should not have to know which half of the project
@@ -268,13 +280,11 @@ fn parse_args() -> Result<Opts, String> {
             "--anim" => {
                 o.tour = true;
                 o.anim = true;
-                o.view = View::Walk;
             }
             "--frames" => o.frames = val()?.parse().map_err(|_| "bad --frames".to_string())?,
             "--record" => {
                 o.record = Some(std::path::PathBuf::from(val()?));
                 o.tour = true;
-                o.view = View::Walk;
             }
             "--bench" => o.bench = true,
             "--shot" => {
@@ -286,6 +296,15 @@ fn parse_args() -> Result<Opts, String> {
             }
             _ => return Err(format!("unknown option {a}\n\n{USAGE}")),
         }
+    }
+    // What an unqualified demonstration is.
+    //
+    // Driving, because that is what the thing is for and a camera walking
+    // past parked cars does not show it.  `--walk` asks for the old one, and
+    // an explicit `--copter` is left alone: somebody who asked to be in the
+    // air did not ask to be in a car.
+    if o.tour && !o.walk_demo && o.view == View::Walk {
+        o.view = View::Drive;
     }
     Ok(o)
 }
@@ -346,21 +365,24 @@ fn run(mut o: Opts) -> Result<(), String> {
         let mut events = Vec::new();
         let mut tour = Tour::new(&city, o.seed);
         tour.cam.fov = lens;
-        if o.view == View::Drive {
-            sim.park_near(&city, fixed::floor(cam.x), fixed::floor(cam.y));
-        }
+        let mut cabbie = Cabbie::new();
+        let hz = o.fps.max(1) as i32;
         for _ in 0..n {
             o.atmos.step();
-            if o.tour {
-                tour.step(&city, o.fps.max(1) as i32);
+            if o.tour && view == View::Drive {
+                let c = cabbie.drive(&city, &sim, hz);
+                sim.step(&city, &c, hz, &mut events);
+                chase(&mut cam, &sim, &city, h as i32);
+            } else if o.tour {
+                tour.step(&city, hz);
                 cam = tour.cam;
                 cam.pitch = cam.pitch.clamp(-(h as i32 / 3), h as i32 / 3);
-            } else if o.view == View::Drive {
-                sim.step(&city, &Controls { throttle: ONE, ..Default::default() }, 60, &mut events);
+            } else if view == View::Drive {
+                sim.step(&city, &Controls { throttle: ONE, ..Default::default() }, hz, &mut events);
                 chase(&mut cam, &sim, &city, h as i32);
             }
             raycast::render_to(&city, &cam, &o.atmos, &mut f, &mut depth);
-            let proj = raycast::projection(&cam, &f);
+            let proj = raycast::projection(&city, &cam, &f);
             sim.draw(&mut f, &depth, &cam, &o.atmos, &proj);
             o.atmos.rain_over(&mut f, &cam);
         }
@@ -374,18 +396,31 @@ fn run(mut o: Opts) -> Result<(), String> {
         let mut depth: Vec<Fx> = Vec::new();
         let mut tour = Tour::new(&city, o.seed);
         tour.cam.fov = lens;
+        let mut cabbie = Cabbie::new();
+        let mut events: Vec<Event> = Vec::new();
+        let hz = o.fps.max(1) as i32;
         let mut rec = cast::Recorder::create(&path, w, h, o.fps)
             .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
         // A clear and a cursor home first, so a player starting mid-stream
         // does not inherit whatever was on the terminal before.
         rec.frame("\x1b[2J\x1b[H").map_err(|e| e.to_string())?;
         for _ in 0..o.frames {
-            tour.step(&city, o.fps.max(1) as i32);
             o.atmos.step();
-            raycast::render_to(&city, &tour.cam, &o.atmos, &mut f, &mut depth);
-            let proj = raycast::projection(&tour.cam, &f);
-            sim.draw(&mut f, &depth, &tour.cam, &o.atmos, &proj);
-            o.atmos.rain_over(&mut f, &tour.cam);
+            // Whichever demonstration was asked for drives the camera; the
+            // rest of the loop does not care which.
+            if view == View::Drive {
+                let c = cabbie.drive(&city, &sim, hz);
+                sim.step(&city, &c, hz, &mut events);
+                chase(&mut cam, &sim, &city, h as i32);
+            } else {
+                tour.step(&city, hz);
+                cam = tour.cam;
+                cam.pitch = cam.pitch.clamp(-(h as i32 / 3), h as i32 / 3);
+            }
+            raycast::render_to(&city, &cam, &o.atmos, &mut f, &mut depth);
+            let proj = raycast::projection(&city, &cam, &f);
+            sim.draw(&mut f, &depth, &cam, &o.atmos, &proj);
+            o.atmos.rain_over(&mut f, &cam);
             paint::paint(&f, o.mode, o.depth, &mut buf);
             rec.frame(&buf).map_err(|e| e.to_string())?;
         }
@@ -435,8 +470,11 @@ fn run(mut o: Opts) -> Result<(), String> {
     let mut pedals = Pedals::default();
     let mut tour = Tour::new(&city, o.seed);
     tour.cam.fov = lens;
+    let mut cabbie = Cabbie::new();
     let mut autopilot = o.tour;
-    if autopilot {
+    // The walking demonstration starts where the walker starts; the driving
+    // one starts in the cab, which is already parked next to you.
+    if autopilot && view != View::Drive {
         cam = tour.cam;
     }
     // --anim plays a fixed length and exits; otherwise it runs until you
@@ -475,10 +513,16 @@ fn run(mut o: Opts) -> Result<(), String> {
                 Key::Quit => quit = true,
                 Key::Char('\\') => {
                     // ...and this hands it back, from wherever you are now.
-                    tour = Tour::new(&city, o.seed);
-                    tour.cam = cam;
+                    // Back to the same demonstration you were watching: a
+                    // key that silently changes what you are looking at is
+                    // worse than one that does nothing.
+                    if view != View::Drive {
+                        tour = Tour::new(&city, o.seed);
+                        tour.cam = cam;
+                        view = View::Walk;
+                    }
+                    cabbie = Cabbie::new();
                     autopilot = true;
-                    view = View::Walk;
                 }
                 Key::Char('w') => {
                     fwd += step;
@@ -560,7 +604,7 @@ fn run(mut o: Opts) -> Result<(), String> {
             }
         }
 
-        if autopilot {
+        if autopilot && view != View::Drive {
             tour.step(&city, o.fps.max(1) as i32);
             cam = tour.cam;
             // The autopilot does not know how tall the frame is, so its tilt
@@ -583,7 +627,17 @@ fn run(mut o: Opts) -> Result<(), String> {
                 cam.z = (cam.z + rise * 4).clamp(fixed::from_int(4), fixed::from_int(160));
             }
             View::Drive => {
-                sim.step(&city, &pedals.controls(), o.fps.max(1) as i32, &mut events);
+                // The driver is either you or the cabbie, and the rest of
+                // the mode cannot tell: both hand over the same three
+                // controls, so nothing below here is duplicated for the
+                // demonstration.
+                let hz = o.fps.max(1) as i32;
+                let ctl = if autopilot {
+                    cabbie.drive(&city, &sim, hz)
+                } else {
+                    pedals.controls()
+                };
+                sim.step(&city, &ctl, hz, &mut events);
                 for e in &events {
                     flash = match e {
                         Event::Flattened => Some(("CRUNCH", 20)),
@@ -612,12 +666,16 @@ fn run(mut o: Opts) -> Result<(), String> {
 
         o.atmos.step();
         stats = raycast::render_to(&city, &cam, &o.atmos, &mut f, &mut depth);
-        let proj = raycast::projection(&cam, &f);
+        let proj = raycast::projection(&city, &cam, &f);
         sim.draw(&mut f, &depth, &cam, &o.atmos, &proj);
         o.atmos.rain_over(&mut f, &cam);
         paint::paint(&f, o.mode, o.depth, &mut buf);
         hud::append(&mut buf, &hud::Status {
-            view: if autopilot { "TOUR" } else { view.name() },
+            view: match (autopilot, view) {
+                (true, View::Drive) => "AUTOCAB",
+                (true, _) => "TOUR",
+                (false, v) => v.name(),
+            },
             mode: o.mode,
             depth: o.depth,
             cam: &cam,

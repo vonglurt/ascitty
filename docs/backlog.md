@@ -207,6 +207,37 @@ It would want a third structure — a list of line segments rasterised over
 the grid after the two axes are laid — plus a marking path that can follow
 it, and blocks that come out as triangles.
 
+### The cabbie's lane keeping — **now**
+The driving demonstration routes, drives and parks correctly, but its
+preference for the right-hand lane is only about even: measured across four
+cities at 52, 63, 55 and 25 per cent of travelling ticks on the correct side
+of the crown. The 25 is the interesting one - that city is *inverted*, and
+turning the cross-track gain up to full authority made it worse rather than
+better, which is the signature of a sign that flips somewhere rather than of
+a gain that is too small.
+
+Ruled out so far: the sign conventions in `cabbie::lane`, `Cabbie::track` and
+the measurement agree when checked by hand against all four combinations of
+axis and direction; `across` measures from the low-coordinate kerb on every
+road in every city, which is now asserted; and the controller was reading the
+road at its route's cursor rather than the road under the car, which was a
+real bug and fixing it did not fix this.
+
+Three lane targets were tried - the middle of the right-hand half, the
+kerbside lane, and one cell past the crown - and each was clearly best on
+some cities and clearly worst on others, which suggests the single set of
+gains cannot serve both a fourteen-cell arterial and a two-cell street.
+Scaling the gains by the width of the carriageway is the obvious next thing.
+
+### The cabbie on the pavement — **soon**
+About 40 per cent of travelling ticks have the cab's centre on a cell that is
+not carriageway. Some of that is honest - the car is two cells long and the
+lane it is tracking is one cell wide, so correcting puts its centre over the
+kerb - but not 40 per cent of it. The physics has no notion of a vehicle
+footprint, so nothing stops a car from ending up anywhere its centre can
+reach; giving `integrate` the hull and resolving against it would fix this
+and the wall-wedging in `Cabbie::unstick` at the same time.
+
 ### Traffic that follows the road — **soon**
 Traffic currently drives in a straight line at a constant throttle and is
 recycled when it falls behind. It is scenery with momentum. Giving it lane
@@ -302,6 +333,13 @@ The ground is drawn as bands shaded by distance. The host casts it properly
 and gets lane markings, crosswalks, kerbs and puddles for it. On the target
 it was dropped because it roughly halved the frame rate. Worth revisiting
 after the assembly loop.
+
+### Cars in the baked district — **later**
+The vehicles are now boxes rather than cards - the silhouette of a rectangle
+seen at an angle, so a car crossing the view stretches and shortens - and
+none of that reaches the Plus/4, which has no sprites at all. The silhouette
+itself is two multiplies and would transcribe; the blocker is the same one as
+for every other sprite.
 
 ### Sprites — **soon**
 No street furniture, traffic or people on the Plus/4 at all. The billboard

@@ -207,11 +207,46 @@ came out with a thirteen-row band of empty carriageway straight through it,
 33% built, and the attract mode spent half its time looking down it at
 nothing.
 
-The window is now chosen by *content*: a summed-area table over "is there a
+The window was then chosen by *content*: a summed-area table over "is there a
 building here" makes scoring a candidate constant-time, so every offset is
-tried rather than sampled, and the best one wins. The district went from 33%
-built to 57%, and the attract mode from three frames in six with something
-in shot to six in six.
+tried rather than sampled, and the densest one won. That took the district
+from 33% built to 57%, and the attract mode from three frames in six with
+something in shot to six in six.
+
+It also looked worse than what it replaced, which took a side-by-side
+comparison of the two screenshots to see. The densest 64×64 of a city is a
+solid block of towers, so the camera boots hard against a wall: at forty
+columns a near facade is one flat colour across half the screen, and the
+frame carries no sky, no distance and no second building to compare the
+first with. The earlier build's frame was liked *because* the arterial
+crossing put everything far away, small and full of window texture.
+
+So the score is now content **multiplied by the length of the longest
+straight run of carriageway out of the district's centre**, and that run is
+probed all the way to the draw distance rather than to some shorter figure —
+a twenty-cell street sounds long and is not, because the target draws forty
+and a tower at twenty-one closes the end of it. Multiplied again by the width
+of that street, because depth alone gives an alley: two walls four metres
+away and nothing between them.
+
+That is what "size the world to the resolution" means here. The district is
+64 cells either way; which 64 has to be decided by what fits in forty
+columns, not by what is densest.
+
+## 5e. Where the camera starts
+
+Three numbers in `gen/tables.h`: `START_X`, `START_Y`, `START_A`.
+
+The machine used to spiral out from the middle of the district looking for a
+road cell, then probe four directions for the longest street. Both are pure
+functions of data the bake already holds, so both moved into it. The target
+reads three numbers, and the boot code lost 621 bytes.
+
+The boot-time version was not slow enough to matter on its own. What it was
+is *worse*: it could only see 24 cells, which is not far enough to tell a
+street that runs off into the haze from one a tower closes at 25, so the
+first frame anybody saw was a facade across the middle of the screen with the
+actual street off to one side.
 
 ## 6. What is next
 

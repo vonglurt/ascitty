@@ -31,8 +31,10 @@
 
 pub mod arch;
 pub mod atmos;
+pub mod cabbie;
 pub mod camera;
 pub mod catalog;
+pub mod decal;
 pub mod drive;
 pub mod elevation;
 pub mod fixed;

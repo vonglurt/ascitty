@@ -39,7 +39,18 @@ use crate::walk::Foot;
 use crate::world::{City, Kind, SIZE};
 
 /// How many other vehicles are in the pool.
-pub const TRAFFIC: usize = 36;
+///
+/// Twelve, down from thirty-six, because the cars are now twice as long.
+/// The pool is recycled within `RECYCLE` cells of the cab, so the count is
+/// really a *density*, and the same count of vehicles at twice the length is
+/// twice the traffic in the same streets - which on a two-cell carriageway
+/// is not traffic, it is a queue.  The autopilot's completion rate was the
+/// measurement that caught it, and it is unusually sharp: at thirty-six the
+/// cab managed one fare in five minutes, at twenty and at sixteen it managed
+/// two, and at twelve it is back to six.  A cab that cannot get down the
+/// street is not a traffic-density problem you can tune your way around by
+/// a few per cent.
+pub const TRAFFIC: usize = 12;
 /// How many pedestrians are in the pool.
 pub const PEDS: usize = 48;
 /// Beyond this many cells, a pooled actor is recycled somewhere nearer.
@@ -647,6 +658,30 @@ impl Sim {
         let cull = fixed::from_int(crate::atmos::draw_distance(atmos.haze));
         let near = |x: Fx, y: Fx| fixed::abs(x - cam.x) + fixed::abs(y - cam.y) < cull;
 
+        // The stopping circle, painted on the road before anything is put in
+        // front of it.  It is drawn at exactly `STOP_RADIUS`, which is the
+        // radius the handover actually tests, so the rule and the picture of
+        // the rule cannot drift apart: inside the paint is inside the fare.
+        if let Some(fare) = &self.fare {
+            let (mx, my) = if fare.aboard { fare.to } else { fare.from };
+            if near(mx, my) {
+                crate::decal::ring(
+                    f,
+                    depth,
+                    cam,
+                    atmos,
+                    p,
+                    mx,
+                    my,
+                    STOP_RADIUS,
+                    fixed::ratio(1, 8),
+                    crate::catalog::shade(6),
+                    if fare.aboard { palette::H_CYAN } else { palette::H_GREEN },
+                    7,
+                );
+            }
+        }
+
         for pr in &self.props {
             if near(pr.board.x, pr.board.y) {
                 let mut b = pr.board;
@@ -658,7 +693,19 @@ impl Sim {
         // Leaving it out is easy to do - you are notionally inside it - and
         // the result is a camera following an invisible car.
         if near(self.taxi.x, self.taxi.y) {
-            let (w, h) = self.taxi.kind.body();
+            let (len, wid, h) = self.taxi.kind.hull();
+            let (w, _) = crate::sprite::silhouette(
+                len,
+                wid,
+                self.taxi.yaw,
+                self.taxi.x - cam.x,
+                self.taxi.y - cam.y,
+            );
+            // The cab keeps its own picture whichever way it is pointing.
+            // Everything else in the street gets a side profile when you see
+            // it side-on, but the thing you are chasing has to stay
+            // recognisable as the thing you are chasing, and the checker
+            // band and roof sign are what make it so.
             self.boards.push(Billboard::upright(
                 Stamp::Taxi,
                 self.taxi.x,
@@ -672,12 +719,22 @@ impl Sim {
             if !near(c.x, c.y) {
                 continue;
             }
-            let stamp = match (c.kind, c.damage) {
-                (CarKind::Bus, _) => Stamp::Bus,
-                (_, d) if d > 60 => Stamp::Wreck,
-                _ => Stamp::Car,
+            let (len, wid, h) = c.kind.hull();
+            let (w, side) = crate::sprite::silhouette(len, wid, c.yaw, c.x - cam.x, c.y - cam.y);
+            // Which picture, from the same angle that decided the width.
+            //
+            // Two body styles, and which one a car has is a property of the
+            // car rather than of the moment: the low bit of its hue is
+            // already stable for the life of the vehicle and is as good a
+            // coin as any, and it costs nothing to look at.
+            let stamp = match (c.kind, c.damage, side) {
+                (CarKind::Bus, _, true) => Stamp::BusSide,
+                (CarKind::Bus, _, false) => Stamp::Bus,
+                (_, d, _) if d > 60 => Stamp::Wreck,
+                (_, _, false) => Stamp::Car,
+                (_, _, true) if c.hue & 1 == 0 => Stamp::JeepSide,
+                (_, _, true) => Stamp::MuscleSide,
             };
-            let (w, h) = c.kind.body();
             self.boards.push(Billboard::upright(stamp, c.x, c.y, w, h, c.hue));
         }
         for pd in &self.peds {
@@ -975,7 +1032,7 @@ mod tests {
         let mut f = crate::frame::Frame::new(80, 24);
         let mut depth = Vec::new();
         crate::raycast::render_to(&city, &cam, &atmos, &mut f, &mut depth);
-        let proj = crate::raycast::projection(&cam, &f);
+        let proj = crate::raycast::projection(&city, &cam, &f);
         sim.draw(&mut f, &depth, &cam, &atmos, &proj);
         assert!(
             sim.boards.iter().any(|b| b.stamp == crate::sprite::Stamp::Taxi),

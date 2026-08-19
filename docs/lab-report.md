@@ -725,8 +725,15 @@ pavements before raising one would give a true 18 cm and is recorded in the
 backlog. Neither the kerb nor the verge reaches the Plus/4: the bake carries
 building heights only, and the target has no terrain array to raise.
 
-Specified but not implemented at the time of writing: an unattended mode
-driving a vehicle rather than walking. This is recorded in the backlog.
+An unattended mode driving a vehicle rather than walking is implemented and
+is now what `--demo` runs: the cab takes a randomly chosen fare, plans a
+route over the carriageway, drives to it and stops inside the painted circle,
+at which point the simulation hands over the passenger and issues another.
+Two limitations are noted and both are in the backlog. Its preference for the
+right-hand lane is measured at between 25 and 63 per cent of travelling ticks
+across four cities, which is a preference on three of them and an inversion
+on the fourth; and about 40 per cent of travelling ticks have the car's
+centre on a cell that is not carriageway.
 
 ---
 

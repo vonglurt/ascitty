@@ -92,26 +92,46 @@ impl CarKind {
 
     /// Half-length of the body, in world units.
     ///
-    /// A cell is about six metres, so these are: a saloon at 4.8 m, the cab
-    /// at 6 m, a bus at 12 m.  They were all 3 m before, which is a smart
-    /// car - and it showed, because the collision reach is the sum of two
-    /// half-lengths and cars were passing through each other's boots.
+    /// A cell is about six metres, so these are: a saloon at 9.6 m, the cab
+    /// at 12 m, a bus at 24 m.  Long, deliberately - these are American cars
+    /// of the period the rest of the thing is dressed as, and at forty
+    /// columns a vehicle that is honestly six metres long is three
+    /// characters and reads as a crate.
+    ///
+    /// They were all 3 m at one point, which is a smart car, and it showed:
+    /// the collision reach is the sum of two half-lengths and cars were
+    /// passing through each other's boots.
     pub fn half_len(self) -> Fx {
         match self {
-            CarKind::Bus => fixed::from_int(1),
-            CarKind::Taxi => fixed::ratio(1, 2),
-            CarKind::Traffic => fixed::ratio(2, 5),
+            CarKind::Bus => fixed::from_int(2),
+            CarKind::Taxi => fixed::from_int(1),
+            CarKind::Traffic => fixed::ratio(4, 5),
+        }
+    }
+
+    /// The body as a box: length, width and height, in world units.
+    ///
+    /// A car is drawn as a rectangle standing on the road, and a rectangle
+    /// has two horizontal dimensions rather than one.  Which of them you see
+    /// depends entirely on where you are looking from - a saloon is two
+    /// metres across the back and ten metres down the side - so a single
+    /// "width" cannot draw one.  See [`crate::sprite::silhouette`].
+    pub fn hull(self) -> (Fx, Fx, Fx) {
+        match self {
+            CarKind::Bus => (fixed::from_int(4), fixed::ratio(9, 5), fixed::ratio(12, 5)),
+            CarKind::Taxi => (fixed::from_int(2), fixed::ratio(6, 5), fixed::ratio(7, 5)),
+            CarKind::Traffic => (fixed::ratio(8, 5), fixed::from_int(1), fixed::ratio(13, 10)),
         }
     }
 
     /// How wide and how tall the billboard for one of these is, in world
-    /// units.
+    /// units, seen end-on.
+    ///
+    /// Kept for callers that only want a rough size; anything drawing a car
+    /// wants [`CarKind::hull`] and the view angle.
     pub fn body(self) -> (Fx, Fx) {
-        match self {
-            CarKind::Bus => (fixed::ratio(8, 5), fixed::ratio(6, 5)),
-            CarKind::Taxi => (fixed::ratio(11, 10), fixed::ratio(7, 10)),
-            CarKind::Traffic => (fixed::from_int(1), fixed::ratio(13, 20)),
-        }
+        let (_, w, h) = self.hull();
+        (w, h)
     }
 }
 

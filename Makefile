@@ -47,7 +47,7 @@ GENHDRS = $(GEN)/charset.h $(GEN)/trig.h $(GEN)/recip.h $(GEN)/glyphs.h $(GEN)/c
 T4SRC   = $(T4)/src/main.c $(T4)/src/cast.c
 T4HDRS  = $(T4)/src/plus4.h $(T4)/src/cast.h
 
-.PHONY: all host prg disk bake run run4 demo demo4 cast shot test check bench sheet clean help
+.PHONY: all host prg disk bake run run4 demo walk demo4 cast shot test check bench sheet clean help
 
 all: host prg disk
 
@@ -56,10 +56,11 @@ help:
 	@echo 'make prg     the Plus/4 build'
 	@echo 'make disk    the Plus/4 build, on a .d64'
 	@echo 'make run     play it in this terminal'
-	@echo 'make demo    watch it walk itself'
+	@echo 'make demo    watch the cab take fares on its own'
+	@echo 'make walk    watch the camera walk the streets instead'
 	@echo 'make cast    record the walk to build/tour.cast (asciinema)'
 	@echo 'make run4    play it in xplus4'
-	@echo 'make demo4   watch the Plus/4 build drive itself in xplus4'
+	@echo 'make demo4   watch the Plus/4 build walk itself in xplus4'
 	@echo 'make test    every test in the workspace'
 	@echo 'make check   test, then verify both targets still build'
 	@echo 'make bench   how fast the host renderer is'
@@ -81,7 +82,11 @@ run: $(HOST)
 # The attract mode: the camera walks the streets and looks around on its own.
 # Any movement key takes it over; backslash hands it back.
 demo: $(HOST)
-	@$(HOST) --tour
+	@$(HOST) --demo
+
+# The older demonstration: a camera on foot rather than a cab.
+walk: $(HOST)
+	@$(HOST) --demo --walk
 
 # An animation you can send somebody.  A .cast is terminal output with
 # timestamps, not a video, so it stays sharp at any size and is a few hundred

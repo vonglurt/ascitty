@@ -39,7 +39,7 @@ use crate::frame::{Cel, Frame};
 use crate::palette;
 use crate::rng::hash3;
 use crate::trig::Ang;
-use crate::world::{City, Crossing, Kind, Plan, RoadCell};
+use crate::world::{self, City, Crossing, Kind, Plan, RoadCell};
 
 /// How much taller a character cell is than it is wide.  Every terminal and
 /// the Plus/4 alike are close enough to 2:1 that one constant covers both;
@@ -67,10 +67,19 @@ pub struct Proj {
     pub horizon: i32,
     /// Screen rows per world unit at unit distance.
     pub proj: Fx,
+    /// How high the camera is above the ground it is standing on.
+    ///
+    /// The floor pass measures every row from this, not from sea level, so
+    /// anything that wants to know which world point a ground row landed on
+    /// has to use the same number.  Handed over for the same reason as the
+    /// horizon: two derivations of it would eventually disagree, and the
+    /// symptom would be a decal that slides across the road as the camera
+    /// climbs a grade.
+    pub eye: Fx,
 }
 
 /// Work out the projection for a camera and a frame.
-pub fn projection(cam: &Camera, f: &Frame) -> Proj {
+pub fn projection(city: &City, cam: &Camera, f: &Frame) -> Proj {
     let (w, h) = (f.w as i32, f.h as i32);
     Proj {
         w,
@@ -80,6 +89,7 @@ pub fn projection(cam: &Camera, f: &Frame) -> Proj {
             fixed::from_int(w),
             fixed::mul(cam.fov, fixed::from_int(2 * CELL_ASPECT)),
         ),
+        eye: (cam.z - city.ground(fixed::floor(cam.x), fixed::floor(cam.y))).max(1),
     }
 }
 
@@ -124,7 +134,7 @@ pub fn render_to(
     if f.w == 0 || f.h == 0 {
         return st;
     }
-    let p = projection(cam, f);
+    let p = projection(city, cam, f);
     let (w, h) = (p.w, p.h);
     let horizon = p.horizon;
     let proj = p.proj;
@@ -142,7 +152,7 @@ pub fn render_to(
     // the ground the ray lands on is at a different level, the sample is in
     // slightly the wrong place - which is exactly why the terrain generator
     // is held to a gentle grade.  See `elevation.rs`.
-    let eye_above_ground = (cam.z - city.ground(fixed::floor(cam.x), fixed::floor(cam.y))).max(1);
+    let eye_above_ground = p.eye;
     let mut row_dist = vec![HUGE; f.h];
     for y in (horizon.max(0) + 1)..h {
         let below = y - horizon;
@@ -464,45 +474,46 @@ const VERGE_BAND: Fx = fixed::ratio(1, 2);
 const SEAM_BAND: Fx = fixed::ratio(1, 8);
 
 /// How far a point on the pavement is from the nearest kerb, in cells.
-///
-/// Returns one - the far side - when no road adjoins, which is what a
-/// pavement fragment in the middle of a block should read as.
+#[inline(always)]
 fn from_kerb(city: &City, gx: i32, gy: i32, fx: Fx, fy: Fx) -> Fx {
+    edge_distance(city.edges(gx, gy) >> world::EDGE_ROAD, fx, fy)
+}
+
+/// How far a point on the pavement is from the nearest building wall.
+#[inline(always)]
+fn from_wall(city: &City, gx: i32, gy: i32, fx: Fx, fy: Fx) -> Fx {
+    edge_distance(city.edges(gx, gy) >> world::EDGE_BUILT, fx, fy)
+}
+
+/// Distance to the nearest of a cell's marked sides, in cells.
+///
+/// The low four bits of `sides` are west, east, north and south, in the
+/// order [`world::EDGE_STEPS`] packs them.  One when no side is marked -
+/// the far side of a cell that adjoins nothing - which is what a fragment of
+/// pavement in the middle of a block should read as.
+///
+/// The bits come from [`City::edges`], which is built once when the city is.
+/// Asking [`City::at`] about the four neighbours instead is eight grid
+/// lookups per ground character, and the ground is most of the screen: it
+/// cost 0.07 ms a frame, which was a third of the frame.
+#[inline(always)]
+fn edge_distance(sides: u8, fx: Fx, fy: Fx) -> Fx {
     let mut d = ONE;
-    let road = |dx: i32, dy: i32| city.at(gx + dx, gy + dy).kind == Kind::Road;
-    if road(-1, 0) {
+    if sides & 1 != 0 {
         d = d.min(fx);
     }
-    if road(1, 0) {
+    if sides & 2 != 0 {
         d = d.min(ONE - fx);
     }
-    if road(0, -1) {
+    if sides & 4 != 0 {
         d = d.min(fy);
     }
-    if road(0, 1) {
+    if sides & 8 != 0 {
         d = d.min(ONE - fy);
     }
     d
 }
 
-/// How far a point on the pavement is from the nearest building wall.
-fn from_wall(city: &City, gx: i32, gy: i32, fx: Fx, fy: Fx) -> Fx {
-    let mut d = ONE;
-    let built = |dx: i32, dy: i32| city.at(gx + dx, gy + dy).kind == Kind::Building;
-    if built(-1, 0) {
-        d = d.min(fx);
-    }
-    if built(1, 0) {
-        d = d.min(ONE - fx);
-    }
-    if built(0, -1) {
-        d = d.min(fy);
-    }
-    if built(0, 1) {
-        d = d.min(ONE - fy);
-    }
-    d
-}
 
 /// The pavement, in bands from the kerb to the building line.
 ///

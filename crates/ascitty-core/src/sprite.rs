@@ -29,6 +29,7 @@ use crate::fixed::{self, Fx, ONE};
 use crate::frame::{Cel, Frame};
 use crate::palette;
 use crate::raycast::{Proj, CELL_ASPECT};
+use crate::trig::{self, Ang};
 
 /// What a billboard is a picture of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,6 +50,12 @@ pub enum Stamp {
     Meter,
     /// A car, seen from behind or in front.
     Car,
+    /// A boxy four-wheel-drive, seen from the side.
+    JeepSide,
+    /// A long, low car of about 1972, seen from the side.
+    MuscleSide,
+    /// A bus, seen from the side.
+    BusSide,
     /// The cab.  Longer than a saloon, with a checker band and a sign on
     /// the roof, because a taxi you are chasing has to be identifiable at a
     /// glance among a street full of traffic.
@@ -198,6 +205,48 @@ const METER_ART: [&str; 8] = [
 ];
 
 #[rustfmt::skip]
+/// A boxy four-wheel-drive, seen from the side: upright glass, no overhang
+/// worth speaking of, wheels at the corners.
+#[rustfmt::skip]
+const JEEP_SIDE_ART: [&str; 8] = [
+    "        ",
+    "        ",
+    "  ####  ",
+    " ###### ",
+    "########",
+    "########",
+    " o    o ",
+    "        ",
+];
+
+/// A long, low car of about 1972, seen from the side: most of it is bonnet,
+/// the cabin is set well back, and the roofline runs into the boot.
+#[rustfmt::skip]
+const MUSCLE_SIDE_ART: [&str; 8] = [
+    "        ",
+    "        ",
+    "        ",
+    "   ###  ",
+    " ###### ",
+    "########",
+    " o    o ",
+    "        ",
+];
+
+/// A bus from the side: a box on wheels, and nothing else to say about it.
+#[rustfmt::skip]
+const BUS_SIDE_ART: [&str; 8] = [
+    "        ",
+    "########",
+    "#.#.#.##",
+    "#.#.#.##",
+    "########",
+    "########",
+    " o    o ",
+    "        ",
+];
+
+#[rustfmt::skip]
 const CAR_ART: [&str; 8] = [
     "        ",
     "        ",
@@ -305,6 +354,9 @@ impl Stamp {
             Stamp::Bollard => &BOLLARD_ART,
             Stamp::Meter => &METER_ART,
             Stamp::Car => &CAR_ART,
+            Stamp::JeepSide => &JEEP_SIDE_ART,
+            Stamp::MuscleSide => &MUSCLE_SIDE_ART,
+            Stamp::BusSide => &BUS_SIDE_ART,
             Stamp::Taxi => &TAXI_ART,
             Stamp::Wreck => &WRECK_ART,
             Stamp::Bus => &BUS_ART,
@@ -371,6 +423,45 @@ fn glyph_for(c: char, hue: u8, phase: u8) -> Option<(GlyphId, u8, u8)> {
         'g' => (catalog::G_SOLID, palette::H_GREEN, if phase % 3 == 2 { 7 } else { 1 }),
         _ => (catalog::G_SOLID, hue, 5),
     })
+}
+
+/// How wide a box of `len` by `wid` looks, and whether you are seeing it
+/// side-on.
+///
+/// `yaw` is the way the box is pointing; `(vx, vy)` is the direction from
+/// the camera to it.  The silhouette of a rectangle is
+///
+/// ```text
+///     width = len * |sin t| + wid * |cos t|
+/// ```
+///
+/// where `t` is the angle between the two - so a car looked at down its own
+/// length is as wide as a car is wide, broadside it is as wide as a car is
+/// long, and everything between is the two corners.  That single expression
+/// is the whole of what makes traffic read as boxes driving along a street
+/// rather than as cards turning to face you: a car that passes across the
+/// view stretches out and then shortens again as it goes.
+///
+/// Exact, and it costs two multiplies.  There is no approximation here to
+/// justify - the projection of a rectangle onto a line really is this.
+pub fn silhouette(len: Fx, wid: Fx, yaw: Ang, vx: Fx, vy: Fx) -> (Fx, bool) {
+    // The car's own axis, and the axis across it.
+    let (ax, ay) = (trig::cos(yaw), trig::sin(yaw));
+    // Normalise the view direction, cheaply: the octagonal norm is within
+    // six per cent, and six per cent of a car's length is a tenth of a
+    // character at any distance you can see one.
+    let (a, b) = (fixed::abs(vx), fixed::abs(vy));
+    let (hi, lo) = if a > b { (a, b) } else { (b, a) };
+    let n = hi + fixed::mul(lo, fixed::ratio(3, 8));
+    if n <= 0 {
+        return (wid, false);
+    }
+    let (ux, uy) = (fixed::div(vx, n), fixed::div(vy, n));
+    // |cos t| is the view along the car's axis; |sin t| is across it.
+    let along = fixed::abs(fixed::mul(ux, ax) + fixed::mul(uy, ay));
+    let across = fixed::abs(fixed::mul(ux, -ay) + fixed::mul(uy, ax));
+    let width = fixed::mul(len, across) + fixed::mul(wid, along);
+    (width, across > along)
 }
 
 /// Draw one billboard.
@@ -491,7 +582,7 @@ mod tests {
         let mut f = Frame::new(100, 36);
         let mut depth = Vec::new();
         raycast::render_to(&city, &cam, &atmos, &mut f, &mut depth);
-        let p = raycast::projection(&cam, &f);
+        let p = raycast::projection(&city, &cam, &f);
         (city, cam, atmos, f, depth, p)
     }
 
@@ -647,5 +738,58 @@ mod tests {
         let mut order = Vec::new();
         draw_all(&mut f, &depth, &cam, &atmos, &p, &mut boards, &mut order);
         assert_eq!(order.len(), 200);
+    }
+}
+
+#[cfg(test)]
+mod silhouette_tests {
+    use super::*;
+    use crate::fixed;
+
+    /// A box looked at down its own length is as wide as the box is wide,
+    /// and broadside it is as wide as the box is long.
+    #[test]
+    fn a_car_is_as_long_from_the_side_as_it_is_wide_from_behind() {
+        let (len, wid) = (fixed::from_int(2), fixed::ratio(6, 5));
+        // Pointing east, seen from the west: end-on.
+        let (w, side) = silhouette(len, wid, 0, ONE, 0);
+        assert_eq!(w, wid, "a car seen down its own length should be its width");
+        assert!(!side);
+        // Pointing east, seen from the north: broadside.
+        let (w, side) = silhouette(len, wid, 0, 0, ONE);
+        assert_eq!(w, len, "a car seen broadside should be its length");
+        assert!(side);
+    }
+
+    /// ...and between those two at every angle from every heading, give or
+    /// take the octagonal norm.
+    ///
+    /// The tolerance is not slack.  The view direction is normalised with
+    /// `max + 3/8 min` rather than a square root, which is short by up to
+    /// about three per cent at forty-five degrees, and the error lands on
+    /// both terms of the silhouette.  Three per cent of a car is a fiftieth
+    /// of a character at any distance you can see one, and a square root per
+    /// vehicle per frame is not worth it - but the bound is real and is
+    /// stated here rather than hidden in a fudge factor.
+    #[test]
+    fn the_silhouette_is_between_the_width_and_the_length() {
+        let (len, wid) = (fixed::from_int(2), fixed::ratio(6, 5));
+        let slack = fixed::mul(len, fixed::ratio(1, 20));
+        for yaw in (0..65_536).step_by(1_021) {
+            for view in (0..65_536).step_by(997) {
+                let (vx, vy) = (trig::cos(view as Ang), trig::sin(view as Ang));
+                let (w, side) = silhouette(len, wid, yaw as Ang, vx, vy);
+                assert!(
+                    w >= wid - slack && w <= len + wid,
+                    "yaw {yaw} view {view} gave {}",
+                    fixed::to_f32(w)
+                );
+                // Side-on means the long dimension dominates, so the
+                // silhouette has to be at least as wide as the car is.
+                if side {
+                    assert!(w > wid - slack, "yaw {yaw} view {view} claims side-on at {}", fixed::to_f32(w));
+                }
+            }
+        }
     }
 }

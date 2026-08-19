@@ -42,9 +42,24 @@ use ascitty_core::world::{Arch, City, Kind, SIZE};
 /// baked district came out with a thirteen-row band of empty carriageway
 /// through it and the attract mode spent half its time looking at nothing.
 ///
-/// So the window is chosen by *content*: the one with the most built ground
-/// in it.  A summed-area table makes that a constant-time score per
-/// candidate, so every offset can be tried rather than sampled.
+/// Then it was "the most built ground", scored with a summed-area table.
+/// That is the opposite mistake and it looked worse.  The densest 64x64 of
+/// a city is a solid block of towers, so the camera boots hard against a
+/// wall: at forty columns a near facade is one flat colour across half the
+/// screen, and the frame carries no sky, no distance and no second building
+/// to compare the first with.  Side by side against the earlier build the
+/// difference is not subtle.
+///
+/// What a forty-by-twenty-five screen wants is a *street*: something to look
+/// down, buildings at several distances along it, and sky above.  So the
+/// score is content multiplied by the length of the longest straight run of
+/// road out of the district's centre - the same probe the target itself
+/// does at boot to decide which way to face, so what is scored here is
+/// literally what the machine will show.
+///
+/// This is what "size the world to the resolution" means in practice.  The
+/// district is the same 64 cells either way; which 64 is chosen has to be
+/// decided by what fits in forty columns, not by what is densest.
 fn pick_district(c: &City) -> (usize, usize) {
     let n = SIZE;
     // Inclusive prefix sums of "is there a building here".
@@ -64,24 +79,163 @@ fn pick_district(c: &City) -> (usize, usize) {
             - sum[y1 * (n + 1) + x0]
     };
 
-    let mut best = (0usize, 0usize, 0u32);
+    let mut best = (0usize, 0usize, 0u32, 0u32, 0u32);
     for y in 0..=(n - DISTRICT) {
         for x in 0..=(n - DISTRICT) {
-            let score = area(x, y);
+            let built = area(x, y);
+            // Cheap reject before the probe: a district that is mostly
+            // empty cannot win however long its streets are, and the probe
+            // is the expensive half.
+            if built * 4 < (DISTRICT * DISTRICT) as u32 {
+                continue;
+            }
+            let view = street_view(c, x, y);
+            let score = built * view;
             if score > best.2 {
-                best = (x, y, score);
+                best = (x, y, score, built, view);
             }
         }
     }
     eprintln!(
-        "  district at {},{}: {} of {} cells built ({}%)",
+        "  district at {},{}: {} of {} cells built ({}%), {} cells of street to look down",
         best.0,
         best.1,
-        best.2,
+        best.3,
         DISTRICT * DISTRICT,
-        best.2 as usize * 100 / (DISTRICT * DISTRICT)
+        best.3 as usize * 100 / (DISTRICT * DISTRICT),
+        best.4
     );
     (best.0, best.1)
+}
+
+/// How far you can see down a street from the middle of a district.
+///
+/// The longest straight run of carriageway in any of the four cardinal
+/// directions from the nearest road cell to the centre, capped - past about
+/// the draw distance the far end is not drawn at all, so an uncapped run
+/// would just elect whichever district contains the longest arterial, which
+/// is the empty-tarmac failure again.
+///
+/// Probed all the way to the draw distance rather than to some shorter
+/// figure.  A twenty-cell street sounds long and is not: the target draws
+/// forty, so a tower standing at twenty-one cells closes the end of the
+/// street and fills the middle of the frame - which is the wall the first
+/// attempt at this produced, in a district that scored full marks for
+/// having twenty cells of clear road in front of it.
+///
+/// Zero if there is no road near the centre at all, which rejects the
+/// district outright: the target spawns at its centre.
+fn street_view(c: &City, ox: usize, oy: usize) -> u32 {
+    const REACH: i32 = FAR;
+    const CAP: u32 = 32;
+    let mid = (ox + DISTRICT / 2) as i32;
+    let midy = (oy + DISTRICT / 2) as i32;
+
+    // The same spiral the target's `spawn()` walks, bounded much tighter:
+    // a centre more than a few cells from a road is not a centre.
+    let mut start = None;
+    'find: for r in 0..6i32 {
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx.abs() != r && dy.abs() != r {
+                    continue;
+                }
+                let (x, y) = (mid + dx, midy + dy);
+                if c.at(x, y).kind == Kind::Road && c.height(x, y) == 0 {
+                    start = Some((x, y));
+                    break 'find;
+                }
+            }
+        }
+    }
+    let Some((sx, sy)) = start else { return 0 };
+
+    let mut best = 0;
+    for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+        let mut run = 0;
+        for k in 1..=REACH {
+            let (x, y) = (sx + dx * k, sy + dy * k);
+            if c.at(x, y).kind != Kind::Road || c.height(x, y) > 0 {
+                break;
+            }
+            run += 1;
+        }
+        best = best.max(run as u32);
+    }
+    // ...multiplied by how wide the street is.
+    //
+    // Depth is not enough on its own.  An alley twenty cells long puts a
+    // wall four metres from the camera on both sides, and at forty columns
+    // that is two flat blocks of colour and nothing else.  What the earlier
+    // build had - and what it was liked for - was a *wide* street: the
+    // buildings are then far enough away to be several cells of facade each
+    // rather than one, which is where the window texture comes from, and
+    // there is sky between them.
+    //
+    // Capped, for the same reason the run is: the whole point of moving off
+    // the arterial crossing was that a hundred metres of tarmac in both
+    // directions is not a view either.
+    let w = c.plan.cols.at(sx).width.max(c.plan.rows.at(sy).width) as u32;
+    best.min(CAP) * w.clamp(2, 10)
+}
+
+/// Where in the district to stand, and which way to look.
+///
+/// Returns district-local cell coordinates and a heading as a byte of turn.
+///
+/// Scored on the length of clear carriageway ahead, then on how much is
+/// *built* along the sides of it - a street with nothing on it is as poor a
+/// first frame as a wall is, and the two failures look nothing alike so both
+/// have to be scored against.  Candidates are road cells near the middle of
+/// the district, because that is where the district was chosen to be
+/// interesting and because the edges of a 64-cell window have no city beyond
+/// them to look at.
+fn pick_view(c: &City, off_x: usize, off_y: usize) -> (usize, usize, u8, u32) {
+    const NEAR: i32 = 10;
+    let mid = (DISTRICT / 2) as i32;
+    let inside = |x: i32, y: i32| x >= 0 && y >= 0 && x < DISTRICT as i32 && y < DISTRICT as i32;
+    let world = |x: i32, y: i32| ((x + off_x as i32), (y + off_y as i32));
+    let road = |x: i32, y: i32| {
+        let (gx, gy) = world(x, y);
+        inside(x, y) && c.at(gx, gy).kind == Kind::Road && c.height(gx, gy) == 0
+    };
+
+    let mut best = (mid as usize, mid as usize, 0u8, 0u32, 0u32);
+    for dy in -NEAR..=NEAR {
+        for dx in -NEAR..=NEAR {
+            let (x, y) = (mid + dx, mid + dy);
+            if !road(x, y) {
+                continue;
+            }
+            // Four headings, as bytes of turn: east, south, west, north -
+            // the same quarters `trig` uses, which is what the target's
+            // COS/SIN tables are indexed by.
+            for (i, (sx, sy)) in [(1, 0), (0, 1), (-1, 0), (0, -1)].iter().enumerate() {
+                let mut run = 0u32;
+                let mut built = 0u32;
+                for k in 1..=FAR {
+                    let (px, py) = (x + sx * k, y + sy * k);
+                    if !road(px, py) {
+                        break;
+                    }
+                    run += 1;
+                    // What flanks the street at this distance, one cell out
+                    // on each side across the direction of travel.
+                    for side in [-3, 3] {
+                        let (fx, fy) = (px - sy * side, py + sx * side);
+                        if inside(fx, fy) {
+                            let (gx, gy) = world(fx, fy);
+                            built += u32::from(c.height(gx, gy) > 0);
+                        }
+                    }
+                }
+                if (run, built) > (best.3, best.4) {
+                    best = (x as usize, y as usize, (i as u8) << 6, run, built);
+                }
+            }
+        }
+    }
+    (best.0, best.1, best.2, best.3)
 }
 
 /// Side of the district baked for the Plus/4, in cells.
@@ -444,7 +598,25 @@ fn city(seed: u32) -> String {
     s.push_str("** See the note in ascitty-bake; it is worth a factor of three. */\n");
     let _ = writeln!(s, "#define CITY_SEED {seed}U");
     let _ = writeln!(s, "#define CITY_ORIGIN_X {off_x}");
-    let _ = writeln!(s, "#define CITY_ORIGIN_Y {off_y}\n");
+    let _ = writeln!(s, "#define CITY_ORIGIN_Y {off_y}");
+
+    // Where the camera stands and which way it looks, chosen here rather
+    // than searched for at boot.
+    //
+    // The machine used to spiral out from the middle of the district for a
+    // road cell and then probe four directions for the longest street.  Both
+    // searches are pure functions of data this program already holds, so
+    // both are now done here: the target reads three numbers.  That is the
+    // bake bridge working as intended, and it also fixes what the boot-time
+    // version got wrong - it could only see 24 cells, so it could not tell a
+    // street that runs off into the haze from one a tower closes at 25, and
+    // it opened on a facade filling the middle of the screen.
+    let (sx, sy, sa, run) = pick_view(&c, off_x, off_y);
+    eprintln!("  camera at {sx},{sy} facing {sa}, {run} cells of clear street");
+    let _ = writeln!(s, "/* Where the camera starts, in district cells, and its heading. */");
+    let _ = writeln!(s, "#define START_X {sx}");
+    let _ = writeln!(s, "#define START_Y {sy}");
+    let _ = writeln!(s, "#define START_A {sa}\n");
     s.push_str("/* Height in world units, 0 for anything you can drive on. */\n");
     s.push_str("extern const unsigned char city_h[CITY_SIZE * CITY_SIZE];\n");
     s.push_str("/* TED colour byte of the facade, at full luminance. */\n");

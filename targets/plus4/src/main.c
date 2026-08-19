@@ -48,66 +48,23 @@ static void install_charset(void)
     TED_MISC &= (unsigned char)~TED_CHARS_FROM_RAM;
 }
 
-/* Find somewhere in the street to stand.
+/* Where the camera starts.
 **
-** Spiralling out from the middle of the district rather than trusting a
-** fixed coordinate: the city is generated, and a generator that is retuned
-** must not be able to start the program inside a wall. */
-static void spawn(void)
-{
-    int r, dx, dy, x, y;
-    int mid = CITY_SIZE / 2;
-
-    for (r = 0; r < CITY_SIZE / 2; ++r) {
-        for (dy = -r; dy <= r; ++dy) {
-            for (dx = -r; dx <= r; ++dx) {
-                if (dx != -r && dx != r && dy != -r && dy != r)
-                    continue;
-                x = mid + dx;
-                y = mid + dy;
-                if (x < 1 || y < 1 || x >= CITY_SIZE - 1 || y >= CITY_SIZE - 1)
-                    continue;
-                /* On the road, not merely on open ground: the middle of a
-                ** park is somewhere you can stand and nowhere to start. */
-                if (cast_on_road(x, y)) {
-                    cam_x = (x << 8) + 128;
-                    cam_y = (y << 8) + 128;
-                    return;
-                }
-            }
-        }
-    }
-    cam_x = (mid << 8) + 128;
-    cam_y = (mid << 8) + 128;
-}
-
-/* Face down whichever street is longest from here.
+** Three numbers from gen/tables.h.  This used to be two searches at boot -
+** a spiral out from the middle of the district for a road cell, then four
+** probes for the longest street - and both were pure functions of data the
+** bake already holds, so both moved there.  See `pick_view` in the bake.
 **
-** The spawn search only guarantees you are standing somewhere you could
-** stand; it says nothing about what is in front of you, and facing east
-** regardless means about one boot in four opens on a wall three metres
-** away.  Four probes at boot is nothing and it is the first thing anybody
-** sees. */
-static void face_the_street(void)
+** The searches were not slow enough to matter on their own.  What they were
+** was *worse*: the probe could only see 24 cells, which is not far enough to
+** tell a street that runs off into the haze from one a tower closes at 25,
+** and the first frame anybody saw was a facade across the middle of the
+** screen. */
+static void place_camera(void)
 {
-    unsigned char a, best_a = 0;
-    unsigned char n, best_n = 0;
-    int x, y;
-
-    for (a = 0; a < 4; ++a) {
-        unsigned char dir = (unsigned char)(a << 6);
-        for (n = 1; n < 24; ++n) {
-            x = (cam_x >> 8) + (((int)COS(dir) * n) >> 8);
-            y = (cam_y >> 8) + (((int)SIN(dir) * n) >> 8);
-            if (!cast_on_road(x, y))
-                break;
-        }
-        if (n > best_n) {
-            best_n = n;
-            best_a = dir;
-        }
-    }
-    cam_a = best_a;
+    cam_x = ((int)START_X << 8) + 128;
+    cam_y = ((int)START_Y << 8) + 128;
+    cam_a = START_A;
 }
 
 int main(void)
@@ -120,8 +77,7 @@ int main(void)
     TED_BORDER = CBYTE(0, HUE_BLACK);
     install_charset();
     cast_init();
-    spawn();
-    face_the_street();
+    place_camera();
     cast_demo_start();
 
     for (;;) {
