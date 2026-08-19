@@ -331,6 +331,8 @@ impl CarKind {
     ///
     /// A bus is still forty and still wins, because the point of there being
     /// a bus is that there is something you do not simply drive through.
+    ///
+    /// See [`Car::impact_mass`] for the part that depends on the throttle.
     pub fn impact_mass(self) -> i32 {
         match self {
             // The cab ploughs.
@@ -422,6 +424,10 @@ pub struct Car {
     pub yaw: Ang,
     /// Angular velocity, in angle units per tick, for the spin after a hit.
     pub spin: i32,
+    /// How hard the driver is on the throttle, 0 to [`ONE`], recorded on the
+    /// last tick.  Only the collision solver reads it - see
+    /// [`Car::impact_mass`].
+    pub push: Fx,
     /// Accumulated dents, 0 (showroom) to 255 (sculpture).  Cosmetic: the
     /// car never stops working, because a car that stops working ends the
     /// run and the run is the point.
@@ -457,7 +463,22 @@ pub struct Car {
 impl Car {
     /// A car sitting still at a place, pointing somewhere.
     pub fn new(kind: CarKind, x: Fx, y: Fx, yaw: Ang, hue: u8) -> Car {
-        Car { x, y, vx: 0, vy: 0, yaw, spin: 0, damage: 0, hue, kind, pinned: 0, stepped: 0, wound: 0, boost: 0 }
+        Car {
+            x,
+            y,
+            vx: 0,
+            vy: 0,
+            yaw,
+            spin: 0,
+            push: 0,
+            damage: 0,
+            hue,
+            kind,
+            pinned: 0,
+            stepped: 0,
+            wound: 0,
+            boost: 0,
+        }
     }
 
     /// Speed, in units per second.
@@ -518,6 +539,9 @@ impl Car {
     /// Advance one tick at `hz` ticks per second.
     pub fn step(&mut self, c: &Controls, city: &City, hz: i32) {
         let hz = hz.max(1);
+        // Kept for the collision solver, which runs after every car has
+        // stepped and has no other way to know who was on the power.
+        self.push = c.throttle.max(0);
         let inv = fixed::div(ONE, fixed::from_int(hz));
 
         let (fx, fy) = (trig::cos(self.yaw), trig::sin(self.yaw));
@@ -791,6 +815,47 @@ impl Car {
     }
 }
 
+impl Car {
+    /// What this car weighs while it is doing the hitting, this tick.
+    ///
+    /// [`CarKind::impact_mass`] is the standing figure; this adds the
+    /// throttle.  A cab with the pedal buried weighs [`PLOUGH`] times what
+    /// it does coasting, so shouldering a saloon out of the way is something
+    /// you *do* rather than something that happens to you at the right
+    /// speed - which is the difference between an arcade taxi and a car with
+    /// a collision model.
+    ///
+    /// Only the driven car gets it.  Traffic is on the throttle nearly all
+    /// the time and a city where every saloon ploughs is a city with no
+    /// consequences in it; the whole point is that the thing you are
+    /// steering is heavier than everything except the bus.
+    fn impact_mass(&self) -> i32 {
+        let base = self.kind.impact_mass();
+        if self.kind != CarKind::Taxi {
+            return base;
+        }
+        let plough = ONE + fixed::mul(self.push, PLOUGH - ONE);
+        fixed::floor(fixed::mul(fixed::from_int(base), plough)).max(1)
+    }
+}
+
+/// What the cab weighs flat out, against what it weighs coasting.
+///
+/// Three.  Off the throttle the cab is three times a saloon; with the pedal
+/// down it is nine times one and comes out the other side of a queue.
+///
+/// What that actually buys is not much more shove - the impulse between two
+/// bodies is dominated by the *lighter* of them, so tripling the heavy one
+/// moves the light one only a fifth further - it is the cab keeping its own
+/// momentum.  Coasting into a saloon at six units a second costs the cab
+/// two and a half of them; flat out it costs one.  Ploughing is a car that
+/// does not get stopped, not a car that fires other cars into the sky.
+///
+/// The bus is still a hundred and twenty against the cab's ninety and still
+/// wins, because the point of there being a bus is that there is one thing
+/// you cannot simply drive through.
+const PLOUGH: Fx = fixed::ratio(3, 1);
+
 /// Resolve a collision between two cars.
 ///
 /// Momentum is exchanged along the line between their centres, scaled by
@@ -816,7 +881,7 @@ pub fn collide(a: &mut Car, b: &mut Car, city: &City) -> Option<Fx> {
         return None; // already separating
     }
 
-    let (ka, kb) = (a.kind.impact_mass(), b.kind.impact_mass());
+    let (ka, kb) = (a.impact_mass(), b.impact_mass());
     let ma = fixed::from_int(ka);
     let mb = fixed::from_int(kb);
 
@@ -1464,6 +1529,51 @@ mod tests {
             }
         }
         assert!(dented, "drove into walls in every direction without a scratch");
+    }
+
+    /// Flat out, the cab shoulders things aside; coasting, it does not.
+    ///
+    /// The arcade-taxi rule: what gets you through a queue of traffic is the
+    /// throttle, not the speed you happen to be carrying.  Both halves of
+    /// this are measured at the *same* closing speed, so the only difference
+    /// is the pedal.
+    #[test]
+    fn the_throttle_is_what_ploughs() {
+        let city = open_ground();
+        let shove = |push: Fx| -> (f32, f32) {
+            let mut a = Car::new(CarKind::Taxi, 0, 0, 0, 7);
+            a.vx = fixed::from_int(6);
+            a.push = push;
+            let mut b = Car::new(CarKind::Traffic, fixed::from_int(1), 0, 0, 3);
+            collide(&mut a, &mut b, &city);
+            (fixed::to_f32(a.vx), fixed::to_f32(b.vx))
+        };
+        let (kept_off, moved_off) = shove(0);
+        let (kept_on, moved_on) = shove(ONE);
+        // The cab keeps most of what it had, which is what ploughing is.
+        assert!(
+            kept_on > kept_off * 1.3,
+            "the cab was stopped just the same: {kept_off} coasting against {kept_on} flat out"
+        );
+        // And the thing it hit goes further, though by less: the impulse
+        // between two bodies is set mostly by the lighter of them.
+        assert!(
+            moved_on > moved_off * 1.1,
+            "nothing was shoved: {moved_off} coasting against {moved_on} flat out"
+        );
+
+        // And the bus still wins: flat out into one costs the cab most of
+        // its speed, where flat out into a saloon costs it very little.
+        let mut a = Car::new(CarKind::Taxi, 0, 0, 0, 7);
+        a.vx = fixed::from_int(6);
+        a.push = ONE;
+        let mut bus = Car::new(CarKind::Bus, fixed::from_int(1), 0, 0, 3);
+        collide(&mut a, &mut bus, &city);
+        let kept_at_a_bus = fixed::to_f32(a.vx);
+        assert!(
+            kept_at_a_bus < kept_on / 2.0,
+            "the cab ploughed through a bus: {kept_at_a_bus} left against {kept_on} through a saloon"
+        );
     }
 
     #[test]

@@ -639,7 +639,8 @@ USAGE: ascitty [options]
                     and follows it when you resize
   --fps N           frame rate cap            (default: 30)
   --fov DEGREES     horizontal field of view  (default: 67)
-  --rain N          0 dry .. 8 torrential     (default: 0, dry)
+  --distance N      draw distance, 0 the next block .. 9 the whole city
+                    (default: 6)
   --haze N          0 clear .. 8 soup         (default: 3)
   --stars N         0 .. 8                    (default: 4)
   --no-moon         moonless night
@@ -704,7 +705,7 @@ CONTROLS
 
   ANY TIME
   g          ascii / unicode glyphs   m          moon
-  1-9 0      rain, 0 dry              h          haze
+  0-9        draw distance, 0 near, 9 the far side of the city
   \\          back to the autopilot    esc        quit
 
   Two keys at once wants a terminal that reports key releases - kitty,
@@ -756,8 +757,10 @@ fn parse_args() -> Result<Opts, String> {
             }
             "--fps" => o.fps = val()?.parse().map_err(|_| "bad --fps".to_string())?,
             "--fov" => o.fov = val()?.parse().map_err(|_| "bad --fov".to_string())?,
-            "--rain" => o.atmos.rain = val()?.parse::<u8>().map_err(|_| "bad --rain")?.min(8),
-            "--haze" => o.atmos.haze = val()?.parse::<u8>().map_err(|_| "bad --haze")?.min(8),
+            "--distance" => {
+                o.atmos.haze = 9 - val()?.parse::<u8>().map_err(|_| "bad --distance")?.min(9)
+            }
+            "--haze" => o.atmos.haze = val()?.parse::<u8>().map_err(|_| "bad --haze")?.min(9),
             "--stars" => o.atmos.stars = val()?.parse::<u8>().map_err(|_| "bad --stars")?.min(8),
             "--no-moon" => o.atmos.moon = false,
             "--day" => o.atmos.day = val()?.parse().map_err(|_| "bad --day".to_string())?,
@@ -974,7 +977,6 @@ fn run(mut o: Opts) -> Result<(), String> {
             raycast::render_to(&city, &cam, &o.atmos, &mut f, &mut depth);
             let proj = raycast::projection(&city, &cam, &f);
             sim.draw(&mut f, &depth, &cam, &o.atmos, &proj);
-            o.atmos.rain_over(&mut f, &cam);
             if view == View::Drive {
                 hud_layer(&mut f, &sim, &cam, &o.atmos, &proj);
             }
@@ -1033,7 +1035,6 @@ fn run(mut o: Opts) -> Result<(), String> {
             raycast::render_to(&city, &cam, &o.atmos, &mut f, &mut depth);
             let proj = raycast::projection(&city, &cam, &f);
             sim.draw(&mut f, &depth, &cam, &o.atmos, &proj);
-            o.atmos.rain_over(&mut f, &cam);
             if view == View::Drive {
                 hud_layer(&mut f, &sim, &cam, &o.atmos, &proj);
             }
@@ -1214,15 +1215,20 @@ fn run(mut o: Opts) -> Result<(), String> {
                     hands.open();
                 }
                 Key::Char('m') => o.atmos.moon = !o.atmos.moon,
-                Key::Char('h') => o.atmos.haze = (o.atmos.haze + 1) % 9,
+
                 Key::Char('g') => {
                     o.mode = match o.mode {
                         Mode::Ascii => Mode::Unicode,
                         Mode::Unicode => Mode::Ascii,
                     }
                 }
+                // Draw distance, counted the way a player thinks about it:
+                // `0` is the next block and `9` is the far side of the city.
+                // The renderer wants the opposite - how thick the air is -
+                // so the digit is turned round here rather than anywhere
+                // that has to think about it.
                 Key::Char(c) if c.is_ascii_digit() => {
-                    o.atmos.rain = c.to_digit(10).unwrap() as u8;
+                    o.atmos.haze = 9 - c.to_digit(10).unwrap() as u8;
                 }
                 _ => {}
             }
@@ -1334,7 +1340,6 @@ fn run(mut o: Opts) -> Result<(), String> {
         stats = raycast::render_to(&city, &cam, &o.atmos, &mut f, &mut depth);
         let proj = raycast::projection(&city, &cam, &f);
         sim.draw(&mut f, &depth, &cam, &o.atmos, &proj);
-        o.atmos.rain_over(&mut f, &cam);
         // The HUD layer: over the city, over the cab, over the weather.
         if view == View::Drive {
             hud_layer(&mut f, &sim, &cam, &o.atmos, &proj);

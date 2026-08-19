@@ -142,9 +142,7 @@ pub struct Stats {
 /// that the billboards go on before the rain rather than under it.
 pub fn render(city: &City, cam: &Camera, atmos: &Atmos, f: &mut Frame) -> Stats {
     let mut depth = Vec::new();
-    let st = render_to(city, cam, atmos, f, &mut depth);
-    atmos.rain_over(f, cam);
-    st
+    render_to(city, cam, atmos, f, &mut depth)
 }
 
 /// Render the city, and record how far away the nearest wall was in each
@@ -327,6 +325,9 @@ fn column(
     light: &Light,
 ) -> (u32, u32, f32) {
     let h = f.h as i32;
+    // What the far end of the world is made of.  One lookup a column rather
+    // than one a cell: the phase does not change inside a frame.
+    let sky = atmos.haze_colour();
 
     let mut map_x = fixed::floor(cam.x);
     let mut map_y = fixed::floor(cam.y);
@@ -420,7 +421,11 @@ fn column(
                 let s = arch::roof(lot, map_x, map_y);
                 let shaded = ch < city.shadow.line_at(map_x, map_y);
                 let luma = lit(s.luma, light.on(arch::ROOF, shaded));
-                f.put(x, y0, Cel { glyph: s.glyph, color: atmos.shade(s.hue, luma, dist) });
+                f.put(
+                    x,
+                    y0,
+                    Cel { glyph: s.glyph, color: atmos.shade_far(s.hue, luma, dist, x, y0, sky) },
+                );
             }
             let first = if cam.z > ch { y0 + 1 } else { y0 };
             z -= fixed::mul(fixed::from_int(first - y0), dz);
@@ -447,7 +452,11 @@ fn column(
                 // not above sea level.
                 let s = arch::facade(lot, face, along, (z - ground).max(0), bhf, lod);
                 let luma = lit(s.luma, light.on(normal, shaded_at(z)));
-                f.put(x, y, Cel { glyph: s.glyph, color: atmos.shade(s.hue, luma, dist) });
+                f.put(
+                    x,
+                    y,
+                    Cel { glyph: s.glyph, color: atmos.shade_far(s.hue, luma, dist, x, y, sky) },
+                );
                 z -= dz;
             }
         }
@@ -516,20 +525,6 @@ fn ground(city: &City, atmos: &Atmos, light: &Light, wx: Fx, wy: Fx, dist: Fx) -
         }
         Kind::Building => (catalog::G_SOLID, palette::H_BLACK, 0),
     };
-
-    // Wet ground: a puddle picks up the sodium light and gets a lot
-    // brighter, which is most of what makes a rained-on street read as
-    // rained on rather than as a darker street.
-    if atmos.wet() && !matches!(cell.kind, Kind::Park | Kind::Sand | Kind::Water) {
-        let h = hash3(gx as u32, gy as u32, 0x_5075_4444);
-        let size = fixed::ratio(2 + (h & 3) as i32, 8);
-        if fixed::abs(fx - fixed::HALF) < size && fixed::abs(fy - fixed::HALF) < size && h & 12 == 0 {
-            return Cel {
-                glyph: catalog::ROAD_PUDDLE,
-                color: atmos.shade(palette::H_YELLOW, 5, dist),
-            };
-        }
-    }
 
     // The ground faces up, so it takes the roof normal.
     let luma = lit(luma, light.on(arch::ROOF, shaded));
@@ -1227,7 +1222,7 @@ mod tests {
         // Stand in the street facing a building; the middle column must be
         // filled to the horizon rather than showing sky.
         let city = City::generate(31);
-        let atmos = Atmos { rain: 0, ..Default::default() };
+        let atmos = Atmos { ..Default::default() };
         let mut f = Frame::new(80, 40);
         // Several viewpoints across the middle of the map, because whether
         // any one of them has a wall in front of it is an accident of the
@@ -1268,7 +1263,7 @@ mod tests {
         let cam = Camera::spawn(&city, SIZE as i32 / 2, SIZE as i32 / 2);
         let mut lit_frame = Frame::new(100, 32);
         let mut dark_frame = Frame::new(100, 32);
-        let base = Atmos { rain: 0, stars: 0, haze: 2, ..Default::default() };
+        let base = Atmos { stars: 0, haze: 2, ..Default::default() };
         render(&city, &cam, &Atmos { moon: true, ..base }, &mut lit_frame);
         render(&city, &cam, &Atmos { moon: false, ..base }, &mut dark_frame);
         let differing = (0..lit_frame.cels.len())
@@ -1306,7 +1301,6 @@ mod tests {
         };
 
         let a = Atmos {
-            rain: 0,
             stars: 0,
             haze: 2,
             moon: true,
@@ -1331,7 +1325,7 @@ mod tests {
     #[test]
     fn distance_darkens() {
         let city = City::generate(8);
-        let atmos = Atmos { rain: 0, stars: 0, moon: false, haze: 4, ..Default::default() };
+        let atmos = Atmos { stars: 0, moon: false, haze: 4, ..Default::default() };
         let mut near = Frame::new(80, 30);
         let mut far = Frame::new(80, 30);
         let mut cam = Camera::spawn(&city, SIZE as i32 / 2, SIZE as i32 / 2);
@@ -1375,7 +1369,7 @@ mod tests {
     #[test]
     fn looking_straight_down_an_avenue_gives_a_long_view() {
         let city = City::generate(77);
-        let atmos = Atmos { haze: 0, rain: 0, ..Default::default() };
+        let atmos = Atmos { haze: 0, ..Default::default() };
         let mut f = Frame::new(100, 36);
         let mut cam = Camera::spawn(&city, 7, 48);
         let mut deepest = 0u32;

@@ -208,10 +208,21 @@ pub fn append(out: &mut String, s: &Status) {
         // Driving replaces the diagnostics with the only four numbers that
         // matter while the clock is running.
         let bearing = sim.target_bearing().unwrap_or(0);
+        // The clock runs past zero and the takings run past nothing - see
+        // `Sim::over` - so both have to be able to read as negative, and the
+        // minus sign on money goes in front of the currency rather than
+        // after it.
+        let left = sim.seconds_left();
+        let purse = if sim.money < 0 {
+            format!("-${}", -sim.money)
+        } else {
+            format!("${}", sim.money)
+        };
         let line = format!(
-            "TIME {:3}s   ${:<6}  {} mph  {}{}  {}{}",
-            sim.seconds_left(),
-            sim.money,
+            "TIME {:3}s{} {:<7} {} mph  {}{}  {}{}",
+            left,
+            if left < 0 { " OT " } else { "   " },
+            purse,
             fixed::floor(fixed::mul(sim.taxi.speed(), fixed::from_int(22))),
             arrow(bearing),
             if sim.fare.as_ref().is_some_and(|f| f.aboard) { " DROP" } else { " FARE" },

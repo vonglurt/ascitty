@@ -358,7 +358,7 @@ pub struct Sim {
     /// The current job, if any.
     pub fare: Option<Fare>,
     /// Money taken this shift, after petrol.
-    pub money: u32,
+    pub money: i32,
     /// What the petrol has cost so far, for the scoreboard.
     pub spent: u32,
     /// Consecutive things hit without stopping.
@@ -368,6 +368,17 @@ pub struct Sim {
     /// Frames since the shift began.
     pub tick: u32,
     /// Whether the shift is over.
+    ///
+    /// Never set by the clock any more, and kept because the field is what a
+    /// front end asks.  Running out of time used to freeze the whole
+    /// simulation on the tick it happened: the cab stopped mid-corner, the
+    /// traffic stopped around it, and the only thing left to do was quit.
+    /// That is a scoreboard, not an ending.
+    ///
+    /// The clock now runs past zero into the negative and the fare stays on
+    /// the meter, so the shift you have overrun is a shift you are working
+    /// at a loss - which is a state you can drive your way out of, because
+    /// fares still pay.  See [`Sim::seconds_left`].
     pub over: bool,
     rng: Rng,
     /// Scratch for the billboard sort, so a frame does not allocate.
@@ -839,16 +850,20 @@ impl Sim {
         self.step_peds(city, hz);
         self.step_fare(city, out);
 
-        // The meter runs on petrol as well as on time.
+        // The meter runs on petrol as well as on time, and it does not stop
+        // at nothing: a shift can be in the red, which is what makes the
+        // clock running out a thing that costs you rather than a thing that
+        // ends you.
         if self.tick.is_multiple_of(FUEL_TICKS) {
-            self.money = self.money.saturating_sub(1);
+            self.money -= 1;
             self.spent = self.spent.saturating_add(1);
         }
 
+        // Past zero, not stopped at it.  The event fires once, on the tick
+        // the clock crosses, and then the shift carries on into overtime.
+        let was = self.ticks_left;
         self.ticks_left -= 1;
-        if self.ticks_left <= 0 {
-            self.ticks_left = 0;
-            self.over = true;
+        if was > 0 && self.ticks_left <= 0 {
             out.push(Event::TimeUp);
         }
     }
@@ -886,7 +901,7 @@ impl Sim {
                 self.traffic_backing[i] = BACKING as u32;
                 if sev > ONE {
                     self.combo += 1;
-                    self.money += 2 * self.combo;
+                    self.money += 2 * self.combo as i32;
                     out.push(Event::Rammed);
                 }
             }
@@ -1077,7 +1092,7 @@ impl Sim {
                     p.vx = fixed::mul(self.taxi.vx, fixed::ratio(3, 5));
                     p.vy = fixed::mul(self.taxi.vy, fixed::ratio(3, 5));
                     self.combo += 1;
-                    self.money += self.combo;
+                    self.money += self.combo as i32;
                     out.push(Event::Flattened);
                 }
             } else if p.board.lean < 8 {
@@ -1162,7 +1177,7 @@ impl Sim {
             return;
         }
         if fare.aboard {
-            self.money += fare.value;
+            self.money += fare.value as i32;
             self.ticks_left += PICKUP_TIME * drive::HZ;
             out.push(Event::DroppedOff);
             self.fare = None;
@@ -1174,9 +1189,18 @@ impl Sim {
         }
     }
 
-    /// Seconds left on the clock.
+    /// Seconds left on the clock, which goes negative once it has run out.
+    ///
+    /// Rounded *away* from zero on the negative side, so the first tick of
+    /// overtime reads -1 rather than 0: a clock that sits on zero for a
+    /// second before going negative is a clock that looks stuck, and looking
+    /// stuck is the thing this was changed to avoid.
     pub fn seconds_left(&self) -> i32 {
-        self.ticks_left / drive::HZ
+        if self.ticks_left >= 0 {
+            self.ticks_left / drive::HZ
+        } else {
+            -((-self.ticks_left + drive::HZ - 1) / drive::HZ)
+        }
     }
 
     /// Where the passenger or the destination is, for the compass and the
@@ -1762,7 +1786,7 @@ mod tests {
 
         let mut f = Frame::new(80, 30);
         let mut depth = Vec::new();
-        let atmos = Atmos { rain: 0, ..Default::default() };
+        let atmos = Atmos { ..Default::default() };
         let lamps = |sim: &mut Sim, f: &mut Frame, depth: &mut Vec<Fx>| -> usize {
             crate::raycast::render_to(&city, &cam, &atmos, f, depth);
             let p = crate::raycast::projection(&city, &cam, f);
@@ -1790,11 +1814,16 @@ mod tests {
         let (city, mut sim) = shift();
         let mut ev = Vec::new();
         sim.ticks_left = 3;
-        for _ in 0..10 {
+        let mut called = 0;
+        for _ in 0..drive::HZ * 3 {
             sim.step(&city, &Controls::default(), drive::HZ, &mut ev);
+            called += ev.iter().filter(|e| matches!(e, Event::TimeUp)).count();
         }
-        assert!(sim.over, "the clock ran out and the shift went on");
-        assert_eq!(sim.seconds_left(), 0);
+        // Once, and then the shift carries on into the red.
+        assert_eq!(called, 1, "the clock called time {called} times");
+        assert!(!sim.over, "running out of time froze the shift");
+        assert!(sim.seconds_left() < 0, "the clock stopped at zero");
+        assert!(sim.money < 0, "the meter stopped at nothing");
     }
 
     #[test]
@@ -1880,7 +1909,7 @@ mod tests {
         sim.taxi.vy = 0;
         sim.step_fare(&city, &mut ev);
         assert!(ev.contains(&Event::DroppedOff));
-        assert!(sim.money >= f.value, "the fare was not paid");
+        assert!(sim.money >= f.value as i32, "the fare was not paid");
         assert!(sim.fare.is_some(), "no new fare after a drop-off");
     }
 

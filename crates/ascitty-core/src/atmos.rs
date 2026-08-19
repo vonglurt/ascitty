@@ -1,11 +1,16 @@
-//! Weather and sky: rain, the moon, stars, and the haze that eats distance.
+//! Sky: the moon, the stars, and the haze that eats distance.
 //!
-//! All four are cheap on purpose.  Rain is not particles - it is a glyph
-//! family and a scrolling hash, so a downpour costs one table lookup per wet
-//! cell and nothing at all per drop.  Stars are a hash of the direction you
+//! All three are cheap on purpose.  Stars are a hash of the direction you
 //! are facing, so they stay put as you turn without being stored.  The moon
-//! is four glyphs.  Every one of these has to survive on a 1.76 MHz machine,
-//! and none of them may allocate.
+//! is four glyphs.  The haze is a subtraction and a dither.  Every one of
+//! these has to survive on a 1.76 MHz machine, and none of them may
+//! allocate.
+//!
+//! There was rain here.  It is gone, and not because it did not work: a
+//! character cell is a large pixel, so a raindrop is a large raindrop, and a
+//! couple of hundred of them leaning across the frame is a picture of the
+//! weather rather than a picture of the city.  The city is the thing being
+//! drawn.
 
 use crate::arch::{self, Face};
 use crate::camera::Camera;
@@ -89,15 +94,19 @@ pub const MIN_SKY_SPAN: i32 = 12;
 /// The state of the sky.
 #[derive(Clone, Copy, Debug)]
 pub struct Atmos {
-    /// Rain, 0 (dry) to 8 (torrential).
-    pub rain: u8,
     /// Whether the moon is up.
     pub moon: bool,
     /// The moon's compass bearing.
     pub moon_az: Ang,
     /// The moon's height above the horizon, in screen rows.
     pub moon_alt: i32,
-    /// How fast distance fades to black, 0 (clear) to 8 (soup).
+    /// How much air there is between you and the far end of the world, 0
+    /// (clear to the edge of the map) to 9 (soup).
+    ///
+    /// It is exposed to the player as a *draw distance* and counted the
+    /// other way round - see the `0`-`9` keys - because "how far can I see"
+    /// is the question somebody actually has, and "how thick is the air" is
+    /// the implementation of it.
     pub haze: u8,
     /// Star density, 0 to 8.  Zero in a real city; this is not a real city.
     pub stars: u8,
@@ -107,7 +116,7 @@ pub struct Atmos {
     /// Where in the cycle the sky starts, in ticks.
     ///
     /// A separate number from the tick counter rather than a head start on
-    /// it, because the tick counter also drives the rain, the twinkle and
+    /// it, because the tick counter also drives the twinkle and
     /// everything else that moves, and freezing the sky must not freeze
     /// those.
     pub sky_offset: u32,
@@ -118,13 +127,6 @@ pub struct Atmos {
 impl Default for Atmos {
     fn default() -> Self {
         Atmos {
-            // Dry.  Rain is still here and `--rain 1..8` still asks for it,
-            // but it is no longer what you get without asking: a character
-            // cell is a large pixel, so a raindrop is a large raindrop, and
-            // a frame with a couple of hundred of them leaning across it is
-            // reading the weather rather than the city.  The city is the
-            // thing being drawn.
-            rain: 0,
             moon: true,
             // The same bearing the shadow sweep uses, so that the
             // shadows and the thing casting them agree.
@@ -167,6 +169,22 @@ fn sky_fill(luma: u8) -> catalog::GlyphId {
     }
 }
 
+/// How much of the draw distance the dissolve occupies, as a fraction.
+///
+/// The last two fifths.  Shorter and it is a soft edge rather than a fog
+/// bank; longer and the middle distance is speckled, which reads as a
+/// broken renderer rather than as air.
+const DISSOLVE_NUM: i32 = 2;
+/// See [`DISSOLVE_NUM`].
+const DISSOLVE_DEN: i32 = 5;
+
+/// A 4x4 ordered dither, in sixteenths.
+///
+/// The classic Bayer matrix.  Every value appears once, so a threshold of
+/// `n` turns on exactly `n` of the sixteen cells in each tile, and the ones
+/// it turns on are spread as evenly as four by four allows.
+const BAYER: [u32; 16] = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+
 /// Distance at which everything has faded to black, in world units, as a
 /// function of haze.
 pub fn draw_distance(haze: u8) -> i32 {
@@ -178,17 +196,23 @@ pub fn draw_distance(haze: u8) -> i32 {
     // to the middle is something you can see rather than something you have
     // to remember.  A block is thirteen cells - see `zone::BLOCK_PITCH`.
     const BLOCK: i32 = crate::zone::BLOCK_PITCH as i32;
+    // Every figure doubled with the grid - a hundred cells was four blocks
+    // and is now under two - and then raised again, because the far end of
+    // the range is now a dissolve rather than a cliff and there is no longer
+    // a reason to keep the cliff close.  At the clearest setting the whole
+    // of the built city is in front of you from the farmland.
     BLOCK
         + match haze {
-            0 => 200,
-            1 => 150,
-            2 => 110,
-            3 => 80,
-            4 => 60,
-            5 => 45,
-            6 => 34,
-            7 => 26,
-            _ => 20,
+            0 => 640,
+            1 => 520,
+            2 => 400,
+            3 => 300,
+            4 => 225,
+            5 => 168,
+            6 => 126,
+            7 => 94,
+            8 => 70,
+            _ => 52,
         }
 }
 
@@ -217,6 +241,56 @@ impl Atmos {
         let f = self.fade(dist);
         let l = luma.saturating_sub(f);
         rgb_index(hue, l)
+    }
+
+    /// Apply the depth cue, and dissolve the last of the distance into the
+    /// haze the city is standing in.
+    ///
+    /// # Why this is not [`Atmos::shade`]
+    ///
+    /// [`Atmos::shade`] fades everything towards *black*, which is right on
+    /// a dark sky and wrong on every other one: a tower at the draw distance
+    /// goes black against a pale morning and reads as a hole rather than as
+    /// something a long way off, and the moment it crosses the draw distance
+    /// it stops being drawn at all.  A hard edge with a black silhouette on
+    /// one side is the pop-in, and the skyline is where it shows, because
+    /// the skyline is the part of the frame made entirely of things at the
+    /// limit.
+    ///
+    /// # How it dissolves
+    ///
+    /// A cell has one colour, so there is no alpha to blend with.  What
+    /// there is instead is the oldest trick the machine this is written for
+    /// has: a **dither**.  Over the last [`DISSOLVE`] of the draw distance,
+    /// an ordered threshold decides per cell whether it is drawn as the
+    /// thing or as the haze in front of the thing, and the fraction that
+    /// goes to haze climbs to all of it at the limit.  A distant tower
+    /// therefore arrives as a scattering of its own colour through the sky
+    /// colour, thickens as you drive at it, and is solid well before you can
+    /// make out a window.  Which is what coming out of fog looks like.
+    ///
+    /// The threshold is a 4x4 Bayer matrix on the screen position.  Ordered
+    /// rather than random because a random one crawls: the same building
+    /// from the same place has to dissolve the same way two frames running
+    /// or the whole skyline boils.
+    #[inline(always)]
+    pub fn shade_far(&self, hue: u8, luma: u8, dist: Fx, x: i32, y: i32, sky: (u8, u8)) -> Color {
+        let full = draw_distance(self.haze).max(1);
+        let d = fixed::floor(dist).max(0);
+        // How far into the dissolve band this is, in sixteenths.
+        let start = full - (full * DISSOLVE_NUM / DISSOLVE_DEN);
+        if d <= start {
+            return self.shade(hue, luma, dist);
+        }
+        let band = (full - start).max(1);
+        let t = (((d - start) * 16) / band).clamp(0, 16);
+        if t as u32 > BAYER[((y & 3) * 4 + (x & 3)) as usize] {
+            // The haze wins this cell.  Its own luminance is faded by the
+            // same rule as everything else, so the dissolve does not put a
+            // brighter cell at the limit than the thing it is dissolving.
+            return rgb_index(sky.0, sky.1);
+        }
+        self.shade(hue, luma, dist)
     }
 
     /// Which phase the sky is in, and how far through it, from 0 to
@@ -321,6 +395,16 @@ impl Atmos {
     pub fn sky_colour(&self) -> (u8, u8) {
         let p = DAY[self.phase().0];
         (p.hue, p.bottom.saturating_sub(1).max(1))
+    }
+
+    /// The colour the distance dissolves into: the sky at the horizon.
+    ///
+    /// Not [`Atmos::sky_colour`], which is a step darker because it is what
+    /// glass reflects.  A thing at the draw distance is behind the whole
+    /// depth of the air and should read as exactly the air in front of it.
+    pub fn haze_colour(&self) -> (u8, u8) {
+        let p = DAY[self.phase().0];
+        (p.hue, p.bottom)
     }
 
     /// What to call the sky right now, for the status line.
@@ -518,62 +602,6 @@ impl Atmos {
         }
     }
 
-    /// Lay rain over the finished frame.
-    ///
-    /// Rain goes on last, because it is in front of everything - but it is
-    /// *not* laid on evenly.
-    ///
-    /// Against the night sky a streak is the only thing in the cell and
-    /// reads immediately. Against a facade it is competing with the window
-    /// grid that carries the whole picture, and at any density that shows up
-    /// there it stops looking like weather and starts looking like the
-    /// screen needs cleaning. So rain falls on the sky and on nothing else:
-    /// it is weather in the distance, over the horizon and down the gaps
-    /// between the towers, and the street you are driving on is dry.
-    ///
-    /// "Sky" is a blank glyph or a colour that has faded to black, so the
-    /// distant buildings the haze has taken count as sky, which is what they
-    /// look like - the curtain of rain therefore begins about where the city
-    /// stops being legible, which is where weather belongs.
-    ///
-    /// It falls straight down. It used to lean with the camera's heading,
-    /// which is a nice idea and reads as the whole screen being dragged
-    /// sideways when you turn the wheel, and the streaks used to scroll
-    /// *upwards*: the glyph's phase shifts the pattern up as it increases,
-    /// so adding the tick to it made the rain rise.
-    pub fn rain_over(&self, f: &mut Frame, cam: &Camera) {
-        let _ = cam;
-        if self.rain == 0 {
-            return;
-        }
-        let sky_density = self.rain as u32 * 3;
-        let scroll = (self.tick as i32 * 3) as u32;
-        for y in 0..f.h as i32 {
-            for x in 0..f.w as i32 {
-                let behind = f.get(x, y);
-                let on_sky =
-                    behind.glyph == catalog::G_BLANK || palette::luma_of(behind.color) == 0;
-                if !on_sky {
-                    continue;
-                }
-                let h = hash3(x as u32, (y as u32).wrapping_add(scroll / 2), 0x_4241_4E00);
-                if (h & 255) >= sky_density {
-                    continue;
-                }
-                let luma = 3;
-                let phase = ((y as u32).wrapping_sub(scroll) & 7) as u8;
-                f.put(
-                    x,
-                    y,
-                    Cel {
-                        glyph: catalog::G_RAIN + phase,
-                        color: rgb_index(palette::H_LIGHT_BLUE, luma),
-                    },
-                );
-            }
-        }
-    }
-
     /// The diffuse light each of the five possible normals receives, as a
     /// luminance offset.
     ///
@@ -632,11 +660,6 @@ impl Atmos {
         t
     }
 
-    /// Whether the ground should be wet, which the ground pass uses to put
-    /// puddles and reflections down.
-    pub fn wet(&self) -> bool {
-        self.rain >= 2
-    }
 }
 
 #[cfg(test)]
@@ -737,7 +760,7 @@ mod tests {
         assert!(dawn.daylight() > night.daylight() && dawn.daylight() < noon.daylight());
     }
 
-    /// Holding the sky holds it, and does not stop the rain.
+    /// Holding the sky holds it, and does not stop anything else that moves.
     #[test]
     fn day_zero_holds_the_sky_where_it_was_put() {
         let mut a = Atmos {
@@ -881,119 +904,4 @@ use crate::camera::Camera;
         }
     }
 
-    #[test]
-    fn no_rain_means_no_overlay() {
-        let mut f = Frame::new(20, 10);
-        let a = Atmos { rain: 0, ..Default::default() };
-        a.rain_over(&mut f, &Camera::default());
-        assert!(f.cels.iter().all(|c| *c == Cel::EMPTY));
-    }
-
-    #[test]
-    fn rain_covers_some_of_the_screen_but_not_all_of_it() {
-        let mut f = Frame::new(80, 40);
-        let a = Atmos { rain: 4, ..Default::default() };
-        a.rain_over(&mut f, &Camera::default());
-        let wet = f.cels.iter().filter(|c| **c != Cel::EMPTY).count();
-        assert!(wet > 50, "only {wet} cells of rain");
-        assert!(wet < f.cels.len() / 2, "{wet} cells - that is a wall of water");
-    }
-
-    /// Rain is weather in the distance, not spots on the lens.
-    ///
-    /// It used to fall over the buildings too, at a fifth of the density, on
-    /// the grounds that rain in front of a facade is what rain looks like
-    /// from inside it.  It is, and at any density you can see it also looks
-    /// like a dirty screen - and this is a city where the near buildings are
-    /// the picture.  Now the facade stays dry and the sky behind it does the
-    /// weather.
-    #[test]
-    fn rain_falls_against_the_sky_and_not_over_the_buildings() {
-        // Left half is a lit facade, right half is night sky.
-        let mut f = Frame::new(80, 60);
-        for y in 0..60 {
-            for x in 0..40 {
-                f.put(x, y, Cel { glyph: catalog::G_SOLID, color: rgb_index(palette::H_BLUE, 6) });
-            }
-        }
-        let a = Atmos { rain: 8, ..Default::default() };
-        a.rain_over(&mut f, &Camera { yaw: 0, ..Default::default() });
-
-        let is_rain = |c: Cel| (catalog::G_RAIN..catalog::G_MOON).contains(&c.glyph);
-        let built: usize = (0..60)
-            .flat_map(|y| (0..40).map(move |x| (x, y)))
-            .filter(|&(x, y)| is_rain(f.get(x, y)))
-            .count();
-        let sky: usize = (0..60)
-            .flat_map(|y| (40..80).map(move |x| (x, y)))
-            .filter(|&(x, y)| is_rain(f.get(x, y)))
-            .count();
-
-        assert!(sky > 100, "the sky is barely raining ({sky} cells)");
-        assert_eq!(built, 0, "{built} cells of rain over the buildings");
-    }
-
-    /// The streaks fall downwards.
-    ///
-    /// Two links in one chain, and the bug was in the join between them.
-    /// [`crate::font::rain_streak`] shifts its pattern *up* the cell as the
-    /// phase rises - that is asserted in `font` - so the phase has to count
-    /// down with the tick for the rain to come down.  The obvious "add the
-    /// tick" makes rain that rises, and nobody looks at a still frame long
-    /// enough to notice which way the streaks are going.
-    #[test]
-    fn rain_falls_downwards() {
-        for tick in [0u32, 1, 2, 7, 100] {
-            let mut f = Frame::new(24, 24);
-            let a = Atmos { rain: 8, tick, ..Default::default() };
-            a.rain_over(&mut f, &Camera::default());
-            let mut seen = 0;
-            for y in 0..24i32 {
-                for x in 0..24i32 {
-                    let g = f.get(x, y).glyph;
-                    if !(catalog::G_RAIN..catalog::G_RAIN + 8).contains(&g) {
-                        continue;
-                    }
-                    seen += 1;
-                    let want = ((y as u32).wrapping_sub(tick * 3) & 7) as u8;
-                    assert_eq!(
-                        g - catalog::G_RAIN,
-                        want,
-                        "tick {tick}, row {y}: the streak is not walking down the screen"
-                    );
-                }
-            }
-            assert!(seen > 0, "tick {tick}: no rain to check");
-        }
-    }
-
-    #[test]
-    fn a_faded_out_building_counts_as_sky() {
-        // Something the haze has taken to black should get the full fall,
-        // because that is what it looks like.
-        let mut f = Frame::new(60, 40);
-        for c in f.cels.iter_mut() {
-            *c = Cel { glyph: catalog::G_SOLID, color: rgb_index(palette::H_BLUE, 0) };
-        }
-        let a = Atmos { rain: 8, ..Default::default() };
-        a.rain_over(&mut f, &Camera::default());
-        let wet = f
-            .cels
-            .iter()
-            .filter(|c| (catalog::G_RAIN..catalog::G_MOON).contains(&c.glyph))
-            .count();
-        assert!(wet > 100, "only {wet} cells fell on the faded-out wall");
-    }
-
-    #[test]
-    fn the_default_is_a_drizzle_rather_than_a_downpour() {
-        let mut f = Frame::new(100, 40);
-        Atmos::default().rain_over(&mut f, &Camera::default());
-        let wet = f.cels.iter().filter(|c| **c != Cel::EMPTY).count();
-        assert!(
-            wet * 10 < f.cels.len(),
-            "the default weather wets {wet} of {} cells",
-            f.cels.len()
-        );
-    }
 }

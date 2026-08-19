@@ -804,7 +804,7 @@ mod tests {
         let city = City::generate(12);
         let mut cam = Camera::spawn(&city, 48, 48);
         cam.yaw = 0;
-        let atmos = Atmos { rain: 0, ..Default::default() };
+        let atmos = Atmos { ..Default::default() };
         let mut f = Frame::new(100, 36);
         let mut depth = Vec::new();
         raycast::render_to(&city, &cam, &atmos, &mut f, &mut depth);

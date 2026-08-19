@@ -591,7 +591,7 @@ mod tests {
 
         let city = City::generate(99);
         let mut t = Tour::new(&city, 99);
-        let atmos = Atmos { rain: 0, haze: 2, ..Default::default() };
+        let atmos = Atmos { haze: 2, ..Default::default() };
         let mut f = Frame::new(80, 24);
         let mut boxed_in = 0;
         let samples = 40;
