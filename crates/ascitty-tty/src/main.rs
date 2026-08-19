@@ -421,10 +421,11 @@ fn chase(cam: &mut Camera, sim: &Sim, city: &City, rows: i32, head: &mut Head, h
     // doubled, so the camera sat inside the boot and the frame was a
     // yellow wall.
     //
-    // Halved since - one and a quarter car-lengths rather than two and a
-    // half.  A long boom puts the cab in the middle distance and the game in
-    // the middle of a wide shot; a short one puts you behind the car.
-    let want = fixed::mul(sim.taxi.kind.half_len(), fixed::ratio(5, 2)) + fixed::ratio(1, 4);
+    // Shortened twice since - one car-length rather than two and a half.  A
+    // long boom puts the cab in the middle distance and the game in the
+    // middle of a wide shot; a short one puts you behind the car, close
+    // enough that the road goes past rather than towards you.
+    let want = fixed::mul(sim.taxi.kind.half_len(), fixed::from_int(2)) + fixed::ratio(1, 4);
     let mut boom = want;
     while boom > fixed::ratio(1, 4) {
         let x = sim.taxi.x - fixed::mul(dx, boom);
@@ -442,19 +443,21 @@ fn chase(cam: &mut Camera, sim: &Sim, city: &City, rows: i32, head: &mut Head, h
     }
     // Head height for a car, above whatever the ground is doing here.
     //
-    // A quarter higher than it was, over a boom half as long.  Both changes
+    // Higher again, over a boom shorter again.  Both changes
     // point the same way: from further back and lower down you are a camera
     // following a car, and from nearer and higher up you are looking over
     // its roof at the road, which is the shot this game is.
     //
-    // The two do fight over one thing, and the number is a compromise
-    // between them.  The car's foot lands `eye x scale / boom` rows below
-    // the horizon, so halving the boom doubles that and raising the eye
-    // adds to it again: at six fifths of a cell the cab's whole lower half
-    // was off the bottom of a forty-row frame.  At one cell it keeps about
-    // four fifths of the car and gives the rest of the frame to the street,
-    // which is what the height was raised for.
-    cam.z = city.ground(fixed::floor(cam.x), fixed::floor(cam.y)) + ONE;
+    // The two fight over one thing, and both of these numbers are a
+    // compromise between them.  The car's foot lands `eye x scale / boom`
+    // rows below the horizon, so shortening the boom pushes the car down the
+    // screen and raising the eye pushes it down again: at six fifths of a
+    // cell over a boom of two and three quarters, the cab's whole lower half
+    // was off the bottom of a forty-row frame.  What is left visible is the
+    // roof, the glass and the chequer band - the parts that say it is a
+    // taxi - and the rest of the frame is street, which is what the height
+    // is for.
+    cam.z = city.ground(fixed::floor(cam.x), fixed::floor(cam.y)) + fixed::ratio(11, 10);
     // Looking slightly down at the road, plus wherever the driver's head has
     // got to.  Positive pitch is down, so a head thrown back by the throttle
     // subtracts and you see sky.

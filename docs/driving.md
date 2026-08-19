@@ -95,6 +95,28 @@ The version this replaced turned inside 14 m at 150 km/h and slipped between
 identically at walking pace and flat out, which is another way of saying the
 speed made no difference to the handling at all.
 
+### A held turn winds on
+
+The wheel only goes to one place — a key is down or it is not — so the *time*
+it has been there is the only thing left to tell a flick from a commitment.
+Hold it hard over and the lock keeps winding on for the next second, up to a
+quarter again as much; let it come back and that unwinds twice as fast as it
+wound.
+
+The first second is the corner you asked for. Past that the car keeps turning
+in, which is how you get round something you have misjudged.
+
+A quarter, and not the half it started at, because of who else holds a wheel:
+the autopilot's steering latch pins the lock through every junction, so at
+half again it wound itself onto the pavement — 26 per cent of one city's
+travelling ticks off the carriageway against 2. The physics does not know who
+is driving and must not: what changed is the number, not who it applies to.
+
+The counter runs in ticks of whatever rate the game is stepping at, scaled
+from the constants' own rate, for the same reason grip is — a car that winds
+on twice as fast at sixty frames a second as at thirty is a car that handles
+differently on a faster machine.
+
 ### The wheel stops working as the speed rises
 
 Yaw rate climbs with speed while the steering lock is what limits it, and

@@ -60,15 +60,16 @@ about it are deliberate.
 A flick of the wheel swings the view a moment later, so a drift is watched
 from the outside rather than from inside the spin.
 
-**It sits one and a quarter car-lengths back and one cell up.** Near and
+**It sits one car-length back and eleven tenths of a cell up.** Near and
 high, which is one change and not two: from further back and lower down you
 are a camera following a car, and from nearer and higher up you are looking
 over its roof at the road. The two fight over one number — the car's foot
 lands `eye × scale ÷ boom` rows below the horizon, so halving the boom
 doubles that and raising the eye adds to it again, and at the height that
 first looked right the cab's whole lower half was off the bottom of a
-forty-row frame. One cell keeps about four fifths of the car and gives the
-rest of the frame to the street, which is what the height was raised for.
+forty-row frame. What is left visible is the roof, the glass and the chequer band — the parts
+that say it is a taxi — and the rest of the frame is street, which is what
+the height is for.
 
 **The boom shortens until it is out of a building.** A chase camera that
 clips through a wall shows you the inside of the wall at exactly the moment

@@ -110,6 +110,29 @@ const GRIP_HANDBRAKE: Fx = fixed::ratio(995, 1000);
 const GRIP_CURVE: u32 = 3;
 /// Peak yaw rate, in angle units per second: about 130 degrees a second.
 const TURN_RATE: i32 = 24_000;
+/// How far over the wheel has to be to count as held.
+const WIND_LOCK: Fx = fixed::ratio(3, 4);
+/// How long it has to be held there before the lock starts winding on, in
+/// ticks at [`HZ`].
+///
+/// A second.  Anything shorter and an ordinary junction - which is a second
+/// of lock at town speed - starts to tighten on its own, and a corner that
+/// tightens without being asked is a corner you cannot place.
+const WIND_AFTER: u32 = HZ as u32;
+/// And how long from there to all of it.
+const WIND_OVER: u32 = HZ as u32;
+/// How much more lock a fully wound wheel is worth.
+///
+/// A quarter again.  It is what turns a held turn into a tightening one:
+/// the first second is the corner you asked for, and past that the car keeps
+/// turning in, which is how you get round something you have misjudged.
+///
+/// It was half again, and half again is too much for anything that holds
+/// lock as a matter of course.  The autopilot does - its steering latch pins
+/// the wheel through every junction - so it wound itself onto the pavement:
+/// 26 per cent of one city's travelling ticks off the carriageway, against
+/// 2.  A quarter is a wind-on you can feel and not one that drives for you.
+const WIND_MAX: Fx = fixed::ratio(1, 4);
 /// Speed at which the car turns its hardest, in units per second - about
 /// 32 km/h.
 ///
@@ -285,6 +308,13 @@ pub struct Car {
     pub hue: u8,
     /// What it is.
     pub kind: CarKind,
+    /// Ticks the wheel has been held hard over, for the lock that winds on.
+    ///
+    /// A car park manoeuvre and a corner are the same input here - the wheel
+    /// only goes to one place - so the *time* it has been there is the only
+    /// thing left to tell them apart, and it is what a driver actually does:
+    /// turn in, and keep turning in if it is not enough.
+    pub wound: u32,
     /// Ticks of boost left: twice the engine and twice the top speed.
     ///
     /// It is on the car rather than in the controls because it outlives a
@@ -297,7 +327,7 @@ pub struct Car {
 impl Car {
     /// A car sitting still at a place, pointing somewhere.
     pub fn new(kind: CarKind, x: Fx, y: Fx, yaw: Ang, hue: u8) -> Car {
-        Car { x, y, vx: 0, vy: 0, yaw, spin: 0, damage: 0, hue, kind, boost: 0 }
+        Car { x, y, vx: 0, vy: 0, yaw, spin: 0, damage: 0, hue, kind, wound: 0, boost: 0 }
     }
 
     /// Speed, in units per second.
@@ -411,7 +441,31 @@ impl Car {
             fixed::div(TURN_REF, sp)
         };
         let dir = if vf < 0 { -ONE } else { ONE };
-        let rate = fixed::mul(fixed::mul(c.steer, auth), dir);
+
+        // Winding the lock on.  Hold the wheel hard over and the turn keeps
+        // tightening for the next second, up to half again as much lock; let
+        // it come back and that unwinds twice as fast as it wound.  It is
+        // the one input in the game with a memory, and it is what makes a
+        // held turn a *decision* rather than a state.
+        // In ticks of whatever rate this is, not of `HZ`: the constants are
+        // quoted at sixty and the counter runs at `hz`, and a car that winds
+        // on twice as fast at sixty frames a second as at thirty is a car
+        // that handles differently on a faster machine.
+        let after = WIND_AFTER * hz as u32 / HZ as u32;
+        let over = (WIND_OVER * hz as u32 / HZ as u32).max(1);
+        if fixed::abs(c.steer) > WIND_LOCK {
+            self.wound = self.wound.saturating_add(1).min(after + over);
+        } else {
+            self.wound = self.wound.saturating_sub(2);
+        }
+        let wound = fixed::div(
+            fixed::from_int(self.wound.saturating_sub(after) as i32),
+            fixed::from_int(over as i32),
+        )
+        .clamp(0, ONE);
+        let wind = ONE + fixed::mul(wound, WIND_MAX);
+
+        let rate = fixed::mul(fixed::mul(fixed::mul(c.steer, auth), dir), wind);
         let turn = ((rate as i64 * TURN_RATE as i64) >> 16) / hz as i64;
         // A low-pass filter on the yaw rate, so the wheel has weight and a
         // knock from a wall spins the car and then washes out.  It has to be
@@ -858,6 +912,45 @@ mod tests {
     ///
     /// Measured: 0.90 against 0.09 at 100 km/h.  It was 1.00 against 0.92
     /// before, which is to say it did nothing you could see.
+    /// Holding a turn tightens it.
+    ///
+    /// The first second is the corner you asked for; past that the wheel
+    /// keeps winding on.  Measured as the yaw in the second second of a held
+    /// turn against the yaw in the first, at a speed the car actually
+    /// corners at.
+    #[test]
+    fn a_held_turn_tightens() {
+        let city = open_ground();
+        let mut car = Car::new(CarKind::Taxi, fixed::from_int(8), fixed::from_int(8), 0, 7);
+        car.vx = fixed::from_int(3);
+        let hold = Controls { throttle: 0, steer: ONE, ..Default::default() };
+        let turn = |car: &mut Car, ticks: i32| {
+            let was = car.yaw;
+            for _ in 0..ticks {
+                // Hold the speed, so this is about the wheel and not about
+                // the throttle.
+                let want = fixed::from_int(3);
+                let vf = fixed::mul(car.vx, trig::cos(car.yaw)) + fixed::mul(car.vy, trig::sin(car.yaw));
+                let c = Controls { throttle: if vf < want { ONE } else { 0 }, ..hold };
+                car.step(&c, &city, HZ);
+            }
+            (car.yaw.wrapping_sub(was) as i16 as i32).abs()
+        };
+        let first = turn(&mut car, HZ);
+        let second = turn(&mut car, HZ);
+        assert!(
+            second > first * 11 / 10,
+            "the wheel did not wind on: {first} units in the first second, {second} in the next"
+        );
+
+        // And it unwinds when you straighten up.
+        let straight = Controls { throttle: 0, steer: 0, ..Default::default() };
+        for _ in 0..HZ {
+            car.step(&straight, &city, HZ);
+        }
+        assert_eq!(car.wound, 0, "the lock stayed wound on after the wheel came back");
+    }
+
     #[test]
     fn the_handbrake_makes_it_slide_more() {
         for v in [fixed::from_int(3), fixed::ratio(9, 2), VMAX] {

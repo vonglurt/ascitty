@@ -1,6 +1,6 @@
 # ASCITTY — a raytraced ASCII city
 
-**v0.5.1 · 19 August 2026**
+**v0.6.0 · 19 August 2026**
 
 A city built entirely out of typeable characters, rendered in real time, on a
 colour terminal and on a **Commodore Plus/4** — and a taxi game inside it.
@@ -17,13 +17,13 @@ the same string.
 
 *Street level in block elements and colour, which is what you actually get.
 `ascitty --shot 520 --size 140x40 --seed 99 --tour --walk --sky 0 --day 0` —
-**v0.5.1**, 19 Aug 2026.*
+**v0.6.0**, 19 Aug 2026.*
 
 ## Watch it drive itself
 
 ![The cab driving itself down a street, traffic ahead of it, the fare marker glowing on the pavement](docs/media/demo.gif)
 
-*Eight seconds of `make demo`, recorded by `make gif` — **v0.5.1**, 19 Aug
+*Eight seconds of `make demo`, recorded by `make gif` — **v0.6.0**, 19 Aug
 2026. Small and short because a GIF is a whole frame every frame; `make
 cast` records the same run as an asciinema file, which stays sharp at any
 size and is a tenth of the bytes.*
@@ -45,7 +45,7 @@ make gif       # ...or to docs/media/demo.gif
 
 ![The taxi from behind, chequer band along its flank, a saloon alongside on the avenue](docs/media/drive.png)
 
-*The chase camera, from `make demo` at `--sky 3` — **v0.5.1**, 19 Aug 2026.
+*The chase camera, from `make demo` at `--sky 3` — **v0.6.0**, 19 Aug 2026.
 The cab's
 heading and the camera's are not the same thing: the boom lags a turn by a
 few frames, so a slide is watched from outside the spin.*
@@ -79,7 +79,7 @@ It starts in the first one.
 
 ![The city from above the tallest roof: towers seen down their faces, rooftops and fire escapes below](docs/media/copter.png)
 
-*The copter, from `--copter --haze 1 --sky 5` — **v0.5.1**, 19 Aug 2026. How
+*The copter, from `--copter --haze 1 --sky 5` — **v0.6.0**, 19 Aug 2026. How
 far
 down it looks is worked out from how high it is, how far the haze lets it
 see and how many rows the frame has, rather than being a fixed tilt — see
@@ -223,7 +223,7 @@ prints them.
 
 ![The cab at a green sunset, the sky pale at the horizon and darkening above it](docs/media/sunset.png)
 
-*`--sky 8 --day 0` — **v0.5.1**, 19 Aug 2026. The green sunset, held still
+*`--sky 8 --day 0` — **v0.6.0**, 19 Aug 2026. The green sunset, held still
 for the picture.*
 
 A phase change does not cross-fade. Two hues cannot be mixed in a palette
@@ -248,6 +248,7 @@ them leaning across the frame is reading the weather rather than the city.
 |---|---|
 | An engine with a curve | hardest from rest, tapering off; the top of the range is 1¾ s away, not ¼ |
 | A corner you can place | it goes where it points at every speed; the drift is the handbrake's, not the car's |
+| A held turn that tightens | keep the wheel over and the lock winds on for the next second, a quarter again — the first second is the corner you asked for |
 | A corner that widens with speed | radius grows with the square of it, so getting round a junction means slowing down or hanging the tail out |
 | Acceleration bobbing | the camera carries the driver's head on a spring: back under power, forward under braking, still at any constant speed |
 | Grip you have to ask to lose | 0.06 to 0.15 of slip through a corner at any speed with your hands off the handbrake, and 0.84 to 0.93 with it |
@@ -325,7 +326,7 @@ all:
 ```
 
 *`ascitty --shot 520 --size 92x20 --seed 99 --tour --walk --mode ascii` —
-**v0.5.1**, 19 Aug 2026. The mode the name is about, and the one that runs
+**v0.6.0**, 19 Aug 2026. The mode the name is about, and the one that runs
 anywhere a terminal runs.*
 
 ## Downloads
@@ -383,7 +384,7 @@ make walk     # watch the camera walk instead
 make run4     # play the Plus/4 build in xplus4
 make demo4    # ...and leave it alone; it drives itself
 
-make test     # 293 tests, about half a second
+make test     # 294 tests, about half a second
 make check    # the gate: tests, both builds, and both actually rendering
 make bench    # frames a second on this machine
 
@@ -534,10 +535,10 @@ place to start.
 
 ```sh
 $ ascitty --version
-ascitty 0.5.1 (seed 0xa5c1771e)
+ascitty 0.6.0 (seed 0xa5c1771e)
 ```
 
-Releases are tagged `v0.5.1` and so on, and every picture in this README
+Releases are tagged `v0.6.0` and so on, and every picture in this README
 says which build drew it. Regenerating them is `make shot` and `make gif`;
 the seed is fixed, so the same tag renders the same frames.
 
@@ -546,7 +547,7 @@ the seed is fixed, so the same tag renders the same frames.
 ![The Plus/4 build running in VICE](docs/media/plus4.png)
 
 *The `.prg` booted in VICE and photographed by `tools/viceshot.sh` — a
-40×25 city on a 1.76 MHz 7501. **v0.5.1**, 19 Aug 2026.*
+40×25 city on a 1.76 MHz 7501. **v0.6.0**, 19 Aug 2026.*
 
 `build/ascitty.prg` and `build/ascitty.d64` are the real thing: a 40×25
 city, in colour, on a 1.76 MHz 7501, with a character set generated on a
@@ -694,7 +695,7 @@ Everything is indexed at **[docs/index.md](docs/index.md)**.
 
 Working: the renderer, all three cameras, the city generator with six
 building archetypes, the procedural font, the weather, the driving physics,
-the fare loop, the terminal front end and the Plus/4 build. 293 tests.
+the fare loop, the terminal front end and the Plus/4 build. 294 tests.
 
 Not yet: sub-cell rooflines, proper roof surfaces, scoring and grades,
 sprites and driving on the Plus/4, and the assembly inner loop that would
