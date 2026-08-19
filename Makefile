@@ -96,13 +96,31 @@ walk: $(HOST)
 # An animation you can send somebody.  A .cast is terminal output with
 # timestamps, not a video, so it stays sharp at any size and is a few hundred
 # kilobytes gzipped rather than a few hundred megabytes.
-CASTLEN ?= 600
-CASTSIZE ?= 110x32
+#
+# Two of them, at the two ends of what the renderer will do, because the
+# resolution is the thing worth showing: the same city, the same seed and the
+# same driving at 64x20 and at 200x56.  The small one is what a Plus/4-sized
+# window looks like; the large one is what a full terminal does with the same
+# code, and the point is that neither is a different program.
+#
+# Twice as long as it used to be and played back at twice the speed, so a
+# recording is forty seconds of driving in twenty seconds of watching.  The
+# simulation still steps at CASTFPS - only the timestamps are divided.
+CASTLEN  ?= 1200
+CASTFPS  ?= 30
+CASTSPEED ?= 2
+CASTLO   ?= 64x20
+CASTHI   ?= 200x56
+CASTSEED ?= 99
 
 cast: $(HOST)
 	@mkdir -p $(BUILD)
-	@$(HOST) --record $(BUILD)/tour.cast --frames $(CASTLEN) --size $(CASTSIZE)
-	@echo "  gzip it before sending: gzip -9 -k $(BUILD)/tour.cast"
+	@$(HOST) --record $(BUILD)/tour-lo.cast --frames $(CASTLEN) --size $(CASTLO) \
+		--fps $(CASTFPS) --speed $(CASTSPEED) --seed $(CASTSEED)
+	@$(HOST) --record $(BUILD)/tour-hi.cast --frames $(CASTLEN) --size $(CASTHI) \
+		--fps $(CASTFPS) --speed $(CASTSPEED) --seed $(CASTSEED)
+	@ls -la $(BUILD)/tour-lo.cast $(BUILD)/tour-hi.cast
+	@echo "  gzip them before sending: gzip -9 -k $(BUILD)/tour-*.cast"
 
 # The same demonstration as a picture that moves, for the README - a web
 # page cannot play a .cast.  Small and short on purpose: a GIF is a

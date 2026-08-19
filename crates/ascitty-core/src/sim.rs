@@ -163,7 +163,7 @@ pub const BACKING: i32 = START_TIME * drive::HZ / 4;
 /// keeps is a couple of seconds - a following distance rather than a
 /// braking distance, which is the point: the car should be easing off long
 /// before it needs the brake.
-const LOOK: Fx = fixed::ratio(6, 1);
+const LOOK: Fx = fixed::ratio(10, 1);
 /// Half the width of the corridor ahead that a driver treats as its own.
 ///
 /// Just under a cell, so a car in the next lane is not something to brake
@@ -171,7 +171,12 @@ const LOOK: Fx = fixed::ratio(6, 1);
 const CORRIDOR: Fx = fixed::ratio(9, 10);
 /// How far out a driver looks for something crossing its path from the
 /// right, which is the one that has priority.
-const JUNCTION: Fx = fixed::ratio(9, 2);
+///
+/// A junction is now the width of two four-cell streets rather than two
+/// two-cell ones, so a car that only looked four and a half cells out
+/// stopped giving way at exactly the range where giving way matters: it
+/// arrived at the middle of the crossing before it noticed anything.
+const JUNCTION: Fx = fixed::ratio(9, 1);
 /// Slower than this and a car is stopped rather than creeping.
 const ROLLING: Fx = fixed::ratio(1, 4);
 /// How much either side of the speed it wants a driver will tolerate before
@@ -184,7 +189,7 @@ const CRUISE_THROTTLE: Fx = fixed::ratio(2, 5);
 /// How much of the city the coin trail's route search may look at.  The same
 /// figure the autopilot plans with, and for the same reason: a fare across
 /// the map is a long route and a search that gives up produces no trail.
-const COIN_BUDGET: usize = 40_000;
+const COIN_BUDGET: usize = SIZE * SIZE * 3 / 10;
 /// The bearing error, in angle units, at which a traffic driver has the
 /// wheel on full lock.  A tenth of a turn: these cars are correcting a lane,
 /// not taking a hairpin.
@@ -193,6 +198,31 @@ const LANE_LOCK: i32 = 6_500;
 /// that a car knocked a long way off line rejoins its lane at an angle
 /// rather than turning across the road to get back to it.
 const LANE_CROSS: Fx = fixed::ratio(1, 2);
+
+/// The longest a driver will sit at a junction giving way before deciding it
+/// is their turn, in ticks at [`drive::HZ`].
+///
+/// Two seconds, plus up to another two that depend on which car it is.  The
+/// give-way rule on its own deadlocks, and it deadlocks in exactly the way
+/// the real rule does: four cars arrive at a crossroads, each has somebody
+/// on its right, and each waits for the other three forever.  Real drivers
+/// resolve it by one of them going, so one of them goes - and *which* one is
+/// stable per vehicle rather than random, so the four take turns in the same
+/// order instead of all lunging together.
+///
+/// Two seconds because that is roughly how long a person waits at a junction
+/// before deciding the other driver is not coming, and because a shorter
+/// figure turns the whole rule into a suggestion.
+const NERVE: u32 = 2 * drive::HZ as u32;
+
+/// How long a car may sit perfectly still before its driver gives up on
+/// whatever it is waiting for, in ticks at [`drive::HZ`].
+///
+/// Four seconds.  Longer than [`NERVE`], because giving way is a legitimate
+/// reason to be stopped and this is the backstop for every other reason:
+/// wedged against a building, boxed in by a shunt, or queued behind
+/// somebody who is.
+const STUCK: u32 = 4 * drive::HZ as u32;
 
 /// Damping on the traffic's steering: lock given back per unit of the car's
 /// own rate of turn.
@@ -347,6 +377,12 @@ pub struct Sim {
     /// Where in its own half of the road each car likes to sit, -1 against
     /// the crown to +1 against the kerb.  See [`road::lane_biased`].
     traffic_bias: Vec<Fx>,
+    /// How long each driver has been sitting still giving way.  See
+    /// [`NERVE`].
+    traffic_waited: Vec<u32>,
+    /// How long each car has not moved at all, for any reason.  See
+    /// [`STUCK`].
+    traffic_stalled: Vec<u32>,
     /// Ticks each of them has left to spend reversing out of a shunt.
     traffic_backing: Vec<u32>,
     /// Whether the cab was on the brakes last tick, for its brake lights.
@@ -397,6 +433,8 @@ impl Sim {
             traffic_ctl: vec![Controls::default(); TRAFFIC],
             traffic_cruise: vec![0; TRAFFIC],
             traffic_bias: vec![0; TRAFFIC],
+            traffic_waited: vec![0; TRAFFIC],
+            traffic_stalled: vec![0; TRAFFIC],
             traffic_backing: vec![0; TRAFFIC],
             braking: false,
             props: Vec::new(),
@@ -886,8 +924,26 @@ impl Sim {
                 self.traffic[i] = c;
                 self.traffic_cruise[i] = cruise;
                 self.traffic_bias[i] = bias;
+                self.traffic_waited[i] = 0;
+                self.traffic_stalled[i] = 0;
                 self.traffic_backing[i] = 0;
                 continue;
+            }
+            // A car that has not moved for a long time is not waiting for
+            // anything any more - it is wedged, or queued behind something
+            // that is.  The driver does what a driver does: backs out and
+            // tries again.  Without this a single car stuck against a wall
+            // stops the whole street behind it, and it stays stopped: one
+            // city had a car sit still for thirty-one seconds of a fifty
+            // second run with a queue of traffic behind it.
+            if self.traffic[i].speed() < ROLLING {
+                self.traffic_stalled[i] = self.traffic_stalled[i].saturating_add(1);
+                if self.traffic_stalled[i] > STUCK {
+                    self.traffic_stalled[i] = 0;
+                    self.traffic_backing[i] = BACKING as u32 / 4;
+                }
+            } else {
+                self.traffic_stalled[i] = 0;
             }
             let ctl = self.traffic_controls(city, i, hz);
             self.traffic_ctl[i] = ctl;
@@ -1035,11 +1091,12 @@ impl Sim {
     /// junction rule everywhere that drives on the right, and is enough to
     /// keep two cars arriving at the same crossroads from arriving in the
     /// same place.
-    fn give_way(&self, i: usize) -> Fx {
+    fn give_way(&mut self, i: usize) -> Fx {
         let c = self.traffic[i];
         let (fx, fy) = (trig::cos(c.yaw), trig::sin(c.yaw));
         let (rx, ry) = (-fy, fx);
         let mut want = self.traffic_cruise[i];
+        let mut yielding = false;
 
         let others = self
             .traffic
@@ -1070,8 +1127,26 @@ impl Sim {
                 && o.speed() > ROLLING
             {
                 // Somebody coming from the right, across the nose: wait.
-                want = 0;
+                yielding = true;
             }
+        }
+
+        // ...unless you have been waiting long enough that it is plainly
+        // your turn.  Four cars at a crossroads each have somebody on their
+        // right, so a rule with no way out of it stops all four for good;
+        // the nerve to go anyway is what makes it a junction rather than a
+        // deadlock.  Staggered per vehicle so they take turns in a stable
+        // order rather than all lunging at once.
+        let nerve = NERVE + (i as u32 * 37) % NERVE;
+        if yielding && self.traffic_waited[i] < nerve {
+            self.traffic_waited[i] = self.traffic_waited[i].saturating_add(1);
+            return 0;
+        }
+        // Once a car has gone, it is committed: the counter only resets when
+        // it is properly clear and moving again, or a car that crept forward
+        // half a length would stop dead in the middle of the crossing.
+        if !yielding && self.traffic[i].speed() > ROLLING {
+            self.traffic_waited[i] = 0;
         }
         want
     }
@@ -2039,6 +2114,44 @@ mod tests {
             assert!(
                 right > wrong * 9,
                 "seed {seed}: {right} car-ticks on the right, {wrong} on the wrong side"
+            );
+        }
+    }
+
+    /// A junction does not deadlock.
+    ///
+    /// Four cars arrive at a crossroads, each has somebody on its right, and
+    /// a give-way rule with no way out of it stops all four for good.  The
+    /// measurement is the whole street: over a run, the traffic must not
+    /// come to a stop and stay there.
+    #[test]
+    fn a_junction_does_not_deadlock() {
+        for seed in [1u32, 7, 99, 4242] {
+            let city = City::generate(seed);
+            let mut sim = Sim::new(&city, seed);
+            let mut ev = Vec::new();
+            let mut longest = 0u32;
+            let mut stalled = vec![0u32; sim.traffic.len()];
+            for _ in 0..3_000 {
+                sim.step(&city, &Controls::default(), drive::HZ, &mut ev);
+                for (i, c) in sim.traffic.iter().enumerate() {
+                    if c.speed() < ROLLING {
+                        stalled[i] += 1;
+                        longest = longest.max(stalled[i]);
+                    } else {
+                        stalled[i] = 0;
+                    }
+                }
+            }
+            // Ten seconds.  A car may well sit still for a few of them -
+            // giving way is the point, and so is queueing behind somebody
+            // who is - but a car that has not moved for ten is not waiting,
+            // it is stuck.  Measured at 2 to 4 seconds; without the nerve to
+            // go it was the whole run.
+            assert!(
+                longest < 10 * drive::HZ as u32,
+                "seed {seed}: a car sat still for {} seconds",
+                longest / drive::HZ as u32
             );
         }
     }

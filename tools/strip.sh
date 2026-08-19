@@ -14,6 +14,6 @@ FPS=30
 for FRAME in 1 90 240 420 600; do
     printf '=== t = %s s ===\n' "$(awk -v f="$FRAME" -v r="$FPS" 'BEGIN{printf "%.1f", f/r}')"
     "$HOST" --shot "$FRAME" --tour --seed "$SEED" --size "$SIZE" \
-            --mode ascii --rain 0 --haze 2
+            --mode ascii --haze 2
     printf '\n'
 done

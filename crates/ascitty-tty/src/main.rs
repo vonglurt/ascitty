@@ -593,6 +593,9 @@ struct Opts {
     anim: bool,
     frames: u32,
     record: Option<std::path::PathBuf>,
+    /// How much faster than real time a recording plays back.  See
+    /// `--speed`.
+    speed: u32,
     /// Where to write the demonstration as an animated GIF.
     gif: Option<std::path::PathBuf>,
 }
@@ -622,6 +625,7 @@ impl Default for Opts {
             anim: false,
             frames: 900,
             record: None,
+            speed: 1,
             gif: None,
         }
     }
@@ -667,6 +671,10 @@ DRIVING ITSELF
 
   --anim            play the demonstration and exit; --frames says how long
   --record FILE     write the demonstration to an asciinema .cast file
+  --speed N         play a recording back N times faster than it was driven.
+                    The simulation still runs at --fps; only the timestamps
+                    in the .cast are divided, so twice the driving arrives in
+                    the same length of recording   (default: 1)
   --gif FILE        write it as an animated GIF as well, or instead
   --frames N        frames for --anim and --record   (default: 900, 30 s)
 
@@ -800,6 +808,9 @@ fn parse_args() -> Result<Opts, String> {
                 o.anim = true;
             }
             "--frames" => o.frames = val()?.parse().map_err(|_| "bad --frames".to_string())?,
+            "--speed" => {
+                o.speed = val()?.parse::<u32>().map_err(|_| "bad --speed")?.clamp(1, 16)
+            }
             "--record" => {
                 o.record = Some(std::path::PathBuf::from(val()?));
                 o.tour = true;
@@ -1008,7 +1019,7 @@ fn run(mut o: Opts) -> Result<(), String> {
         let hz = o.fps.max(1) as i32;
         let mut rec = match &o.record {
             Some(path) => Some(
-                cast::Recorder::create(path, w, h, o.fps)
+                cast::Recorder::create(path, w, h, o.fps * o.speed.max(1))
                     .map_err(|e| format!("cannot write {}: {e}", path.display()))?,
             ),
             None => None,

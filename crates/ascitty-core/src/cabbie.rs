@@ -175,14 +175,15 @@ const CAB_BIAS: Fx = fixed::ratio(4, 5);
 /// proportional gains removes it - it makes them either slow or unstable,
 /// which is exactly the pair of failures this went through.
 ///
-/// A half: a car turning as hard as it can gives back half the wheel, which
+/// Two fifths: a car turning as hard as it can gives back nearly half the
+/// wheel, which
 /// is enough to stop the overshoot and not so much that the cab cannot
 /// commit to a corner.  Measured over four five-minute runs, ticks on the
 /// correct side of the road: 59 per cent in the worst city with no damping
 /// at all, against 64 with this - and the mean speed went from 2.6 cells a
 /// second to 3.8, because a controller that is not fighting itself does not
 /// have to be slowed down to stay on the road.
-const DAMP: Fx = fixed::ratio(1, 2);
+const DAMP: Fx = fixed::ratio(2, 5);
 
 /// The most lock the cross-track term alone may ask for.
 ///

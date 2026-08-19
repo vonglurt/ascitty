@@ -1,6 +1,6 @@
 # ASCITTY — a raytraced ASCII city
 
-**v0.8.0 · 19 August 2026**
+**v0.9.0 · 19 August 2026**
 
 A city built entirely out of typeable characters, rendered in real time, on a
 colour terminal and on a **Commodore Plus/4** — and a taxi game inside it.
@@ -39,8 +39,32 @@ them is whether your hands are on the keyboard. `\` hands it back.
 make run       # the game.  It drives itself until you don't let it
 make demo      # the same thing, named for what it does when you leave it
 make walk      # the older tour: a camera on foot instead of in a cab
-make cast      # record it to build/tour.cast  (asciinema)
+make cast      # record it, twice, to build/tour-lo.cast and tour-hi.cast
 make gif       # ...or to docs/media/demo.gif
+```
+
+`make cast` writes **two recordings of the same drive** — same city, same
+seed, same route — at the two ends of what the renderer will do:
+
+| | | |
+|---|---|---|
+| `build/tour-lo.cast` | 64×20 | a Plus/4-sized window: 1,280 characters a frame |
+| `build/tour-hi.cast` | 200×56 | a full terminal: 11,200 characters a frame, and nine times the detail |
+
+Neither is a different program, a different setting or a different asset
+set. The city is a height field and the cars are functions, so the picture
+is *sampled* at whatever resolution the window gives it: twenty rows of cab
+get twenty rows of detail and six rows get six. That is the thing worth
+showing, and a still cannot show it.
+
+Both are forty seconds of driving played back in twenty — the simulation
+still steps at thirty frames a second, and `--speed 2` divides the
+timestamps in the `.cast`, so twice the driving arrives in the same length
+of watching. Gzipped they are 0.7 MB and 4.2 MB.
+
+```sh
+asciinema play build/tour-lo.cast
+asciinema play build/tour-hi.cast
 ```
 
 ![The taxi from behind, chequer band along its flank, a saloon alongside on the avenue](docs/media/drive.png)
@@ -114,7 +138,15 @@ collecting them and keeping right are the same manoeuvre.
 **The boost** is the fourth step of the throttle's wind-up, for three seconds,
 spent only while you are on the throttle: a coin taken into a corner is still
 worth something coming out of it. Holding the pedal is worth three times the
-base top speed after a second and a half; a coin is worth four.
+base top speed after three seconds; a coin is worth four.
+
+**And the clock going does not stop you.** It runs past zero into overtime
+and the takings run past nothing into the red — `-14s OT` and `-$8` on the
+status line — because a shift you have overrun is one you are working at a
+loss, which is a state you can drive your way out of. Fares still pay. The
+alternative, which is what it used to do, was to freeze the simulation on
+the tick the clock ran out, with the cab stopped mid-corner and the traffic
+stopped around it and nothing left to do but quit.
 
 ### What it says out loud
 
@@ -130,7 +162,7 @@ decides whether to shout and the core does not know there is a screen.
 | `CRUNCH` | a lamp post, a hydrant, a parking meter — over it goes |
 | `SMASH` | another car, hit hard enough to send it spinning |
 | `OW` | a building, which does not move |
-| `TIME UP` | the shift is over |
+| `TIME UP` | the clock has run out; you are into overtime, not out of the game |
 
 ### The machines
 
@@ -169,17 +201,28 @@ with you. A bus does not care that you hit it.
 
 | Class | Width | |
 |---|---|---|
-| `Alley` | 1 cell, 6 m | service access between buildings; no pavement, no paint |
-| `Street` | 2 cells, 12 m | one lane each way |
-| `Avenue` | 3 cells, 18 m | |
-| `Boulevard` | 4–5 cells, 24–30 m | |
-| `Arterial` | 12–16 cells, 72–96 m | one or two per city, running its whole length |
+| `Alley` | 2 cells, 12 m | service access between buildings; no pavement, no paint |
+| `Street` | 4 cells, 24 m | two lanes each way, or one lane and somewhere to stop |
+| `Avenue` | 6 cells, 36 m | |
+| `Boulevard` | 8–10 cells, 48–60 m | |
+| `Arterial` | 24–32 cells, 144–192 m | one or two per city, running its whole length |
 
-Ground is `Road`, `Sidewalk`, `Building`, `Park`, `Plaza`, `Sand` or
-`Water`, and the difference matters to everything: cars belong on the first,
-people on most of the rest, fares wait on the pavement, and the walking
-network is a second map over the same grid so that a pedestrian crosses at
-the crossing.
+**Every one of those numbers doubled**, and so did the blocks between them
+and the map they sit on — 728 cells a side rather than 364, keeping the same
+count of blocks at twice the size. The car did not change, which is the
+whole point of the exercise. The cab is two cells long and a street used to
+be two cells wide: a two-lane street the exact length of the car is one you
+cannot turn round in, cannot pass anything on, and cannot pull up at a fare
+on without stopping across both lanes. Relative to the thing driving on
+them, the roads are now twice as wide.
+
+Ground is `Road`, `Sidewalk`, `Building`, `Park`, `Plaza`, `Sand`, `Water`,
+`Field`, `Hedge` or `Gap`, and the difference matters to everything: cars
+belong on the first, people on most of the rest, fares wait on the pavement,
+and the walking network is a second map over the same grid so that a
+pedestrian crosses at the crossing. Three of them stop a car — the sea, the
+treeline round a field, and the slot between two buildings — and none of
+those three is a building.
 
 A pavement is drawn in bands from the kerb inwards — kerb, planted verge,
 paving, and a dark seam at the building line so the wall does not appear to
@@ -197,7 +240,8 @@ is in between is the answer to a question the edge of a map always asks:
    ring 0-3     downtown - towers, the arterials
    ring 4-7     the rest of the city, falling away
    ring 8-10    suburb - one-storey houses on wide plots, gardens between
-   ring 11      farmland - fields, a farmhouse in about half of them
+   ring 11      farmland - standing crop inside a treeline, a farmhouse in
+                about half of them
    ring 12      the last houses, and no road runs through them
    ring 13+     nothing
 ```
@@ -209,11 +253,63 @@ nothing out there" — which is the true answer and does not need a wall to
 make it. The last ring has no roads at all: those houses are reached across
 the fields or not at all.
 
+The farmland is planted rather than mown: every field is standing crop, in
+rows that run the way the drill went, inside a **treeline you cannot drive
+through**, with a gate on each side where a farm track would meet the road.
+That turns the outer ring into a maze of lanes, which is what farmland is,
+and it means the map has one edge rather than two — the sea and the
+treeline are both open ground as far as the height field is concerned, so
+until they were made solid the cab could be driven out to sea and could cut
+the corner off the whole map through a field.
+
 The south is a coast — beach, then sea, always the south so that "drive
-towards the water" is a direction you can learn. And the draw distance is a
-block longer than it used to be for the same reason all of this is here:
-from the fields the towers have to be visible, so the way back to the middle
-is something you can see rather than something you have to remember.
+towards the water" is a direction you can learn. And the draw distance runs
+from 52 cells in soup to 640 in the clear, set live with the `0`–`9` keys,
+for the same reason all of this is here: from the fields the towers have to
+be visible, so the way back to the middle is something you can see rather
+than something you have to remember.
+
+### The distance dissolves
+
+A cell has one colour, so there is no alpha to blend with. The far end of
+the world used to fade towards *black*, which is right on a dark sky and
+wrong on every other one — a tower at the draw distance went black against a
+pale morning and read as a hole, and the moment it crossed the limit it
+stopped being drawn at all. That hard edge is the pop-in, and the skyline is
+where it shows, because the skyline is the part of the frame made entirely
+of things at the limit.
+
+So the last two fifths of the range is an **ordered dither**. A 4×4 Bayer
+threshold on the screen position decides, per cell, whether it is the
+building or the air in front of the building, and the fraction that goes to
+air climbs to all of it at the limit. A distant tower arrives as a
+scattering of its own colour through the sky colour and thickens as you
+drive at it. Ordered rather than random because a random threshold crawls,
+and a crawling one boils the whole skyline.
+
+`0`–`9` set how far you can see, counted the way a player thinks about it:
+`0` is the next block, `9` is the far side of the city. `--distance N` does
+the same from the command line.
+
+### The blocks have seams
+
+The lot subdivision used to butt every building against its neighbours, so a
+block came out as one continuous mass of facade with the joins showing only
+where the colour happened to change — which on a single-palette downtown
+block is often nowhere. From the street that reads as one enormous building
+per block.
+
+A slot is now cut on about a third of the boundaries, and on **every**
+boundary where the two neighbours would be different colours: a colour
+change with no gap in it reads as one building with a paint fault, and a
+colour change with a slot in it reads as two buildings. The hues are drawn
+before anything is built so the boundary can be asked about them.
+
+The slots are solid at ground level and empty above it, which is not a
+compromise but the requirement. A one-cell slot is narrower than the car is
+long, so a drivable one is a trap and a walkable one is somewhere a fare
+gets posted that no cab can reach. Both happened: one city went from six
+fares in five minutes to one, with the cab wedged for a third of the run.
 
 ### The architecture
 
@@ -266,34 +362,109 @@ The city is lit by whatever is overhead: two luminance steps of ambient at
 noon, one at dawn, none at night. A lit sky over a black street is the one
 thing a day cycle can get obviously wrong.
 
-And the rest of the weather: haze 0–8, stars 0–8 (they stop being drawn as
-the sky brightens, which is what happens), a moon that can be switched off,
-and rain 0–8 which is **off unless you ask for it** — a character cell is a
-large pixel, so a raindrop is a large raindrop, and a couple of hundred of
-them leaning across the frame is reading the weather rather than the city.
+And the rest of it: a draw distance you set live from `0` to `9`, stars 0–8
+(they stop being drawn as the sky brightens, which is what happens), and a
+moon that can be switched off.
+
+There was rain here, and it is gone. Not because it did not work: a
+character cell is a large pixel, so a raindrop is a large raindrop, and a
+couple of hundred of them leaning across the frame is a picture of the
+weather rather than a picture of the city. The city is the thing being
+drawn.
 
 ### What the car does
 
 | | |
 |---|---|
-| An engine with a curve | hardest from rest, tapering off; the top of the range is 1¾ s away, not ¼ |
+| An engine with a curve | a torque curve through a gearbox: a third of its force at rest, all of it by 66 mph, tapering away above that. 0–60 in about a second, not a third of one |
 | A corner you can place | it goes where it points at every speed; the drift is the handbrake's, not the car's |
 | A held turn that tightens | keep the wheel over and the lock winds on for the next second, a quarter again — the first second is the corner you asked for |
 | A corner that widens with speed | radius grows with the square of it, so getting round a junction means slowing down or hanging the tail out |
 | Acceleration bobbing | the camera carries the driver's head on a spring: back under power, forward under braking, still at any constant speed |
 | Grip you have to ask to lose | 0.06 to 0.15 of slip through a corner at any speed with your hands off the handbrake, and 0.84 to 0.93 with it |
-| A throttle that winds up | hold it and the top speed steps up every half second, three times over, each step landing as a shove: 93 mph at half a second, 185 at one, 306 at one and a half, settling at 311 — and 414 with a coin |
+| A throttle that winds up | hold it and the top speed steps up every second, three times over, each step landing as a shove: 83 mph at one second, 171 at two, 242 at three, settling at 311 — and 414 with a coin. Four plateaus you arrive at and sit on, not one ramp |
 | Drag with a squared term | the top speed is *found*, where the engine and the air balance, rather than set by a clamp |
 | A car drawn by a function | not eight rows of art scaled up: `paint_car` is evaluated at whatever size the car is on screen, so twenty rows of cab get twenty rows of detail |
+| A car seen from wherever you stand | the card is split between the end of the car and its flank in the proportions they actually appear in, so a three-quarter view is a boot and a flank side by side, and it moves continuously through every angle instead of flipping between two pictures |
+| Three bodies that differ in shape | a jeep is short, tall and glassy; a land yacht is a quarter longer and a fifth lower; a saloon is between them. Fixed per vehicle, so a car does not change shape when the pool recycles it |
+| A collision box on the wheels | five eighths of the length, which is the wheelbase — a car's overhangs are the part you can put past another car without touching it, which is why two of them can turn across each other in a junction |
+| Full throttle ploughs | the cab's collision weight triples with the pedal down. It does not fire other cars into the sky — the impulse between two bodies is set mostly by the lighter of them — it keeps the cab's own momentum: coasting into a saloon costs it two and a half units a second, flat out it costs one. The bus still wins |
 | Windows that reflect the sky | the glass takes the *sky's* hue, so it is blue in the afternoon and gold at sunrise |
 | Damage that is only paint | it accumulates and it shows; the car never stops working |
 | A chase boom that gets out of the way | shortened until it is clear of the wall it would otherwise show you the inside of |
+| A wall that turns you rather than throwing you back | a building takes the speed you drove into it, leaves the speed you had along it, and points the car along itself at about 70°/s for as long as you are scraping. It used to rebound at a third of the impact speed, which in an alley is the run-up to the far wall |
 
 The head is the one to watch for. It answers to *acceleration* and to
 nothing else, so a hundred and fifty miles an hour down a straight looks
 exactly like standing still, and the moment you lift off is the moment you
 feel — three rows of horizon under power, four under braking, and a bob past
 level and back when the throttle comes off.
+
+### The traffic, and the driver in it
+
+Every other car on the road gets the same three controls you do, works them
+out from what is in front of it, and knows nothing about where it is going.
+
+**They drive in lanes.** Every car used to ask `road::lane` for its target
+and get the same answer, so a dozen of them queued nose to tail on one
+painted line with two cells of empty carriageway beside them, and any car
+that could not get past the one in front simply stopped. Each now picks a
+whole lane within its own half and sits in the *middle* of it — a lane has a
+middle for a reason, and interpolating smoothly across the half instead puts
+cars half a cell from the crown, which is inside the wobble of a car being
+jostled. Traffic on the correct side of the road: 94 to 96 per cent.
+
+**They have their own speeds**, so the street has to overtake and give way
+to itself rather than moving as one block. A bus takes the middle of its
+half because it does not fit anywhere else.
+
+**They give way to the right** — the junction rule everywhere that drives on
+the right — and they have the **nerve to go anyway** after about two
+seconds. The rule on its own deadlocks in exactly the way the real one does:
+four cars arrive at a crossroads, each has somebody on its right, and each
+waits for the other three forever. Which car goes first is stable per
+vehicle, so the four take turns in the same order instead of all lunging
+together. A car that has not moved at all for four seconds backs out and
+tries again, which is the backstop for every other reason to be stuck.
+
+**They arrive from three blocks away.** The pool used to recycle a car eight
+cells out — a car length and a half — so it spent its life materialising a
+saloon in the next lane while you were looking at it, which is the one thing
+a traffic system must never do. Cars now appear at or beyond the far end of
+the street you are on, where the frame is already a haze of distant
+buildings, and drive towards you the way traffic does. Sixty-four of them
+rather than twelve, which is the same density over a disc nine times the
+area.
+
+### Steering is a controller, not a rule
+
+Both the cab and the traffic hold their lane with a **PD controller**: one
+proportional term on how far off parallel the car is, one on how far off the
+line, and a derivative that gives lock back in proportion to how fast the
+car is already coming round.
+
+The derivative is the part that was missing. A controller made only of
+position terms cannot tell a car heading back to the lane from one sitting
+still beside it, so it asks for the same lock in both cases and arrives at
+the line with the wheel still over. That is the weave, and no retuning of
+the two proportional gains removes it — it makes them either slow or
+unstable, which is the pair of failures the tuning went through. With
+damping in, the proportional terms could go back *up*: the offset term had
+been divided by speed twice over, so at open-road pace the lane controller
+was almost pure damping and had no opinion about which lane it was in.
+
+There is no integral term and there should not be one. What an integrator
+fixes is a steady-state offset from a constant disturbance, and a lane has
+none: the only persistent offsets here are deliberate — a dodge, an overtake
+— and an integrator would spend them winding up and then unwind into the
+kerb on the way out.
+
+The cab aims at the **kerb-side lane on a straight** and fades back to the
+middle of its half for a corner. Every movement it makes to pass something
+is towards the crown, so starting from the kerb means a routine overtake
+uses the second lane rather than the oncoming one; but the kerb line is the
+outside of a left-hander, so a cab that held it into a junction had the
+least room exactly where it needed the most.
 
 ### The rules underneath
 
@@ -316,8 +487,14 @@ which places cars and the thing which steers them cannot disagree.
 
 **Time comes only from working**, so pace is the only strategy.
 
-**Nothing ends the run but the clock.** No fuel, no damage model, no fail
-state that is about the vehicle instead of about you.
+**Nothing ends the run at all.** The clock used to freeze the whole
+simulation on the tick it ran out — the cab stopped mid-corner, the traffic
+stopped around it, and the only thing left to do was quit. That is a
+scoreboard, not an ending. It now runs past zero into overtime and the
+takings run past nothing into the red, so a shift you have overrun is one
+you are working at a loss and can drive your way out of, because fares still
+pay. No fuel, no damage model, no fail state that is about the vehicle
+instead of about you.
 
 **The measurement decides.** Every figure in this README and in `docs/` was
 measured by a test that is still in the tree, and several of them are
@@ -478,17 +655,31 @@ Driving:
 |---|---|
 | `w` or `↑` | throttle |
 | `s` or `↓` | brake, then reverse |
-| `a` or `q` | steer left |
-| `d` or `e` | steer right |
+| `a` | steer left |
+| `d` | steer right |
+| `q` | hard left |
+| `e` | hard right |
+| `space` | brake — it stops the car and leaves it stopped |
+| `z` | handbrake |
 | `←` `→` | swing the camera round the cab; let go and it centres |
-| `space` | handbrake |
 | `t` | get out and walk |
 
+**There are two pairs of steering keys because there are two kinds of
+corner.** `a` and `d` are the wheel: lock winds on while you hold them,
+which is the corner you saw coming. `q` and `e` are all of the lock on the
+frame you press them, which is the one you did not — the junction you were
+going to miss, the alley you are being pushed into.
+
+The pedals split the same way. `s` is the brake with reverse behind it, for
+backing out of things; the space bar is the brake on its own, and it applies
+whichever pedal opposes the motion, so it brings the car to a stop and
+leaves it there instead of pulling away backwards the moment it is still.
+
 **Hold them.** The throttle winds on while the key is down, and the engine
-pulls hardest low down and tapers off as the speed comes up, so the top of
-the range is about a second and three quarters away rather than a quarter of
-one. `a` and `w` together is a left-hander taken under power, which is what
-holding two keys at once is for.
+has to get the car rolling before it pulls, so pulling away takes about a
+second and the top of the range takes four. `a` and `w` together is a
+left-hander taken under power, which is what holding two keys at once is
+for.
 
 That last part wants a terminal that reports key *releases* — kitty,
 ghostty, WezTerm and foot do, and the program asks yours at startup. Where
@@ -509,9 +700,9 @@ On foot and in the air:
 | `t` | get in the cab |
 | `c` | walk / copter |
 
-Any time: `g` switches ASCII and block elements, `1`–`9` `0` set the rain
-(`0` is dry, which is where it starts), `h` cycles the haze, `m` is the
-moon, `\` hands the camera back to the autopilot, `esc` quits.
+Any time: `g` switches ASCII and block elements, `0`–`9` set the draw
+distance (`0` is the next block, `9` is the far side of the city), `m` is
+the moon, `\` hands the camera back to the autopilot, `esc` quits.
 
 A terminal cannot see a bare Shift — it sends no bytes at all — so `z`
 descends where you might expect Shift to.
@@ -524,8 +715,8 @@ descends where you might expect Shift to.
 --mode unicode    block elements (default)
 --color true|16|none
 --size WxH        fix the frame size; without it the frame is the window
---rain 0..8       0 dry, and 0 is the default
---haze 0..8   --stars 0..8   --no-moon
+--distance 0..9   draw distance: 0 the next block, 9 the whole city
+--haze 0..9   --stars 0..8   --no-moon
 --day TICKS       one turn of the sky (default 7200, four minutes); 0 holds
 --sky N           start at phase N of 12; --sky list names them
 --drive  --copter  --walk
@@ -566,10 +757,10 @@ place to start.
 
 ```sh
 $ ascitty --version
-ascitty 0.8.0 (seed 0xa5c1771e)
+ascitty 0.9.0 (seed 0xa5c1771e)
 ```
 
-Releases are tagged `v0.8.0` and so on, and every picture in this README
+Releases are tagged `v0.9.0` and so on, and every picture in this README
 says which build drew it. Regenerating them is `make shot` and `make gif`;
 the seed is fixed, so the same tag renders the same frames.
 
@@ -641,7 +832,7 @@ The wedding-cake silhouette of a 1920s tower is four lines of code.
 On top of it sit three more layers, each its own structure because the
 questions are different: a **street plan**, a **zoning map**, and a
 **pedestrian network**. The streets are generated rather than computed —
-five road classes from a one-cell alley to a sixteen-cell arterial, at
+five road classes from a two-cell alley to a thirty-two-cell arterial, at
 irregular spacing, with bigger roads getting bigger blocks after them so the
 hierarchy is visible from the ground. The zoning says what ground is *for*,
 which is a different question from what is built on it: a twelve-storey
@@ -725,8 +916,9 @@ Everything is indexed at **[docs/index.md](docs/index.md)**.
 ## Where it stands
 
 Working: the renderer, all three cameras, the city generator with six
-building archetypes, the procedural font, the weather, the driving physics,
-the fare loop, the terminal front end and the Plus/4 build. 297 tests.
+building archetypes, the procedural font, the sky, the driving physics, the
+traffic, the fare loop, the terminal front end and the Plus/4 build. 310
+tests.
 
 Not yet: sub-cell rooflines, proper roof surfaces, scoring and grades,
 sprites and driving on the Plus/4, and the assembly inner loop that would
