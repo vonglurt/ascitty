@@ -425,7 +425,22 @@ fn chase(cam: &mut Camera, sim: &Sim, city: &City, rows: i32, head: &mut Head, h
     // long boom puts the cab in the middle distance and the game in the
     // middle of a wide shot; a short one puts you behind the car, close
     // enough that the road goes past rather than towards you.
-    let want = fixed::mul(sim.taxi.kind.half_len(), fixed::from_int(2)) + fixed::ratio(1, 4);
+    // Twice as far back when you are reversing.  A close chase camera looks
+    // over the boot at the road ahead, which is the wrong half of the world
+    // when the car is going the other way: backing up, what you need to see
+    // is behind the car, and the only way to show more of it through a
+    // camera that stays behind is to stand further off.
+    //
+    // Continuous rather than a switch, off the car's own forward speed, so
+    // it draws back as the car picks up reverse and comes in again as it
+    // stops.  Two cells a second of reverse is all of it.
+    let vf = fixed::mul(sim.taxi.vx, trig::cos(sim.taxi.yaw))
+        + fixed::mul(sim.taxi.vy, trig::sin(sim.taxi.yaw));
+    let backing = fixed::clamp(fixed::div(-vf, fixed::from_int(2)), 0, ONE);
+    let want = fixed::mul(
+        fixed::mul(sim.taxi.kind.half_len(), fixed::from_int(2)) + fixed::ratio(1, 4),
+        ONE + backing,
+    );
     let mut boom = want;
     while boom > fixed::ratio(1, 4) {
         let x = sim.taxi.x - fixed::mul(dx, boom);

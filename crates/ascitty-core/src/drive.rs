@@ -110,6 +110,28 @@ const GRIP_HANDBRAKE: Fx = fixed::ratio(995, 1000);
 const GRIP_CURVE: u32 = 3;
 /// Peak yaw rate, in angle units per second: about 130 degrees a second.
 const TURN_RATE: i32 = 24_000;
+/// How far down the throttle has to be to count as pinned.
+const PIN_DOWN: Fx = fixed::ratio(3, 4);
+/// How long one step of the wind-up takes, in ticks at [`HZ`].
+const PIN_STEP: u32 = HZ as u32 / 2;
+/// How many steps there are.
+///
+/// Three, half a second apart, so a pedal held for a second and a half is
+/// worth three times the top speed it is worth for half of one.  The car is
+/// quick off the line and *keeps going*, which is the difference between a
+/// top speed and a build: the first street is a normal street and the fourth
+/// one is not.
+const PIN_STEPS: u32 = 3;
+/// What the top speed is multiplied by at the last step, and what a coin
+/// makes it.
+///
+/// Three, and four with a coin in you.  The coin is worth a step past
+/// anything holding the pedal can do on its own, which is what makes one
+/// worth going slightly out of the way for even when the clock is not the
+/// thing you are short of.
+const PIN_MAX: Fx = fixed::ratio(3, 1);
+const PIN_BOOST: Fx = fixed::ratio(4, 1);
+
 /// How far over the wheel has to be to count as held.
 const WIND_LOCK: Fx = fixed::ratio(3, 4);
 /// How long it has to be held there before the lock starts winding on, in
@@ -308,6 +330,12 @@ pub struct Car {
     pub hue: u8,
     /// What it is.
     pub kind: CarKind,
+    /// Ticks the throttle has been held down, for the speed that winds up.
+    ///
+    /// The same idea as [`Car::wound`] and for the same reason: the pedal
+    /// only goes to one place, so how long it has been there is the only
+    /// thing left to say how much you meant it.
+    pub pinned: u32,
     /// Ticks the wheel has been held hard over, for the lock that winds on.
     ///
     /// A car park manoeuvre and a corner are the same input here - the wheel
@@ -327,7 +355,7 @@ pub struct Car {
 impl Car {
     /// A car sitting still at a place, pointing somewhere.
     pub fn new(kind: CarKind, x: Fx, y: Fx, yaw: Ang, hue: u8) -> Car {
-        Car { x, y, vx: 0, vy: 0, yaw, spin: 0, damage: 0, hue, kind, wound: 0, boost: 0 }
+        Car { x, y, vx: 0, vy: 0, yaw, spin: 0, damage: 0, hue, kind, pinned: 0, wound: 0, boost: 0 }
     }
 
     /// Speed, in units per second.
@@ -368,19 +396,37 @@ impl Car {
         // Engine, brake and reverse are three different forces, because
         // pressing "back" while rolling forwards must brake rather than
         // engage reverse - otherwise the car is undriveable.
-        // Boost: twice the engine and twice the top speed, while it lasts
-        // and while you are on the throttle.  Lifting off does not spend it,
-        // which means a coin taken into a corner is still worth something
-        // coming out of it.
+        // Boost, while it lasts and while you are on the throttle.  Lifting
+        // off does not spend it, which means a coin taken into a corner is
+        // still worth something coming out of it.
         let boosting = self.boost > 0 && c.throttle > 0;
-        if self.boost > 0 && c.throttle > 0 {
+        if boosting {
             self.boost -= 1;
         }
-        let (accel, vmax) = if boosting {
-            (fixed::mul(ACCEL, fixed::from_int(2)), fixed::mul(VMAX, fixed::from_int(2)))
+
+        // The wind-up.  Hold the throttle and the top speed steps up every
+        // half second - three times over - and a coin is worth a step past
+        // where holding it can get you.  Let go and it falls twice as fast
+        // as it climbed, so this is a thing you commit to a straight for and
+        // not a thing you have.
+        let step = (PIN_STEP * hz as u32 / HZ as u32).max(1);
+        if c.throttle > PIN_DOWN {
+            self.pinned = self.pinned.saturating_add(1).min(step * PIN_STEPS);
         } else {
-            (ACCEL, VMAX)
-        };
+            self.pinned = self.pinned.saturating_sub(2);
+        }
+        let steps = fixed::from_int((self.pinned / step).min(PIN_STEPS) as i32);
+        let wound_up = ONE
+            + fixed::mul(
+                fixed::div(steps, fixed::from_int(PIN_STEPS as i32)),
+                PIN_MAX - ONE,
+            );
+        let mult = if boosting { PIN_BOOST } else { wound_up };
+        // The engine has to keep pulling to wherever the top speed has got
+        // to, or the car is quick to a speed it can no longer reach.
+        let accel = fixed::mul(ACCEL, mult);
+        let vmax = fixed::mul(VMAX, mult);
+        let ceiling = fixed::mul(ENGINE_CEILING, mult);
 
         let t = c.throttle;
         let force = if t > 0 {
@@ -388,7 +434,7 @@ impl Car {
             // tapering to nothing at `ENGINE_CEILING`.  Never negative -
             // past the ceiling the engine simply stops pushing, it does not
             // start braking.
-            let left = (ONE - fixed::div(vf.max(0), fixed::mul(ENGINE_CEILING, fixed::div(vmax, VMAX)))).max(0);
+            let left = (ONE - fixed::div(vf.max(0), ceiling)).max(0);
             fixed::mul(fixed::mul(t, accel), left)
         } else if vf > fixed::ratio(1, 4) {
             fixed::mul(t, BRAKE)
@@ -780,48 +826,88 @@ mod tests {
 
     /// Speed is something the car builds, and the build tapers.
     ///
-    /// Measured from a standstill on open ground, flat out: 47 mph after a
-    /// quarter of a second, 82 after half, 125 after a second, and the full
-    /// 154 at one and three quarters.  The version this replaced was at the
-    /// clamp in 0.27 s and every one of those figures was 154.
+    /// Measured once the wind-up has finished, because there are two builds
+    /// on top of each other and this is about the other one: for the first
+    /// second and a half the *cap* is still rising - see
+    /// `holding_the_throttle_winds_the_speed_up` - so the car re-accelerates
+    /// every half second and nothing tapers at all.  Past that the cap is
+    /// fixed and what is left is the engine's own curve, which is the thing
+    /// that makes the last few miles an hour cost more than the first.
     #[test]
     fn the_engine_has_a_curve_rather_than_a_switch() {
         let city = open_ground();
-        // Quarter-second samples of the speed, from a standstill, flat out.
         let mut car = Car::new(CarKind::Taxi, fixed::HALF, fixed::HALF, 0, 7);
-        let mut speeds = Vec::new();
-        for _ in 0..8 {
-            for _ in 0..HZ / 4 {
-                car.step(&Controls { throttle: ONE, ..Default::default() }, &city, HZ);
-            }
-            speeds.push(car.speed());
+        // Get the wind-up out of the way.
+        flat_out(&mut car, &city, HZ as u32 * 3 / 2);
+        let mut gains = Vec::new();
+        let mut last = car.speed();
+        for _ in 0..6 {
+            flat_out(&mut car, &city, HZ as u32 / 4);
+            gains.push(car.speed() - last);
+            last = car.speed();
         }
-        // The first quarter second is worth more than the fourth, which is
-        // the whole of what a curve means.
-        let first = speeds[0];
-        let fourth = speeds[3] - speeds[2];
-        // Two and a half to one; measured at 2.16 units against 0.83, which
-        // is 2.6.  The bar is under the measurement because what is being
-        // defended is that the curve exists, not its exact shape.
         assert!(
-            first * 2 > fourth * 5,
-            "no taper: {} in the first quarter second against {} in the fourth",
-            fixed::to_f32(first),
-            fixed::to_f32(fourth)
-        );
-        // And it still gets there: full speed within two seconds.
-        assert!(
-            speeds[7] >= VMAX - fixed::ratio(1, 20),
-            "two seconds flat out and it is only doing {}",
-            fixed::to_f32(speeds[7])
+            gains[0] > gains[5] * 3,
+            "no taper: {:?}",
+            gains.iter().map(|g| fixed::to_f32(*g)).collect::<Vec<_>>()
         );
     }
 
+    /// It does not exceed the top speed it has wound up to.
+    ///
+    /// Which is three times the base one after a second and a half of held
+    /// throttle - see `PIN_STEPS` - and four times with a coin in it.  The
+    /// number that must not run away is the multiple, not the base.
     #[test]
     fn it_does_not_exceed_its_top_speed() {
         let (city, mut car) = on_the_road();
         flat_out(&mut car, &city, 2000);
-        assert!(car.speed() <= VMAX + ONE, "speed ran away: {}", fixed::to_f32(car.speed()));
+        let cap = fixed::mul(VMAX, PIN_MAX);
+        assert!(car.speed() <= cap + ONE, "speed ran away: {}", fixed::to_f32(car.speed()));
+        assert!(
+            car.speed() > cap - ONE,
+            "it never wound up: {} against a cap of {}",
+            fixed::to_f32(car.speed()),
+            fixed::to_f32(cap)
+        );
+
+        // And a coin is worth a step past that.
+        let mut car = Car::new(CarKind::Taxi, car.x, car.y, car.yaw, 7);
+        car.boost = 100_000;
+        flat_out(&mut car, &city, 2000);
+        let cap = fixed::mul(VMAX, PIN_BOOST);
+        assert!(car.speed() <= cap + ONE, "boosted speed ran away: {}", fixed::to_f32(car.speed()));
+        assert!(car.speed() > cap - ONE, "the boost did not lift the cap");
+    }
+
+    /// The top speed steps up while the throttle is held, and falls back
+    /// when it is let go.
+    #[test]
+    fn holding_the_throttle_winds_the_speed_up() {
+        let city = open_ground();
+        let mut car = Car::new(CarKind::Taxi, fixed::HALF, fixed::HALF, 0, 7);
+        let mut at = Vec::new();
+        for half in 0..4 {
+            flat_out(&mut car, &city, HZ as u32 / 2);
+            at.push(car.speed());
+            let _ = half;
+        }
+        // Every half second is faster than the one before it, and the last
+        // is past the base top speed by a good margin.
+        for w in at.windows(2) {
+            assert!(w[1] > w[0], "it stopped gaining: {:?}", at.iter().map(|s| fixed::to_f32(*s)).collect::<Vec<_>>());
+        }
+        assert!(
+            at[3] > fixed::mul(VMAX, fixed::ratio(3, 2)),
+            "a second and a half of throttle only reached {}",
+            fixed::to_f32(at[3])
+        );
+
+        // Let go and the wind-up unwinds, so it is not a thing you keep.
+        for _ in 0..HZ * 2 {
+            car.step(&Controls::default(), &city, HZ);
+        }
+        assert_eq!(car.pinned, 0, "the throttle stayed wound up after being let go");
     }
 
     #[test]

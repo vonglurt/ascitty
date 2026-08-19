@@ -95,6 +95,31 @@ The version this replaced turned inside 14 m at 150 km/h and slipped between
 identically at walking pace and flat out, which is another way of saying the
 speed made no difference to the handling at all.
 
+### A held throttle winds up
+
+The same idea as the wheel, on the other pedal. Hold the throttle down and
+the **top speed** steps up every half second, three times over: a second and
+a half of it is worth three times the speed that half a second is. A coin is
+worth a step past anything holding the pedal can do on its own — four times
+— which is what makes one worth going slightly out of the way for even when
+the clock is not what you are short of.
+
+Let go and it unwinds twice as fast as it wound. It is a thing you commit a
+straight to, not a thing you have.
+
+The engine force is scaled with the cap, or the car would be quick to a speed
+it could no longer reach. Measured in play, holding the throttle from a
+standstill: 42 mph after half a second, 109 after one, 181 after one and a
+half, 316 after two and a half, and 427 before the street ran out.
+
+It changed the *autopilot* as much as the car. The cab used to hold full
+throttle until it was nearly at its cruising speed, which is exactly the
+input that winds the pedal up, so it wound itself past its own target and
+arrived at every corner too fast: 79 per cent of travelling ticks on the
+correct side of the road down to 50. It now eases the throttle in proportion
+to how far under its target it is, which is both the fix and what a driver
+does.
+
 ### A held turn winds on
 
 The wheel only goes to one place — a key is down or it is not — so the *time*

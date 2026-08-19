@@ -71,6 +71,13 @@ forty-row frame. What is left visible is the roof, the glass and the chequer ban
 that say it is a taxi — and the rest of the frame is street, which is what
 the height is for.
 
+**It stands twice as far off when you are reversing.** A close chase camera
+looks over the boot at the road ahead, which is the wrong half of the world
+when the car is going the other way; the only way to show more of what is
+behind through a camera that stays behind is to stand further back. It is
+continuous, off the car's own forward speed, so it draws back as the car
+picks up reverse and comes in again as it stops.
+
 **The boom shortens until it is out of a building.** A chase camera that
 clips through a wall shows you the inside of the wall at exactly the moment
 you most need to see the road, so the boom is tried at its full length and

@@ -220,6 +220,12 @@ const DODGE_CLOSE: Fx = fixed::ratio(5, 2);
 const STOPPED: Fx = fixed::ratio(3, 4);
 /// How much slower than the cab a car has to be to be worth going round.
 const CLOSING: Fx = fixed::ratio(1, 2);
+/// How far under its target speed the cab has to be for full throttle.
+///
+/// A unit a second.  Wide enough that it eases in rather than stamping, and
+/// narrow enough that it still gets up to speed out of a junction.
+const PACE_BAND: Fx = fixed::ratio(1, 1);
+
 /// How far ahead the cab will look for a coin.
 const COIN_LOOK: Fx = fixed::ratio(9, 1);
 /// And how far off its line one may be and still be worth having.
@@ -971,21 +977,24 @@ fn approach_speed(to_goal: Fx) -> Fx {
 /// version of this drove backwards down the street with its bearing error
 /// pinned at a half turn for the whole run.
 fn pace(vf: Fx, speed: Fx, want: Fx) -> Fx {
-    // A dead band between the two thresholds, so that holding a speed is
-    // coasting rather than alternating full throttle and full brake on
-    // successive ticks.  Without it the cab arrives at every fare shuddering.
-    if speed > want + fixed::ratio(1, 2) {
-        if vf > ROLLING {
-            -ONE
-        } else {
-            0
-        }
-    } else if vf < want - fixed::ratio(1, 4) {
-        ONE
-    } else {
-        0
+    // Over the target: brake, unless it is already crawling, in which case
+    // a negative throttle is reverse.
+    if speed > want + fixed::HALF {
+        return if vf > ROLLING { -ONE } else { 0 };
     }
+    // Under it: throttle in proportion to how far under, full only when a
+    // whole unit short.
+    //
+    // Not the flat "full throttle until you are nearly there" this used to
+    // be, and the reason is that the pedal now has a memory: holding it down
+    // for half a second raises the car's top speed a step, and the cab held
+    // it down as a matter of course, so it wound itself up past its own
+    // cruising speed and arrived at every corner too fast.  Measured, that
+    // took one city from 79 per cent of travelling ticks on the correct side
+    // of the road to 50.  Easing in is also what a driver does.
+    fixed::clamp(fixed::div(want - vf, PACE_BAND), 0, ONE)
 }
+
 
 /// Straight-line distance between two points.
 ///
