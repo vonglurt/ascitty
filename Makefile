@@ -185,6 +185,8 @@ shot: $(HOST) $(PRG)
 	@$(HOST) --shot 1   --size 150x44 --mode unicode --copter  > docs/media/copter-blocks.txt
 	@$(HOST) --shot 520 --size 140x40 --seed 99 --tour --walk   --png docs/media/street.png
 	@$(HOST) --shot 600 --size 140x40 --seed 99 --demo --drive  --png docs/media/drive.png
+	@$(HOST) --shot 1   --size 140x40 --seed 99 --copter --haze 1 --rain 0 \
+		--png docs/media/copter.png
 	@$(TOOLS)/strip.sh > docs/media/tour-strip.txt
 	@$(BAKE) --sheet > docs/media/glyph-sheet.txt
 	@$(TOOLS)/viceshot.sh $(PRG) docs/media/plus4.png

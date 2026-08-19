@@ -345,6 +345,44 @@ fn main() {
 
 /// Above every roof, which is where the copter starts and the lowest it is
 /// allowed to fly - the point of the mode is to look *down*.
+/// Point the camera at the city below it, for a frame this size.
+///
+/// The copter is the one view where the horizon is not the subject.  What
+/// the pitch has to be depends on how high the camera is, how wide the frame
+/// is - the lens is fixed but a wider frame is more rows per world unit -
+/// and how far the haze lets you see, so it is worked out rather than
+/// guessed.  See [`raycast::pitch_down`].
+fn aim_at_city(cam: &mut Camera, city: &City, atmos: &Atmos, w: usize, h: usize) {
+    let eye = cam.z - city.ground(fixed::floor(cam.x), fixed::floor(cam.y));
+    cam.pitch = raycast::pitch_down(
+        w as i32,
+        h as i32,
+        cam.fov,
+        eye,
+        ascitty_core::atmos::draw_distance(atmos.haze),
+    );
+}
+
+/// How far down the camera may be tilted in this view.
+///
+/// Walking and driving keep the horizon on the screen, because a view of
+/// nothing but pavement is not a view.  The copter is the opposite case: it
+/// is *looking at the ground*, its horizon is off the top of the frame on
+/// purpose, and clamping it to the walking rule was enough on its own to
+/// point it back at the empty sky.  Past the aim there is nothing further to
+/// see - only the same ground, stretched - so one frame beyond it is as far
+/// as the limit needs to go.
+fn tilt_limit(view: View, cam: &Camera, city: &City, atmos: &Atmos, w: usize, h: usize) -> i32 {
+    match view {
+        View::Copter => {
+            let mut aimed = *cam;
+            aim_at_city(&mut aimed, city, atmos, w, h);
+            aimed.pitch.abs() + h as i32
+        }
+        _ => h as i32 / 3,
+    }
+}
+
 fn ceiling_of(city: &City) -> Fx {
     let tallest = city.lots.iter().map(|l| l.height).max().unwrap_or(20);
     fixed::from_int(tallest as i32 + 6)
@@ -364,8 +402,9 @@ fn run(mut o: Opts) -> Result<(), String> {
     let mut view = o.view;
     match view {
         View::Copter => {
+            // Height here, aim once the frame size is known: the pitch that
+            // looks at the city depends on how many rows there are.
             cam.z = ceiling_of(&city);
-            cam.pitch = -8;
         }
         View::Drive => {
             sim.taxi.x = cam.x;
@@ -379,6 +418,9 @@ fn run(mut o: Opts) -> Result<(), String> {
     // them usable from a Makefile and from CI.
     if let Some(n) = o.shot {
         let (w, h) = o.size.unwrap_or((100, 34));
+        if view == View::Copter {
+            aim_at_city(&mut cam, &city, &o.atmos, w, h);
+        }
         let mut f = Frame::new(w, h);
         let mut depth = Vec::new();
         let mut events = Vec::new();
@@ -418,6 +460,9 @@ fn run(mut o: Opts) -> Result<(), String> {
         // demonstration in two containers, and running the city twice to
         // get them would let the two recordings differ.
         let (w, h) = o.size.unwrap_or((120, 36));
+        if view == View::Copter {
+            aim_at_city(&mut cam, &city, &o.atmos, w, h);
+        }
         let mut f = Frame::new(w, h);
         let mut buf = String::new();
         let mut depth: Vec<Fx> = Vec::new();
@@ -610,8 +655,14 @@ fn run(mut o: Opts) -> Result<(), String> {
                     side += step;
                     pedals.right.press();
                 }
-                Key::Up => cam.look(-1, (f.h / 3) as i32),
-                Key::Down => cam.look(1, (f.h / 3) as i32),
+                Key::Up => {
+                    let l = tilt_limit(view, &cam, &city, &o.atmos, f.w, f.h);
+                    cam.look(-1, l);
+                }
+                Key::Down => {
+                    let l = tilt_limit(view, &cam, &city, &o.atmos, f.w, f.h);
+                    cam.look(1, l);
+                }
                 // Get in the cab, or get out of it.  Its own key rather
                 // than a position in a cycle: driving is a mode you enter
                 // deliberately, and having to pass through the helicopter
@@ -638,7 +689,7 @@ fn run(mut o: Opts) -> Result<(), String> {
                         View::Walk
                     } else {
                         cam.z = ceiling_of(&city);
-                        cam.pitch = -(f.h as i32 / 6);
+                        aim_at_city(&mut cam, &city, &o.atmos, f.w, f.h);
                         View::Copter
                     };
                 }
@@ -664,6 +715,8 @@ fn run(mut o: Opts) -> Result<(), String> {
             // is clamped again here against the real one.
             cam.pitch = cam.pitch.clamp(-(f.h as i32 / 3), f.h as i32 / 3);
         }
+        let tilt = tilt_limit(view, &cam, &city, &o.atmos, f.w, f.h);
+        cam.pitch = cam.pitch.clamp(-tilt, tilt);
         match view {
             View::Walk if autopilot => {}
             View::Walk => {

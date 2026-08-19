@@ -80,6 +80,41 @@ Flight ignores buildings horizontally — you are above them — but not the
 floor of the mode, which keeps the camera over the roofline where the view is
 worth having.
 
+**How far down it looks is worked out, not chosen.** Ground `d` away is drawn
+`eye × scale ÷ d` rows below the horizon, so the furthest thing the haze
+allows — the draw distance — sits a fixed number of rows below it, and
+everything between the horizon and there is too far away to draw at all. The
+copter is pitched so that row is the *top* of the frame:
+
+```
+    horizon                        ← off the top, on purpose
+    ─────────────────────────────
+    row 0     the draw distance    ← nothing beyond here is drawn
+      ...
+    row h-1   directly below-ish
+```
+
+It was a fixed eight rows before, which is a walking camera's tilt. From the
+roofline of the tallest building, at the default haze, the draw distance is
+about twenty rows below the horizon and the bottom of a forty-row frame is
+sixty: eight rows of tilt put three or four rows of city along the bottom
+edge and forty rows of empty night above it. The mode looked broken and was
+simply pointed at the sky.
+
+The number depends on the height, the haze *and* the width of the frame —
+the lens is fixed, so a wider frame is more rows per world unit — which is
+why it is derived from the projection rather than kept as a constant.
+`raycast::pitch_down` is the one that does it, and it shares
+`raycast::scale` with the projection so the two cannot disagree.
+
+**And the tilt limit is per mode.** Walking and driving clamp the pitch to a
+third of the frame, which keeps the horizon on the screen: a view of nothing
+but pavement is not a view. The copter is the opposite case — its horizon is
+off the top on purpose — so clamping it to the walking rule was on its own
+enough to point it back at the empty sky. It may tilt as far as its aim, and
+one frame further; past that there is nothing new to see, only the same
+ground stretched.
+
 ### A terminal cannot tell you a key was released
 
 It sends a byte when a key goes *down* and nothing at all when it comes up.

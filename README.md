@@ -60,6 +60,13 @@ Three ways to be in it:
   traffic that scatters, and a fare on the clock.
 - **Copter** — free flight above the roofline, looking down.
 
+![The city from above the tallest roof: towers seen down their faces, rooftops and fire escapes below](docs/media/copter.png)
+
+*The copter, from `--copter --haze 1 --rain 0`. How far down it looks is
+worked out from how high it is, how far the haze lets it see and how many
+rows the frame has, rather than being a fixed tilt — see
+[docs/camera.md](docs/camera.md).*
+
 And weather: rain that leans with your heading and brightens in front of lit
 windows, a moon that stays put as you turn, stars fixed to the world, and
 haze that eats distance.
@@ -119,7 +126,7 @@ make walk     # watch the camera walk instead
 make run4     # play the Plus/4 build in xplus4
 make demo4    # ...and leave it alone; it drives itself
 
-make test     # 249 tests, about half a second
+make test     # 252 tests, about half a second
 make check    # the gate: tests, both builds, and both actually rendering
 make bench    # frames a second on this machine
 
@@ -398,7 +405,7 @@ Everything is indexed at **[docs/index.md](docs/index.md)**.
 
 Working: the renderer, all three cameras, the city generator with six
 building archetypes, the procedural font, the weather, the driving physics,
-the fare loop, the terminal front end and the Plus/4 build. 249 tests.
+the fare loop, the terminal front end and the Plus/4 build. 252 tests.
 
 Not yet: sub-cell rooflines, proper roof surfaces, scoring and grades,
 sprites and driving on the Plus/4, and the assembly inner loop that would

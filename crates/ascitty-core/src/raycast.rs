@@ -78,6 +78,19 @@ pub struct Proj {
     pub eye: Fx,
 }
 
+/// Screen rows per world unit at unit distance.
+///
+/// The one place this is worked out.  It is wanted by the projection, and
+/// also by anything that has to answer the question the other way round -
+/// "what pitch looks at ground *that* far away" - and two derivations of the
+/// same ratio would eventually disagree by a factor of the cell aspect,
+/// which is exactly the sort of bug that looks like a bad camera rather than
+/// like arithmetic.
+#[inline]
+pub fn scale(w: i32, fov: Fx) -> Fx {
+    fixed::div(fixed::from_int(w), fixed::mul(fov, fixed::from_int(2 * CELL_ASPECT)))
+}
+
 /// Work out the projection for a camera and a frame.
 pub fn projection(city: &City, cam: &Camera, f: &Frame) -> Proj {
     let (w, h) = (f.w as i32, f.h as i32);
@@ -85,12 +98,30 @@ pub fn projection(city: &City, cam: &Camera, f: &Frame) -> Proj {
         w,
         h,
         horizon: h / 2 + cam.pitch,
-        proj: fixed::div(
-            fixed::from_int(w),
-            fixed::mul(cam.fov, fixed::from_int(2 * CELL_ASPECT)),
-        ),
+        proj: scale(w, cam.fov),
         eye: (cam.z - city.ground(fixed::floor(cam.x), fixed::floor(cam.y))).max(1),
     }
+}
+
+/// The pitch that aims a camera `eye` units above the ground *at the ground*,
+/// with the furthest thing it could see at the top of the frame.
+///
+/// Ground `d` away is drawn `eye * scale / d` rows below the horizon, so the
+/// far end of the visible world - the draw distance, which is the haze - is
+/// `eye * scale / far` rows down, and everything between the horizon and
+/// there is too distant to draw.  Aiming so that row lands at the top of the
+/// frame fills the screen with the part of the world that has something in
+/// it, and puts the horizon off the top where a camera looking down at a
+/// city has no use for it.
+///
+/// This matters most where it is least obvious.  From the roofline of the
+/// tallest building, at the default haze, the far row is about twenty below
+/// the horizon and the near edge of a forty-row frame is sixty: a camera
+/// tilted by the eight rows this used to use was looking at three or four
+/// rows of city along the bottom of the screen and forty of empty night.
+pub fn pitch_down(w: i32, h: i32, fov: Fx, eye: Fx, far: i32) -> i32 {
+    let rows = fixed::div(fixed::mul(eye.max(1), scale(w, fov)), fixed::from_int(far.max(1)));
+    -(h / 2 + fixed::floor(rows))
 }
 
 /// What one frame cost.
@@ -704,6 +735,59 @@ mod tests {
         let city = City::generate(2024);
         let cam = Camera::spawn(&city, SIZE as i32 / 2, SIZE as i32 / 2);
         (city, cam, Atmos::default())
+    }
+
+    /// What row the ground `d` away lands on, for a camera `eye` up with
+    /// this pitch.  The projection's own rule, written once here so the
+    /// tests below ask the same question the renderer answers.
+    fn ground_row(w: i32, h: i32, fov: Fx, eye: Fx, pitch: i32, d: i32) -> i32 {
+        let rows = fixed::div(fixed::mul(eye, scale(w, fov)), fixed::from_int(d));
+        h / 2 + pitch + fixed::floor(rows)
+    }
+
+    /// Looking down puts the far edge of the visible world at the top of the
+    /// frame, which is the whole claim [`pitch_down`] makes.
+    #[test]
+    fn a_camera_aimed_down_has_the_furthest_ground_at_the_top() {
+        let fov = crate::camera::fov_for_degrees(67.0);
+        for (w, h) in [(80, 24), (140, 40), (40, 25), (200, 60)] {
+            for eye in [fixed::from_int(8), fixed::from_int(30), fixed::from_int(120)] {
+                for far in [20, 80, 200] {
+                    let p = pitch_down(w, h, fov, eye, far);
+                    let top = ground_row(w, h, fov, eye, p, far);
+                    assert!(
+                        (0..=1).contains(&top),
+                        "{w}x{h}, eye {}, far {far}: the far edge landed on row {top}",
+                        fixed::to_f32(eye)
+                    );
+                }
+            }
+        }
+    }
+
+    /// And everything on the screen is therefore nearer than that, which is
+    /// the failure it was written for: a copter tilted by a fixed few rows
+    /// filled the frame with world beyond the draw distance, which is black.
+    #[test]
+    fn nothing_on_screen_is_beyond_the_draw_distance() {
+        let fov = crate::camera::fov_for_degrees(67.0);
+        let (w, h, far) = (140, 40, 80);
+        let eye = fixed::from_int(30);
+        let p = pitch_down(w, h, fov, eye, far);
+        // The bottom row is the steepest look down, so it is the nearest
+        // ground; the top row is the furthest.
+        let near = ground_row(w, h, fov, eye, p, 27);
+        assert!(near >= h - 2 && near <= h, "the near edge landed on row {near}");
+        assert!(p <= -(h / 2), "it is not even looking down: pitch {p}");
+    }
+
+    /// Higher up, or in thicker haze, means looking further down.
+    #[test]
+    fn it_tilts_further_the_higher_it_is_and_the_thicker_the_air() {
+        let fov = crate::camera::fov_for_degrees(67.0);
+        let at = |eye: i32, far: i32| pitch_down(140, 40, fov, fixed::from_int(eye), far);
+        assert!(at(60, 80) < at(30, 80), "no further down from twice the height");
+        assert!(at(30, 20) < at(30, 80), "no further down in thick haze");
     }
 
     /// The first north-south road at least `min_width` wide, as its
