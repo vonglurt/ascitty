@@ -184,6 +184,20 @@ verifying it needs the ROM in front of you.
 
 ## The city
 
+### A kerb of the right height — **soon**
+The pavement stands two elevation steps above the carriageway, which is
+37 cm. A kerb is about 18 cm - one step. One step is also the steepest
+gradient the terrain generator produces, so a one-step kerb disappears
+wherever the ground falls the other way across the same boundary, and a kerb
+that is present on part of a street and absent from the rest looks worse than
+one that is uniformly too high. The fix is to level each carriageway and its
+two pavements to a common footing first, then raise the pavements: the kerb
+becomes a difference by construction rather than a hope about the terrain.
+The same pass would give crossings a dropped kerb.
+
+Neither the kerb nor the verge reaches the Plus/4. The bake carries building
+heights only; the target has no terrain array to raise.
+
 ### Diagonal streets — **later**
 The plan is two independent axes, so every road is north–south or east–west.
 A Broadway cutting across the grid would be the single most characterful

@@ -219,32 +219,49 @@ impl Sim {
                     _ => continue,
                 };
                 let (w, ht, hue) = match stamp {
-                    Stamp::LampPost => (fixed::ratio(1, 3), fixed::ratio(9, 4), palette::H_WHITE),
-                    Stamp::Tree => (fixed::ratio(4, 5), fixed::ratio(9, 5), palette::H_GREEN),
+                    // Three times what it was.  A street light at two and a
+                    // quarter cells is thirteen metres, which is correct for
+                    // a residential street and invisible beside a
+                    // fifty-cell tower; the arterials here are ninety-six
+                    // metres wide and carry masts to match.
+                    Stamp::LampPost => (fixed::ratio(2, 5), fixed::ratio(27, 4), palette::H_WHITE),
+                    // Narrower than it was, so that a crown centred in the
+                    // verge clears the kerb.  It may overhang the paving -
+                    // that is what a street tree does - but not the road.
+                    Stamp::Tree => (fixed::ratio(13, 20), fixed::ratio(2, 1), palette::H_GREEN),
                     Stamp::Signal => (fixed::ratio(1, 3), fixed::ratio(2, 1), palette::H_WHITE),
                     Stamp::Mailbox => (fixed::ratio(2, 5), fixed::ratio(3, 5), palette::H_BLUE),
                     Stamp::Hydrant => (fixed::ratio(1, 4), fixed::ratio(2, 5), palette::H_RED),
                     Stamp::Meter => (fixed::ratio(1, 5), fixed::ratio(4, 5), palette::H_WHITE),
                     _ => (fixed::ratio(1, 5), fixed::ratio(2, 5), palette::H_YELLOW),
                 };
-                // Off-centre by a stable amount, so a street of lamp posts
-                // is not a row of identically placed lamp posts - but never
-                // far enough that the *sprite* leaves the pavement.  A tree
-                // is four fifths of a cell across, so it has a tenth of a
-                // cell of play on each side and no more; without the clamp
-                // a canopy overhangs the carriageway, which is exactly what
-                // a street tree must not do.
-                // A margin as well as the half-width: a prop centred so
-                // that its edge lands exactly on the kerb line is read as
-                // being in the next cell, because a boundary belongs to the
-                // cell after it.
-                let play = (fixed::HALF - w / 2 - fixed::ratio(1, 16)).max(0);
-                let jitter = |v: u32| {
-                    let t = fixed::ratio((v % 5) as i32 - 2, 2); // -1..1
-                    fixed::mul(t, play)
+                // Where across the pavement this stands.  Street lighting
+                // goes to the kerb, planting into the verge behind it, and
+                // everything else onto the paving.  Measured from the kerb
+                // in cells, matching the bands the renderer draws.
+                let across = if stamp.kerbside() {
+                    fixed::ratio(1, 6)
+                } else if stamp.planted() {
+                    fixed::ratio(2, 5)
+                } else {
+                    fixed::ratio(7, 10)
                 };
-                let jx = jitter(h >> 8);
-                let jy = jitter(h >> 12);
+                let (ox, oy, along_x) = kerb_offset(city, x, y, across);
+
+                // Off-centre by a stable amount *along* the kerb, so a row
+                // of lamp posts is not a row of identically placed lamp
+                // posts.  Only along it: across it, the band is the point.
+                //
+                // The play is bounded by the half-width and a margin,
+                // because a prop whose edge lands exactly on a cell boundary
+                // is read as being in the next cell.
+                let play = (fixed::HALF - w / 2 - fixed::ratio(1, 16)).max(0);
+                let wobble = fixed::mul(fixed::ratio(((h >> 8) % 5) as i32 - 2, 2), play);
+                let (jx, jy) = if along_x {
+                    (wobble + ox, oy)
+                } else {
+                    (ox, wobble + oy)
+                };
                 self.props.push(Prop {
                     board: Billboard::upright(
                         stamp,
@@ -717,6 +734,29 @@ impl Sim {
     }
 }
 
+/// The offset from a pavement cell's centre that puts a prop `across` cells
+/// from the kerb.
+///
+/// Returns a zero offset when no road adjoins, which leaves the prop
+/// centred, and a flag saying which axis the kerb runs along.
+fn kerb_offset(city: &City, x: i32, y: i32, across: Fx) -> (Fx, Fx, bool) {
+    let road = |dx: i32, dy: i32| city.at(x + dx, y + dy).kind == Kind::Road;
+    // Distance from the cell centre to the point `across` from that kerb,
+    // and which axis the kerb runs along - the one a prop may wobble on.
+    let d = across - fixed::HALF;
+    if road(-1, 0) {
+        (d, 0, false)
+    } else if road(1, 0) {
+        (-d, 0, false)
+    } else if road(0, -1) {
+        (0, d, true)
+    } else if road(0, 1) {
+        (0, -d, true)
+    } else {
+        (0, 0, true)
+    }
+}
+
 /// Whether a sidewalk cell is at a corner - which is where signals go.
 fn on_corner(city: &City, x: i32, y: i32) -> bool {
     let road = |dx: i32, dy: i32| city.at(x + dx, y + dy).kind == Kind::Road;
@@ -831,14 +871,21 @@ mod tests {
     }
 
     #[test]
-    fn nothing_on_the_pavement_overhangs_the_road() {
-        // Props stand on pavement cells, which was already true - but a
-        // tree is four fifths of a cell across, and with unbounded jitter
-        // its canopy reached over the kerb.  The claim is about the
-        // *sprite*, not the anchor.
+    fn nothing_planted_overhangs_the_road() {
+        // The claim is about the *sprite*, not the anchor: a tree is most of
+        // a cell across and its crown reached over the kerb when it was
+        // merely centred on a pavement cell.
+        //
+        // Restricted to vegetation on purpose.  Street lighting is placed at
+        // the kerb, which is where it is of use and where it necessarily
+        // overhangs a little; asserting that nothing at all crosses the kerb
+        // line would forbid the arrangement that was asked for.
         let (city, sim) = shift();
         for p in &sim.props {
             let b = &p.board;
+            if !b.stamp.planted() {
+                continue;
+            }
             let half = b.w / 2;
             for (dx, dy) in [(-half, 0), (half, 0), (0, -half), (0, half)] {
                 let (x, y) = (fixed::floor(b.x + dx), fixed::floor(b.y + dy));
@@ -852,6 +899,72 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn street_lighting_stands_nearer_the_road_than_the_trees_do() {
+        // The arrangement, kerb outwards: lighting, verge with the planting
+        // in it, then paving.  Checked as an ordering rather than as two
+        // absolute positions, so retuning the bands cannot silently swap
+        // them.
+        let (city, sim) = shift();
+        let mean_from_kerb = |want: fn(crate::sprite::Stamp) -> bool| -> f32 {
+            let mut total = 0.0f32;
+            let mut n = 0.0f32;
+            for p in &sim.props {
+                if !want(p.board.stamp) {
+                    continue;
+                }
+                let (gx, gy) = (fixed::floor(p.board.x), fixed::floor(p.board.y));
+                let (fx, fy) = (fixed::frac(p.board.x), fixed::frac(p.board.y));
+                let mut d = ONE;
+                for (dx, dy, edge) in [
+                    (-1, 0, fx),
+                    (1, 0, ONE - fx),
+                    (0, -1, fy),
+                    (0, 1, ONE - fy),
+                ] {
+                    if city.at(gx + dx, gy + dy).kind == Kind::Road {
+                        d = d.min(edge);
+                    }
+                }
+                total += fixed::to_f32(d);
+                n += 1.0;
+            }
+            total / n.max(1.0)
+        };
+        let lamps = mean_from_kerb(|s| s == crate::sprite::Stamp::LampPost);
+        let trees = mean_from_kerb(|s| s.planted());
+        assert!(
+            lamps < trees,
+            "lighting sits {lamps:.2} cells from the kerb and planting {trees:.2}"
+        );
+    }
+
+    #[test]
+    fn the_pavement_stands_above_the_carriageway() {
+        let (city, _sim) = shift();
+        let mut checked = 0;
+        for y in 0..SIZE as i32 {
+            for x in 0..SIZE as i32 {
+                if city.at(x, y).kind != Kind::Sidewalk {
+                    continue;
+                }
+                for (dx, dy) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
+                    if city.at(x + dx, y + dy).kind != Kind::Road {
+                        continue;
+                    }
+                    checked += 1;
+                    assert!(
+                        city.ground(x, y) > city.ground(x + dx, y + dy),
+                        "the pavement at {x},{y} is {} steps and the road beside it {}",
+                        city.elev.ground_steps(x, y),
+                        city.elev.ground_steps(x + dx, y + dy),
+                    );
+                }
+            }
+        }
+        assert!(checked > 500, "only {checked} kerb edges examined");
     }
 
     #[test]

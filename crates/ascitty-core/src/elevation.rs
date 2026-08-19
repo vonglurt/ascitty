@@ -7,12 +7,16 @@
 //! the pavement under this ray, how far above it is the roofline, can I
 //! stand here - and they are the two arrays the inner loop touches most.
 //!
-//! # Ground is stored in eighths of a cell
+//! # Ground is stored in thirty-seconds of a cell
 //!
 //! A cell is about six metres across, so a whole-unit ground level would
-//! step the streets in six-metre cliffs. An eighth is 75 cm, which is a
-//! kerb, and a `u8` of eighths still reaches thirty-two cells of relief -
-//! far more than this generator uses.
+//! step the streets in six-metre cliffs.
+//!
+//! The unit was an eighth - 75 cm - until a kerb had to be represented. A
+//! kerb is about 18 cm, which is a thirty-second, and there is no way to
+//! round 18 cm to a multiple of 75 cm that is not either nothing or a step
+//! you would trip over. A `u8` of thirty-seconds still reaches eight cells
+//! of relief, which is four times what this generator produces.
 //!
 //! # The terrain is deliberately almost flat
 //!
@@ -32,11 +36,25 @@
 use crate::fixed::{self, Fx};
 use crate::rng::hash3;
 
-/// Eighths of a cell per whole cell of ground height.
-pub const GROUND_STEP: i32 = 8;
+/// Steps of ground height per whole cell.  A step is about 18 cm.
+pub const GROUND_STEP: i32 = 32;
 
-/// The most relief the generator will produce, in eighths.
-pub const MAX_RELIEF: u8 = 16;
+/// The most relief the generator will produce, in steps.
+pub const MAX_RELIEF: u8 = 48;
+
+/// How far a pavement stands above the carriageway beside it, in steps.
+///
+/// Two steps, which is 37 cm - a high kerb.  One step is 18 cm and is the
+/// height that was wanted, but it is also exactly the steepest gradient the
+/// terrain generator produces, so a one-step kerb is cancelled wherever the
+/// ground happens to fall the other way across the same cell boundary. A
+/// kerb that exists on most of a street and not the rest is worse than a
+/// slightly high one, so it is two.
+///
+/// The alternative - levelling each carriageway and its pavements together
+/// before raising one - would give a true 18 cm everywhere and is recorded
+/// in the backlog.
+pub const KERB: u8 = 2;
 
 /// Side of the noise lattice the terrain is interpolated over, in cells.
 /// Large, because the grade has to be gentle - see the module note.
@@ -46,7 +64,7 @@ const TERRAIN_CELL: usize = 48;
 #[derive(Clone)]
 pub struct Elevation {
     size: usize,
-    /// Ground level, in eighths of a cell.
+    /// Ground level, in steps of `1/GROUND_STEP` of a cell.
     ground: Vec<u8>,
     /// Height of whatever is built here, in whole cells above the ground.
     /// Zero means you can stand on it.
@@ -84,16 +102,23 @@ impl Elevation {
         }
     }
 
-    /// Ground level in eighths of a cell.  Off the map reads as sea level.
+    /// Ground level in steps.  Off the map reads as sea level.
     #[inline(always)]
-    pub fn ground_eighths(&self, x: i32, y: i32) -> u8 {
+    pub fn ground_steps(&self, x: i32, y: i32) -> u8 {
         self.index(x, y).map_or(0, |i| self.ground[i])
     }
 
     /// Ground level as a fixed-point height in cells.
     #[inline(always)]
     pub fn ground(&self, x: i32, y: i32) -> Fx {
-        fixed::from_int(self.ground_eighths(x, y) as i32) / GROUND_STEP
+        fixed::from_int(self.ground_steps(x, y) as i32) / GROUND_STEP
+    }
+
+    /// Raise the ground here by a number of steps, saturating.
+    pub fn raise(&mut self, x: i32, y: i32, steps: u8) {
+        if let Some(i) = self.index(x, y) {
+            self.ground[i] = self.ground[i].saturating_add(steps);
+        }
     }
 
     /// Height of the building here, in whole cells above the ground.
@@ -151,7 +176,7 @@ impl Elevation {
     }
 }
 
-/// Ground level at a point, in eighths of a cell.
+/// Ground level at a point, in steps.
 ///
 /// Bilinear interpolation over a coarse hashed lattice, integer throughout -
 /// the same technique the district field uses, at a much larger scale.
@@ -186,7 +211,7 @@ mod tests {
     fn off_the_map_reads_as_flat_and_open() {
         let e = Elevation::generate(N, 3);
         for (x, y) in [(-1, 0), (0, -1), (N as i32, 0), (0, N as i32), (-99, -99)] {
-            assert_eq!(e.ground_eighths(x, y), 0);
+            assert_eq!(e.ground_steps(x, y), 0);
             assert_eq!(e.building(x, y), 0);
             assert!(e.open(x, y));
         }
@@ -198,9 +223,9 @@ mod tests {
         for y in 0..N as i32 {
             for x in 0..N as i32 {
                 assert!(
-                    e.ground_eighths(x, y) <= MAX_RELIEF,
+                    e.ground_steps(x, y) <= MAX_RELIEF,
                     "ground at {x},{y} is {} eighths",
-                    e.ground_eighths(x, y)
+                    e.ground_steps(x, y)
                 );
             }
         }
@@ -211,13 +236,13 @@ mod tests {
         // The floor pass samples the ground assuming it is level with the
         // camera's own footing.  That approximation only holds if the ground
         // changes slowly, so the generator has to guarantee it does: no more
-        // than one eighth of a cell per cell travelled.
+        // than one step - 18 cm - per cell travelled.
         let e = Elevation::generate(N, 5);
         for y in 1..N as i32 {
             for x in 1..N as i32 {
-                let here = e.ground_eighths(x, y) as i32;
+                let here = e.ground_steps(x, y) as i32;
                 for (dx, dy) in [(-1, 0), (0, -1), (-1, -1)] {
-                    let there = e.ground_eighths(x + dx, y + dy) as i32;
+                    let there = e.ground_steps(x + dx, y + dy) as i32;
                     assert!(
                         (here - there).abs() <= 1,
                         "a {} eighth step between {},{} and {},{}",
@@ -237,7 +262,7 @@ mod tests {
         let e = Elevation::generate(N, 5);
         let levels: std::collections::HashSet<u8> =
             (0..N as i32).flat_map(|y| (0..N as i32).map(move |x| (x, y)))
-                .map(|(x, y)| e.ground_eighths(x, y))
+                .map(|(x, y)| e.ground_steps(x, y))
                 .collect();
         assert!(levels.len() > 2, "the whole map is at {} levels", levels.len());
     }
@@ -257,7 +282,7 @@ mod tests {
         let pad = e.level(20, 20, 27, 27);
         for y in 20..=27i32 {
             for x in 20..=27i32 {
-                assert_eq!(e.ground_eighths(x, y), pad, "the pad is not flat at {x},{y}");
+                assert_eq!(e.ground_steps(x, y), pad, "the pad is not flat at {x},{y}");
             }
         }
     }
@@ -268,7 +293,7 @@ mod tests {
         let b = Elevation::generate(N, 42);
         for y in 0..N as i32 {
             for x in 0..N as i32 {
-                assert_eq!(a.ground_eighths(x, y), b.ground_eighths(x, y));
+                assert_eq!(a.ground_steps(x, y), b.ground_steps(x, y));
             }
         }
     }

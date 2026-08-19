@@ -714,10 +714,19 @@ the frame rate is below the raster rate, so the display tears. Drawing each
 column to completion before beginning the next reduces this from a blank
 half-screen to a vertical wipe but does not remove it.
 
-Specified but not implemented at the time of writing: street lights of
-increased height with an emissive halo, positioned at the kerb; a raised
-pavement with a planted verge; and an unattended mode driving a vehicle
-rather than walking. These are recorded in the backlog.
+Street lights of increased height with an emissive halo, positioned at the
+kerb, and a raised pavement with a planted verge, are implemented on the host
+and observed in Section XI's frames. Two limitations are noted. The kerb is
+two elevation steps - 37 cm - rather than the one step - 18 cm - the request
+implies, because one step is also the steepest gradient the terrain generator
+produces, and a one-step kerb is therefore cancelled wherever the ground falls
+the other way across the same boundary. Levelling each carriageway with its
+pavements before raising one would give a true 18 cm and is recorded in the
+backlog. Neither the kerb nor the verge reaches the Plus/4: the bake carries
+building heights only, and the target has no terrain array to raise.
+
+Specified but not implemented at the time of writing: an unattended mode
+driving a vehicle rather than walking. This is recorded in the backlog.
 
 ---
 
@@ -974,8 +983,9 @@ we need to look into rust patterns used for commodore plus 4. save this with
 title. markdown as a file."
 
 Prompts 17 and 20, and portions of 13, were issued while a prior request was
-in progress and were deferred. The street-light and planted-verge items
-remained outstanding at the time of writing (Section XI).
+in progress and were deferred. The street-light and planted-verge items were
+completed subsequently; the driving demonstration in prompt 17 remained
+outstanding at the time of writing (Section XI).
 
 ---
 

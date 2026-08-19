@@ -158,8 +158,16 @@ the same use on a small lot at the edge may be six.
 `elevation.rs`. Two byte arrays over the grid — ground level and what stands
 on it — kept together because they are the two the inner loop touches most.
 
-Ground is stored in **eighths of a cell**. A whole-unit ground level would
-step the streets in six-metre cliffs; an eighth is 75 cm, which is a kerb.
+Ground is stored in **thirty-seconds of a cell**. A whole-unit ground level
+would step the streets in six-metre cliffs. An eighth - 75 cm - was the unit
+until the pavement had to stand above the road beside it: a kerb is about
+18 cm, which is a thirty-second, and a unit that cannot express a kerb cannot
+draw one.
+
+The kerb built is two steps rather than one. One step is also the steepest
+gradient the terrain generator produces, so a one-step kerb survives only
+where the ground happens not to fall the other way, and a kerb present on
+part of a street and absent from the rest reads worse than a high one.
 
 The terrain is deliberately almost flat: two units of relief across the whole
 map, and slow. Not because hills would be hard to generate but because of

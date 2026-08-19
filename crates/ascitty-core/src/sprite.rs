@@ -106,16 +106,23 @@ impl Billboard {
 // other character names a catalogue glyph in `glyph_for` below, and the
 // second character of the pair - in `LIT` - says how bright it is.
 
+/// A street light: a mast, a lamp, and the glow around it.
+///
+/// The glow is drawn rather than simulated.  A point source with real
+/// falloff would light the pavement under it, which needs a second pass over
+/// the ground; a halo of two densities around the bulb costs two glyphs and
+/// reads, at this size, as the same thing.  The bulb sits at the very top so
+/// that the mast can be lengthened without the head growing with it.
 #[rustfmt::skip]
 const LAMP_POST_ART: [&str; 8] = [
-    "   ooo  ",
-    "   |||  ",
-    "   |    ",
-    "   |    ",
-    "   |    ",
-    "   |    ",
-    "   |    ",
-    "  ===   ",
+    "  .:*:. ",
+    "  :*o*: ",
+    "  .:*:. ",
+    "   ||   ",
+    "   ||   ",
+    "   ||   ",
+    "   ||   ",
+    "  ====  ",
 ];
 
 #[rustfmt::skip]
@@ -308,6 +315,21 @@ impl Stamp {
         }
     }
 
+    /// Whether this belongs at the kerb rather than set back on the
+    /// pavement.
+    ///
+    /// Street lighting and signals stand at the edge of the carriageway,
+    /// which is where they are of use; a lamp in the middle of the pavement
+    /// lights the wall.  Vegetation goes in the verge behind them.
+    pub fn kerbside(self) -> bool {
+        matches!(self, Stamp::LampPost | Stamp::Signal | Stamp::Hydrant | Stamp::Bollard)
+    }
+
+    /// Whether this is planted, and therefore belongs in the verge.
+    pub fn planted(self) -> bool {
+        matches!(self, Stamp::Tree)
+    }
+
     /// Whether this is something a car can flatten.
     pub fn frangible(self) -> bool {
         matches!(
@@ -337,6 +359,11 @@ fn glyph_for(c: char, hue: u8, phase: u8) -> Option<(GlyphId, u8, u8)> {
         // The checker band, and the sign on the roof.
         'k' => (catalog::G_QUAD + 6 - 1, palette::H_WHITE, 7),
         'S' => (catalog::G_SOLID, palette::H_YELLOW, 7),
+        // Two densities of halo around a lamp.  Sparse dithers rather than
+        // solid glyphs: a glow has no edge, and anything with an edge reads
+        // as a lampshade.
+        '*' => (catalog::G_HAZE + 3, palette::H_YELLOW, 6),
+        ':' => (catalog::G_HAZE + 1, palette::H_YELLOW, 4),
         // The three signal aspects, only one of which is ever lit; which one
         // comes from the phase, so a junction full of them stays in step.
         'r' => (catalog::G_SOLID, palette::H_RED, if phase.is_multiple_of(3) { 7 } else { 1 }),

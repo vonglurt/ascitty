@@ -632,6 +632,20 @@ impl City {
             }
         }
 
+        // Pass 2a: put a kerb under the pavement.
+        //
+        // Done after the buildings, because raising a lot's pad would undo
+        // it, and before the shadow sweep, because the sweep reads the
+        // finished surface.  One step - 18 cm - which is the smallest the
+        // elevation map can express and exactly what a kerb is.
+        for y in 0..SIZE as i32 {
+            for x in 0..SIZE as i32 {
+                if cells[y as usize * SIZE + x as usize].kind == Kind::Sidewalk {
+                    elev.raise(x, y, crate::elevation::KERB);
+                }
+            }
+        }
+
         // Pass 3: derive where a person may walk.
         let walk = WalkMap::build(SIZE, &plan, |x, y| {
             cells[y as usize * SIZE + x as usize].kind
@@ -1014,7 +1028,7 @@ mod tests {
         for i in 0..a.cells.len() {
             let (x, y) = ((i % SIZE) as i32, (i / SIZE) as i32);
             assert_eq!(a.height(x, y), b.height(x, y), "cell {i} differs");
-            assert_eq!(a.elev.ground_eighths(x, y), b.elev.ground_eighths(x, y));
+            assert_eq!(a.elev.ground_steps(x, y), b.elev.ground_steps(x, y));
             assert_eq!(a.cells[i].kind, b.cells[i].kind);
         }
     }

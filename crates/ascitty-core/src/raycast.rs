@@ -452,44 +452,94 @@ fn ground(city: &City, atmos: &Atmos, light: &Light, wx: Fx, wy: Fx, dist: Fx) -
     Cel { glyph, color: atmos.shade(hue, luma, dist) }
 }
 
-/// The pavement: cement, and dirty with it.
+/// How far across the pavement the verge reaches from the kerb, and how far
+/// the kerb itself does.
 ///
-/// It runs from the kerb to the building line on both sides of every
-/// street, which is what the plan already lays down - a cell of it, about
-/// six metres, wherever a block meets a proper road.
+/// A cell of pavement is about six metres.  A metre of kerb-and-gutter, two
+/// metres of planted verge, then paving to the building line, which is the
+/// ordinary arrangement of a street that has trees on it.
+const KERB_BAND: Fx = fixed::ratio(1, 6);
+const VERGE_BAND: Fx = fixed::ratio(1, 2);
+/// How close to the building line the paving stops.
+const SEAM_BAND: Fx = fixed::ratio(1, 8);
+
+/// How far a point on the pavement is from the nearest kerb, in cells.
 ///
-/// Three bands rather than one flat colour, because a pavement seen in
-/// perspective is mostly its *edges*:
-///
-/// - the **kerb** at the road edge, the brightest thing on the ground and
-///   the line that tells you where the carriageway stops
-/// - the **flags** in between, cement-coloured and varying cell to cell
-/// - the **building line** at the back, a dark seam where the paving meets
-///   the wall, which is what stops a wall appearing to float
-///
-/// The dirt is a hash of the cell, not noise: a pavement is stained in
-/// particular places and stays stained. Flat cement at one luminance reads
-/// as a painted floor.
-fn pavement(city: &City, gx: i32, gy: i32, fx: Fx, fy: Fx) -> (catalog::GlyphId, u8, u8) {
+/// Returns one - the far side - when no road adjoins, which is what a
+/// pavement fragment in the middle of a block should read as.
+fn from_kerb(city: &City, gx: i32, gy: i32, fx: Fx, fy: Fx) -> Fx {
+    let mut d = ONE;
     let road = |dx: i32, dy: i32| city.at(gx + dx, gy + dy).kind == Kind::Road;
+    if road(-1, 0) {
+        d = d.min(fx);
+    }
+    if road(1, 0) {
+        d = d.min(ONE - fx);
+    }
+    if road(0, -1) {
+        d = d.min(fy);
+    }
+    if road(0, 1) {
+        d = d.min(ONE - fy);
+    }
+    d
+}
+
+/// How far a point on the pavement is from the nearest building wall.
+fn from_wall(city: &City, gx: i32, gy: i32, fx: Fx, fy: Fx) -> Fx {
+    let mut d = ONE;
     let built = |dx: i32, dy: i32| city.at(gx + dx, gy + dy).kind == Kind::Building;
+    if built(-1, 0) {
+        d = d.min(fx);
+    }
+    if built(1, 0) {
+        d = d.min(ONE - fx);
+    }
+    if built(0, -1) {
+        d = d.min(fy);
+    }
+    if built(0, 1) {
+        d = d.min(ONE - fy);
+    }
+    d
+}
 
-    let near = fixed::ratio(1, 5);
-    let far = fixed::ratio(4, 5);
-    let toward = |f: Fx, lo: bool| if lo { f < near } else { f > far };
-
-    if (road(-1, 0) && toward(fx, true))
-        || (road(1, 0) && toward(fx, false))
-        || (road(0, -1) && toward(fy, true))
-        || (road(0, 1) && toward(fy, false))
-    {
+/// The pavement, in bands from the kerb to the building line.
+///
+/// It runs the full width of every cell the plan marks as pavement, on both
+/// sides of every proper street, which is what makes a street a street
+/// rather than a gap between two rows of buildings.
+///
+/// Four bands, because a pavement seen in perspective is mostly its edges:
+///
+/// - the **kerb**, the brightest thing on the ground, and the line that says
+///   where the carriageway stops
+/// - the **verge**: grass, and what the trees are planted in.  This is the
+///   band that separates the traffic from the people, and putting the trees
+///   in it rather than in the paving is the difference between a street with
+///   trees on it and a street with obstacles on it
+/// - the **paving**: cement, dirty, varying cell to cell
+/// - the **building line**, a dark seam where the paving meets the wall,
+///   which is what stops a wall appearing to float
+///
+/// The dirt and the grass are hashes of the cell, not noise: a pavement is
+/// stained in particular places and stays stained, and a re-rolled stain
+/// would crawl between frames.
+fn pavement(city: &City, gx: i32, gy: i32, fx: Fx, fy: Fx) -> (catalog::GlyphId, u8, u8) {
+    let kerb = from_kerb(city, gx, gy, fx, fy);
+    if kerb < KERB_BAND {
         return (catalog::ROAD_KERB, palette::H_WHITE, 5);
     }
-    if (built(-1, 0) && toward(fx, true))
-        || (built(1, 0) && toward(fx, false))
-        || (built(0, -1) && toward(fy, true))
-        || (built(0, 1) && toward(fy, false))
-    {
+    if kerb < VERGE_BAND {
+        // Planted verge.
+        let h = hash3(gx as u32, gy as u32, 0x_9E_46_E0_00);
+        return match h & 7 {
+            0 => (catalog::FLORA_HEDGE, palette::H_GREEN, 3),
+            1..=2 => (catalog::FLORA_GRASS, palette::H_LIGHT_GREEN, 3),
+            _ => (catalog::FLORA_GRASS, palette::H_GREEN, 2),
+        };
+    }
+    if from_wall(city, gx, gy, fx, fy) < SEAM_BAND {
         return (catalog::G_CORNICE, palette::H_WHITE, 1);
     }
 
@@ -503,7 +553,7 @@ fn pavement(city: &City, gx: i32, gy: i32, fx: Fx, fy: Fx) -> (catalog::GlyphId,
     }
 }
 
-/// Road surface markings.
+/// Road surface markings./// Road surface markings.
 ///
 /// Read straight off the street plan, which knows how wide this road is and
 /// how far across it this point sits.  That is the whole reason the plan
