@@ -1,6 +1,6 @@
 # ASCITTY — a raytraced ASCII city
 
-**v0.2.0 · 19 August 2026**
+**v0.3.0 · 19 August 2026**
 
 A city built entirely out of typeable characters, rendered in real time, on a
 colour terminal and on a **Commodore Plus/4** — and a taxi game inside it.
@@ -16,14 +16,14 @@ the same string.
 ![A street at night: towers with lit windows, fire escapes and awnings, a lamp post at the kerb](docs/media/street.png)
 
 *Street level in block elements and colour, which is what you actually get.
-`ascitty --shot 520 --size 140x40 --seed 99 --tour --walk` — **v0.2.0**, 19
-Aug 2026.*
+`ascitty --shot 520 --size 140x40 --seed 99 --tour --walk --sky 0 --day 0` —
+**v0.3.0**, 19 Aug 2026.*
 
 ## Watch it drive itself
 
 ![The cab driving itself down a street, traffic ahead of it, the fare marker glowing on the pavement](docs/media/demo.gif)
 
-*Eight seconds of `make demo`, recorded by `make gif` — **v0.2.0**, 19 Aug
+*Eight seconds of `make demo`, recorded by `make gif` — **v0.3.0**, 19 Aug
 2026. Small and short because a GIF is a whole frame every frame; `make
 cast` records the same run as an asciinema file, which stays sharp at any
 size and is a tenth of the bytes.*
@@ -45,7 +45,8 @@ make gif       # ...or to docs/media/demo.gif
 
 ![The taxi from behind, chequer band along its flank, a saloon alongside on the avenue](docs/media/drive.png)
 
-*The chase camera, from `make demo` — **v0.2.0**, 19 Aug 2026. The cab's
+*The chase camera, from `make demo` at `--sky 3` — **v0.3.0**, 19 Aug 2026.
+The cab's
 heading and the camera's are not the same thing: the boom lags a turn by a
 few frames, so a slide is watched from outside the spin.*
 
@@ -78,7 +79,8 @@ It starts in the first one.
 
 ![The city from above the tallest roof: towers seen down their faces, rooftops and fire escapes below](docs/media/copter.png)
 
-*The copter, from `--copter --haze 1` — **v0.2.0**, 19 Aug 2026. How far
+*The copter, from `--copter --haze 1 --sky 5` — **v0.3.0**, 19 Aug 2026. How
+far
 down it looks is worked out from how high it is, how far the haze lets it
 see and how many rows the frame has, rather than being a fixed tilt — see
 [docs/camera.md](docs/camera.md).*
@@ -175,16 +177,44 @@ decide the window pattern, the colour, and how the lights come on at night.
 A twelve-storey office and a twelve-storey block of flats share an archetype
 and are not the same building.
 
-### The weather, and the time of day
+### The sky, and the day
 
-Haze 0–8, stars 0–8, a moon that can be switched off, and rain 0–8 which is
-**off unless you ask for it**: a character cell is a large pixel, so a
-raindrop is a large raindrop, and a couple of hundred of them leaning across
-the frame is reading the weather rather than the city.
+The sky is a **gradient**, palest at the horizon where the light is and
+darkening to the zenith, and it **turns through twelve phases** on a cycle:
 
-It is always night, because a night city is lit windows and a day city is a
-grey box, and because the one colour trick this renderer has — hold the hue,
-drop the luminance — is what distance looks like after dark.
+| | | | |
+|---|---|---|---|
+| 0 `NIGHT` | 1 `MORNING` | 2 `AWAKENING` | 3 `SUNRISE` |
+| 4 `DUST` | 5 `NOON` | 6 `AFTERNOON` | 7 `OVERCAST` |
+| 8 `SUNSET` | 9 `AFTERGLOW` | 10 `GLOAMING` | 11 `DEEP NIGHT` |
+
+Dark blue, to grey, to a blue-grey waking up, to gold, to a red dust storm,
+to a yellow noon, to blue, to a light grey overcast afternoon, to a green
+sunset, to pink after it, to a dark green closing over, to a darker blue —
+and round again. Four minutes a turn by default: `--day TICKS` sets it,
+`--day 0` holds the sky still, and `--sky N` picks a phase. `--sky list`
+prints them.
+
+![The cab at a green sunset, the sky pale at the horizon and darkening above it](docs/media/sunset.png)
+
+*`--sky 8 --day 0` — **v0.3.0**, 19 Aug 2026. The green sunset, held still
+for the picture.*
+
+A phase change does not cross-fade. Two hues cannot be mixed in a palette
+that gives a cell one colour, and dithering them together would cost a
+colour escape per cell across half the frame — so the new sky **rises**,
+climbing out of the horizon over the first half of a phase and holding for
+the second. Which is what a sky does anyway.
+
+The city is lit by whatever is overhead: two luminance steps of ambient at
+noon, one at dawn, none at night. A lit sky over a black street is the one
+thing a day cycle can get obviously wrong.
+
+And the rest of the weather: haze 0–8, stars 0–8 (they stop being drawn as
+the sky brightens, which is what happens), a moon that can be switched off,
+and rain 0–8 which is **off unless you ask for it** — a character cell is a
+large pixel, so a raindrop is a large raindrop, and a couple of hundred of
+them leaning across the frame is reading the weather rather than the city.
 
 ### What the car does
 
@@ -263,7 +293,7 @@ all:
 ```
 
 *`ascitty --shot 520 --size 92x20 --seed 99 --tour --walk --mode ascii` —
-**v0.2.0**, 19 Aug 2026. The mode the name is about, and the one that runs
+**v0.3.0**, 19 Aug 2026. The mode the name is about, and the one that runs
 anywhere a terminal runs.*
 
 ## Downloads
@@ -321,7 +351,7 @@ make walk     # watch the camera walk instead
 make run4     # play the Plus/4 build in xplus4
 make demo4    # ...and leave it alone; it drives itself
 
-make test     # 282 tests, about half a second
+make test     # 288 tests, about half a second
 make check    # the gate: tests, both builds, and both actually rendering
 make bench    # frames a second on this machine
 
@@ -420,9 +450,11 @@ descends where you might expect Shift to.
 --mode ascii      7-bit ASCII only — the mode the name is about
 --mode unicode    block elements (default)
 --color true|16|none
---size WxH        override the terminal size
+--size WxH        fix the frame size; without it the frame is the window
 --rain 0..8       0 dry, and 0 is the default
 --haze 0..8   --stars 0..8   --no-moon
+--day TICKS       one turn of the sky (default 7200, four minutes); 0 holds
+--sky N           start at phase N of 12; --sky list names them
 --drive  --copter  --walk
 --demo, --tour    let the cab drive itself, taking fares  (the default)
 --play            take the wheel from the first frame, with no autopilot
@@ -436,6 +468,19 @@ descends where you might expect Shift to.
 -V, --version     which build this is
 ```
 
+### It is the size of your window
+
+There is no resolution to choose: the frame is the terminal, every cell of
+it, and it follows the window when you drag it. `--size WxH` fixes it, which
+is what the pictures here use so that they come out the same every time.
+
+Following a resize means *asking*, because there is no signal to wait for
+without a libc, and the program asks in whichever way your terminal supports:
+one that answers `CSI 18 t` answers on the stream its keys already arrive on,
+for six bytes twice a second; one that does not gets `stty size` instead.
+Which of the two you have is settled in the same round trip as the keyboard
+handshake, at startup. It used to fork `stty` every single frame.
+
 `--shot` needs no terminal at all, which is what makes it usable from a
 Makefile and from CI. Neither do `--png` and `--gif`: every picture in this
 README was made by one of them, at 8×16 pixels a cell, with the renderer's
@@ -448,10 +493,10 @@ place to start.
 
 ```sh
 $ ascitty --version
-ascitty 0.2.0 (seed 0xa5c1771e)
+ascitty 0.3.0 (seed 0xa5c1771e)
 ```
 
-Releases are tagged `v0.2.0` and so on, and every picture in this README
+Releases are tagged `v0.3.0` and so on, and every picture in this README
 says which build drew it. Regenerating them is `make shot` and `make gif`;
 the seed is fixed, so the same tag renders the same frames.
 
@@ -460,7 +505,7 @@ the seed is fixed, so the same tag renders the same frames.
 ![The Plus/4 build running in VICE](docs/media/plus4.png)
 
 *The `.prg` booted in VICE and photographed by `tools/viceshot.sh` — a
-40×25 city on a 1.76 MHz 7501. **v0.2.0**, 19 Aug 2026.*
+40×25 city on a 1.76 MHz 7501. **v0.3.0**, 19 Aug 2026.*
 
 `build/ascitty.prg` and `build/ascitty.d64` are the real thing: a 40×25
 city, in colour, on a 1.76 MHz 7501, with a character set generated on a
@@ -608,7 +653,7 @@ Everything is indexed at **[docs/index.md](docs/index.md)**.
 
 Working: the renderer, all three cameras, the city generator with six
 building archetypes, the procedural font, the weather, the driving physics,
-the fare loop, the terminal front end and the Plus/4 build. 282 tests.
+the fare loop, the terminal front end and the Plus/4 build. 288 tests.
 
 Not yet: sub-cell rooflines, proper roof surfaces, scoring and grades,
 sprites and driving on the Plus/4, and the assembly inner loop that would

@@ -115,6 +115,16 @@ enough to point it back at the empty sky. It may tilt as far as its aim, and
 one frame further; past that there is nothing new to see, only the same
 ground stretched.
 
+### The frame is the window
+
+There is no resolution setting. The frame is however many cells the terminal
+has, and it follows a resize — which means asking, since there is no signal
+to wait for without a libc. Two ways, settled at startup in the same round
+trip as the keyboard handshake: a terminal that answers `CSI 18 t` reports
+its size on the stream its keys already arrive on, and one that does not is
+asked with `stty size`. Either way it is twice a second, not thirty times;
+the second one is a fork and an exec and used to happen every frame.
+
 ### The driver's head
 
 The driving camera's pitch is not fixed. It carries a spring-damped head that

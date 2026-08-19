@@ -200,10 +200,14 @@ shot: $(HOST) $(PRG)
 	@$(HOST) --shot 1   --size 150x44 --mode unicode --walk > docs/media/walk-blocks.txt
 	@$(HOST) --shot 200 --size 150x44 --mode ascii --drive     > docs/media/drive-ascii.txt
 	@$(HOST) --shot 1   --size 150x44 --mode unicode --copter  > docs/media/copter-blocks.txt
-	@$(HOST) --shot 520 --size 140x40 --seed 99 --tour --walk   --png docs/media/street.png
-	@$(HOST) --shot 750 --size 140x40 --seed 99 --demo --drive  --png docs/media/drive.png
-	@$(HOST) --shot 1   --size 140x40 --seed 99 --copter --haze 1 \
+	@$(HOST) --shot 520 --size 140x40 --seed 99 --tour --walk --sky 0 --day 0 \
+		--png docs/media/street.png
+	@$(HOST) --shot 750 --size 140x40 --seed 99 --demo --drive --sky 3 --day 0 \
+		--png docs/media/drive.png
+	@$(HOST) --shot 1   --size 140x40 --seed 99 --copter --haze 1 --sky 5 --day 0 \
 		--png docs/media/copter.png
+	@$(HOST) --shot 300 --size 140x40 --seed 99 --demo --drive --sky 8 --day 0 \
+		--png docs/media/sunset.png
 	@$(TOOLS)/strip.sh > docs/media/tour-strip.txt
 	@$(BAKE) --sheet > docs/media/glyph-sheet.txt
 	@$(TOOLS)/viceshot.sh $(PRG) docs/media/plus4.png

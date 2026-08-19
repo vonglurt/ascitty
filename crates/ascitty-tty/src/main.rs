@@ -508,13 +508,18 @@ USAGE: ascitty [options]
   --seed N          city to generate (default: a fixed one, so runs match)
   --mode M          ascii | unicode           (default: unicode)
   --color D         true | 16 | none          (default: from $COLORTERM)
-  --size WxH        override the terminal size
+  --size WxH        fix the frame size; without it the frame is the window
+                    and follows it when you resize
   --fps N           frame rate cap            (default: 30)
   --fov DEGREES     horizontal field of view  (default: 67)
   --rain N          0 dry .. 8 torrential     (default: 0, dry)
   --haze N          0 clear .. 8 soup         (default: 3)
   --stars N         0 .. 8                    (default: 4)
   --no-moon         moonless night
+  --day TICKS       length of one turn of the sky   (default: 7200, 4 min)
+                    0 holds it still
+  --sky N           start at phase N of 12: 0 night, 3 sunrise, 5 noon,
+                    8 sunset - see --sky list
   --walk            get out and walk instead of driving
   --copter          start above the city instead of behind the wheel
   --drive           behind the wheel of the taxi          (the default)
@@ -579,6 +584,9 @@ CONTROLS
 
 fn parse_args() -> Result<Opts, String> {
     let mut o = Opts::default();
+    // Applied at the end, because it depends on `--day` and the two may
+    // arrive in either order.
+    let mut sky: Option<u32> = None;
     let mut args = std::env::args().skip(1).peekable();
     while let Some(a) = args.next() {
         let mut val = || args.next().ok_or_else(|| format!("{a} needs a value"));
@@ -617,6 +625,21 @@ fn parse_args() -> Result<Opts, String> {
             "--haze" => o.atmos.haze = val()?.parse::<u8>().map_err(|_| "bad --haze")?.min(8),
             "--stars" => o.atmos.stars = val()?.parse::<u8>().map_err(|_| "bad --stars")?.min(8),
             "--no-moon" => o.atmos.moon = false,
+            "--day" => o.atmos.day = val()?.parse().map_err(|_| "bad --day".to_string())?,
+            "--sky" => {
+                let v = val()?;
+                if v == "list" {
+                    for (i, p) in ascitty_core::atmos::DAY.iter().enumerate() {
+                        println!("{i:2}  {}", p.name);
+                    }
+                    std::process::exit(0);
+                }
+                // Wind the clock forward to the start of that phase.  The
+                // tick counter drives the sky and nothing else cares where
+                // it starts, so there is no state to add for this.
+                let n: u32 = v.parse().map_err(|_| "bad --sky".to_string())?;
+                sky = Some(n);
+            }
             "--copter" => o.view = View::Copter,
             "--drive" => o.view = View::Drive,
             "--walk" => {
@@ -663,6 +686,9 @@ fn parse_args() -> Result<Opts, String> {
             }
             _ => return Err(format!("unknown option {a}\n\n{USAGE}")),
         }
+    }
+    if let Some(n) = sky {
+        o.atmos.sky_offset = Atmos::phase_offset(n, o.atmos.day);
     }
     // The helicopter is a thing you fly, not a thing that flies itself:
     // there is no demonstration of it, and the walking tour would take the
@@ -939,6 +965,10 @@ fn run(mut o: Opts) -> Result<(), String> {
     let mut left = if o.anim { o.frames } else { u32::MAX };
     let mut events: Vec<Event> = Vec::new();
     let mut flash: Option<(&'static str, i32)> = None;
+    // Frames since the start, for things that happen on a timer rather than
+    // every frame, and the size the terminal last said it was.
+    let mut frame: u32 = 0;
+    let mut resize: Option<(usize, usize)> = None;
 
     while !quit {
         let t0 = std::time::Instant::now();
@@ -976,6 +1006,8 @@ fn run(mut o: Opts) -> Result<(), String> {
             }
             match st.key {
                 Key::Quit => quit = true,
+                // Not a key: the terminal answering how big it is.
+                Key::Size(nw, nh) => resize = Some((nw, nh)),
                 Key::Char('\\') => {
                     // ...and this hands it back, from wherever you are now.
                     // Back to the same demonstration you were watching: a
@@ -1110,9 +1142,25 @@ fn run(mut o: Opts) -> Result<(), String> {
             }
         }
 
-        if o.size.is_none() {
-            let (nw, nh) = Term::size();
-            if (nw, nh) != (w, h) {
+        // Follow the window.  The frame is whatever size the terminal is,
+        // and there is no signal to wait for without a libc, so it is asked
+        // - twice a second, not thirty times.
+        //
+        // Which way it is asked depends on what the terminal admitted to at
+        // startup.  One that answers `CSI 18 t` answers on the stream we are
+        // already reading and the reply arrives as `Key::Size` a frame or
+        // two later; one that does not gets `stty size`, which is a fork and
+        // an exec, and which this used to do *every frame*.
+        if o.size.is_none() && frame.is_multiple_of((o.fps.max(1) / 2).max(1)) {
+            if term.reports_size {
+                term::ask_size();
+            } else {
+                let (nw, nh) = Term::size();
+                resize = Some((nw, nh));
+            }
+        }
+        if let Some((nw, nh)) = resize.take() {
+            if (nw, nh) != (w, h) && nw > 2 && nh > 2 {
                 w = nw;
                 h = nh;
                 f.resize(w, h.saturating_sub(1).max(1));
@@ -1120,6 +1168,7 @@ fn run(mut o: Opts) -> Result<(), String> {
                 print!("\x1b[2J");
             }
         }
+        frame = frame.wrapping_add(1);
 
         o.atmos.step();
         stats = raycast::render_to(&city, &cam, &o.atmos, &mut f, &mut depth);

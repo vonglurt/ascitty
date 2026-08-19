@@ -49,10 +49,13 @@ static KEYS_HELD: AtomicBool = AtomicBool::new(false);
 /// The reply is consumed here rather than left in the buffer, which is why
 /// this runs before the reader thread starts: an unread device-attributes
 /// report is a handful of keystrokes as far as the decoder is concerned.
-fn enable_key_releases() -> bool {
+fn handshake() -> (bool, bool) {
     let mut out = std::io::stdout();
-    if out.write_all(b"\x1b[?u\x1b[c").is_err() || out.flush().is_err() {
-        return false;
+    // Three questions in one round trip: what keyboard protocol do you
+    // speak, how big are you, and - as the fence every terminal answers -
+    // what are you.
+    if out.write_all(b"\x1b[?u\x1b[18t\x1b[c").is_err() || out.flush().is_err() {
+        return (false, false);
     }
     // Non-blocking-ish: return after a tenth of a second whether or not
     // anything arrived, so a terminal that answers neither costs a tenth of
@@ -72,18 +75,50 @@ fn enable_key_releases() -> bool {
         }
     }
     let _ = stty(&["raw", "-echo"]);
+    // A terminal that answered `CSI 18 t` will answer it again, which is
+    // how the frame size is followed without forking a process to ask.
+    let sized = size_reply(&reply).is_some();
     if !has_kitty_reply(&reply) {
-        return false;
+        return (false, sized);
     }
     // Push the flags we want: 1 disambiguate, 2 report event types, 8 report
     // every key as an escape code.  The third is what makes an ordinary
     // letter arrive as an event with a press and a release rather than as a
     // bare byte with neither.
     if out.write_all(b"\x1b[>11u").is_err() || out.flush().is_err() {
-        return false;
+        return (false, sized);
     }
     KEYS_HELD.store(true, Ordering::SeqCst);
-    true
+    (true, sized)
+}
+
+/// The size out of a `CSI 8 ; rows ; cols t` report, as `(cols, rows)`.
+fn size_reply(b: &[u8]) -> Option<(usize, usize)> {
+    let mut i = 0;
+    while i + 4 < b.len() {
+        if b[i] == 0x1b && b[i + 1] == b'[' && b[i + 2] == b'8' && b[i + 3] == b';' {
+            let mut j = i + 4;
+            while j < b.len() && b[j] != b't' {
+                j += 1;
+            }
+            if j < b.len() {
+                let mut it = b[i + 4..j].split(|&c| c == b';');
+                let rows = std::str::from_utf8(it.next()?).ok()?.trim().parse().ok()?;
+                let cols = std::str::from_utf8(it.next()?).ok()?.trim().parse().ok()?;
+                return Some((cols, rows));
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Ask the terminal how big it is.  The answer arrives on the key stream as
+/// [`Key::Size`], which is where a terminal puts everything it says.
+pub fn ask_size() {
+    let mut out = std::io::stdout();
+    let _ = out.write_all(b"\x1b[18t");
+    let _ = out.flush();
 }
 
 /// Whether a terminal's reply to `CSI ? u` is in there: `CSI ? <digits> u`.
@@ -108,11 +143,19 @@ fn has_kitty_reply(b: &[u8]) -> bool {
 /// panic, which is the case that actually matters: a renderer that panics
 /// with the cursor hidden and echo off leaves a shell nobody can type into.
 pub struct Term {
-    /// Whether this terminal reports key releases - see
-    /// [`enable_key_releases`].  The driving controls read it: with it, a
-    /// held key is held; without it, they fall back to keeping a press alive
-    /// for a few frames and letting autorepeat top it up.
+    /// Whether this terminal reports key releases - see [`handshake`].  The
+    /// driving controls read it: with it, a held key is held; without it,
+    /// they fall back to keeping a press alive for a few frames and letting
+    /// autorepeat top it up.
     pub holds_keys: bool,
+    /// Whether this terminal answers `CSI 18 t` with its size.
+    ///
+    /// The frame is whatever size the window is, and following a resize
+    /// means asking something.  A terminal that answers this question
+    /// answers it on the stream we are already reading, for the price of
+    /// six bytes; one that does not leaves `stty size`, which is a fork and
+    /// an exec and was being done *every frame*.
+    pub reports_size: bool,
 }
 
 impl Term {
@@ -131,9 +174,9 @@ impl Term {
             prev(info);
         }));
         // Before the reader thread exists, because the handshake reads the
-        // terminal's reply off stdin itself.
-        let holds_keys = enable_key_releases();
-        Ok(Term { holds_keys })
+        // terminal's replies off stdin itself.
+        let (holds_keys, reports_size) = handshake();
+        Ok(Term { holds_keys, reports_size })
     }
 
     /// The terminal size in character cells, or a sane default.
@@ -199,6 +242,10 @@ pub enum Key {
     Right,
     /// Escape, or Ctrl-C.
     Quit,
+    /// Not a key at all: the terminal answering how big it is, in columns
+    /// and rows.  It arrives on the key stream because that is the only
+    /// stream a terminal has.
+    Size(usize, usize),
 }
 
 /// What just happened to a key.
@@ -348,6 +395,17 @@ fn csi(b: &[u8]) -> (Option<Stroke>, usize) {
     let ctrl = num(second).unwrap_or(1).saturating_sub(1) & 4 != 0;
 
     let key = match final_byte {
+        // The terminal telling us how big it is.
+        b't' => {
+            let mut it = params.split(|&c| c == b';');
+            let what = it.next().and_then(|d| std::str::from_utf8(d).ok()?.parse::<u32>().ok());
+            let rows = it.next().and_then(|d| std::str::from_utf8(d).ok()?.parse::<usize>().ok());
+            let cols = it.next().and_then(|d| std::str::from_utf8(d).ok()?.parse::<usize>().ok());
+            match (what, rows, cols) {
+                (Some(8), Some(r), Some(c)) if r > 2 && c > 2 => Some(Key::Size(c, r)),
+                _ => None,
+            }
+        }
         b'A' => Some(Key::Up),
         b'B' => Some(Key::Down),
         b'C' => Some(Key::Right),

@@ -286,6 +286,24 @@ a pedal's travel. A gamepad over a socket would give both, and would be a
 dependency and a daemon for a program whose whole point is that it runs in a
 terminal.
 
+### Distance should fade to the sky, not to black — **soon**
+The depth cue subtracts luminance until a surface is black, which was right
+when the sky was black too. It is not right under a yellow noon: a tower
+fades to black and then the bright sky appears behind it, which is a hard
+edge where aerial perspective should be a soft one. What it should fade
+*towards* is the sky colour at that row. On the host that is a lerp per cell
+in a palette that does not lerp; the honest version is to pick the nearer of
+the two hues and cross the boundary as a dither, which is what the sky's own
+phase change does. On the Plus/4 it is a second table.
+
+### Daylight with a direction — **later**
+The sky lights the city ambiently: two steps at noon, none at night. A sun
+that moved with the phase would want its own shadow sweep - the sweep is
+`O(cells)` once per light per bearing, so it is affordable - and would give
+long shadows at sunrise and short ones at noon, which is most of what a day
+cycle is for. What stops it today is that the moon owns the bearing and the
+shadow map, and there is exactly one of each.
+
 ### Pedestrians that react — **soon**
 They walk in a straight line and ignore everything, including buildings and
 the taxi. Scattering when a car comes at them is a few lines and a large

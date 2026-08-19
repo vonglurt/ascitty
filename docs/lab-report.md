@@ -588,7 +588,7 @@ exists for any structure to exceed.
 
 ### D. Verification
 
-282 assertions execute in approximately 0.2 s. The acceptance gate
+288 assertions execute in approximately 0.2 s. The acceptance gate
 additionally rebuilds both targets, regenerates the baked headers, renders a
 host frame, and boots the target program in an emulator to confirm
 non-trivial output. A target program that compiles is not evidence that it

@@ -243,24 +243,38 @@ pub fn render_to(
 struct Light {
     /// Diffuse offset per surface normal.
     lambert: [i8; arch::NORMALS],
+    /// What the sky is worth to every surface, whichever way it faces.
+    ///
+    /// The sixth number.  A city under a yellow noon sky and the same city
+    /// under a night one cannot be lit identically without the bright
+    /// version looking like a mistake - a lit sky over a black street is
+    /// the single most obviously wrong thing a day cycle can produce - and
+    /// the honest fix is the cheap one: daylight is ambient, ambient is a
+    /// constant, and this palette adds constants for a living.
+    ///
+    /// Two steps at most, from [`Atmos::daylight`].  More than that and the
+    /// lit windows, which are the whole character of the place, wash out
+    /// against their own walls.
+    ambient: i8,
     /// Whether anything casts a shadow at all.
     shadows: bool,
 }
 
 impl Light {
     fn of(atmos: &Atmos) -> Light {
-        Light { lambert: atmos.lambert(), shadows: atmos.moon }
+        Light { lambert: atmos.lambert(), ambient: atmos.daylight(), shadows: atmos.moon }
     }
 
     /// The luminance offset for a surface with a given normal, at a height,
     /// on a cell.
     #[inline(always)]
     fn on(&self, normal: usize, shaded: bool) -> i8 {
-        if self.shadows && shaded {
-            SHADOW_STEP
-        } else {
-            self.lambert[normal]
-        }
+        self.ambient
+            + if self.shadows && shaded {
+                SHADOW_STEP
+            } else {
+                self.lambert[normal]
+            }
     }
 }
 
@@ -1251,6 +1265,13 @@ mod tests {
         assert_ne!(towards, away, "the view is the same brightness in both directions");
     }
 
+    /// The depth cue: more haze, darker city.
+    ///
+    /// Measured below the horizon only, and that is not a detail.  The sky
+    /// has its own brightness and no distance to fade over, so hazing the
+    /// city harder *reveals sky* where a tower used to be - and on a bright
+    /// phase of the day that makes the whole frame come out brighter with
+    /// more haze, which is true and is not what this test is about.
     #[test]
     fn distance_darkens() {
         let city = City::generate(8);
@@ -1260,12 +1281,13 @@ mod tests {
         let mut cam = Camera::spawn(&city, SIZE as i32 / 2, SIZE as i32 / 2);
         cam.z = crate::camera::EYE;
         render(&city, &cam, &atmos, &mut near);
-        let bright = |f: &Frame| -> u32 {
-            f.cels.iter().map(|c| palette::luma_of(c.color) as u32).sum()
+        // The pitch is zero here, so the horizon is the middle row.
+        let ground = |f: &Frame| -> u32 {
+            f.cels[f.w * f.h / 2..].iter().map(|c| palette::luma_of(c.color) as u32).sum()
         };
         let hazier = Atmos { haze: 8, ..atmos };
         render(&city, &cam, &hazier, &mut far);
-        assert!(bright(&far) < bright(&near), "more haze did not darken the frame");
+        assert!(ground(&far) < ground(&near), "more haze did not darken the city");
     }
 
     #[test]

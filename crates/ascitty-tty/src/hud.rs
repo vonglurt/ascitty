@@ -70,7 +70,7 @@ pub fn append(out: &mut String, s: &Status) {
         return;
     }
     let line = format!(
-        "{}  {},{}  {}  rain {}  haze {}  {}  #{:08x}  {:.1}ms {:.0}fps  {} steps  [t]axi [c]opter [g]lyphs [1-9]rain esc",
+        "{}  {},{}  {}  {}  haze {}  {}  #{:08x}  {:.1}ms {:.0}fps  {} steps  [t]axi [c]opter [g]lyphs esc",
         s.view,
         fixed::floor(s.cam.x),
         fixed::floor(s.cam.y),
@@ -78,7 +78,9 @@ pub fn append(out: &mut String, s: &Status) {
             Mode::Ascii => "ascii",
             Mode::Unicode => "blocks",
         },
-        s.atmos.rain,
+        // What the sky is doing, which is the one thing on this line that
+        // changes on its own.
+        s.atmos.phase_name(),
         s.atmos.haze,
         match s.depth {
             Depth::True => "24bit",

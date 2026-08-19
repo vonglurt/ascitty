@@ -16,6 +16,66 @@ use crate::palette::{self, rgb_index, Color};
 use crate::rng::hash3;
 use crate::trig::{self, Ang};
 
+/// One phase of the day: what colour the sky is, and how it is graded.
+///
+/// Two luminances rather than one, because a sky is not a flat colour.  The
+/// light comes from the horizon, so that is where it is palest - a hue at
+/// the top of this palette's ramp is a washed, almost white version of
+/// itself, which is exactly what the bottom of a sky looks like - and it
+/// darkens towards the zenith.  Getting that the wrong way round produces a
+/// ceiling rather than a sky.
+#[derive(Clone, Copy, Debug)]
+pub struct Phase {
+    /// What to call it, for the status line.
+    pub name: &'static str,
+    /// The hue of the whole sky in this phase.
+    pub hue: u8,
+    /// Luminance at the zenith.
+    pub top: u8,
+    /// Luminance at the horizon, which is where the light is.
+    pub bottom: u8,
+}
+
+/// The day, as twelve phases in the order they happen.
+///
+/// It is a *cycle*, so the last one runs into the first, and the interesting
+/// property is that no two adjacent phases share a hue: the sky always
+/// visibly moves.  The colours are not meteorology.  They are the twelve
+/// skies a city like this one has in the sort of film it comes from, and
+/// they are chosen to be told apart at sixteen hues.
+pub const DAY: [Phase; 12] = [
+    Phase { name: "NIGHT", hue: palette::H_DARK_BLUE, top: 0, bottom: 2 },
+    Phase { name: "MORNING", hue: palette::H_WHITE, top: 1, bottom: 3 },
+    Phase { name: "AWAKENING", hue: palette::H_LIGHT_BLUE, top: 2, bottom: 4 },
+    Phase { name: "SUNRISE", hue: palette::H_ORANGE, top: 3, bottom: 6 },
+    Phase { name: "DUST", hue: palette::H_RED, top: 3, bottom: 5 },
+    Phase { name: "NOON", hue: palette::H_YELLOW, top: 5, bottom: 7 },
+    Phase { name: "AFTERNOON", hue: palette::H_BLUE, top: 4, bottom: 6 },
+    Phase { name: "OVERCAST", hue: palette::H_WHITE, top: 4, bottom: 6 },
+    Phase { name: "SUNSET", hue: palette::H_GREEN, top: 3, bottom: 5 },
+    Phase { name: "AFTERGLOW", hue: palette::H_PINK, top: 2, bottom: 5 },
+    Phase { name: "GLOAMING", hue: palette::H_GREEN, top: 1, bottom: 3 },
+    Phase { name: "DEEP NIGHT", hue: palette::H_BLUE, top: 0, bottom: 2 },
+];
+
+/// Ticks in a full cycle of [`DAY`], at the rate the program steps the
+/// atmosphere - one per frame.
+///
+/// Seven thousand two hundred is four minutes at thirty frames a second, so
+/// a phase is twenty seconds and a shift on the clock - sixty seconds, if
+/// you are not earning - spans three of them.  Long enough that the sky is
+/// not a strobe, short enough that a single run is not all one colour.
+pub const DAY_TICKS: u32 = 7200;
+
+/// How many rows above the horizon the sky takes to reach its zenith
+/// colour, and how far a phase change sweeps up before it has taken over.
+///
+/// Measured in rows rather than as a fraction of the frame on purpose: the
+/// horizon moves with the pitch and the frame is whatever size the terminal
+/// is, and a gradient that rescaled itself to both would breathe every time
+/// the camera nodded.
+pub const SKY_SPAN: i32 = 20;
+
 /// The state of the sky.
 #[derive(Clone, Copy, Debug)]
 pub struct Atmos {
@@ -31,6 +91,16 @@ pub struct Atmos {
     pub haze: u8,
     /// Star density, 0 to 8.  Zero in a real city; this is not a real city.
     pub stars: u8,
+    /// Ticks in a full cycle of the sky.  Zero holds it at `sky_offset`,
+    /// which is what one picture of one sky wants.
+    pub day: u32,
+    /// Where in the cycle the sky starts, in ticks.
+    ///
+    /// A separate number from the tick counter rather than a head start on
+    /// it, because the tick counter also drives the rain, the twinkle and
+    /// everything else that moves, and freezing the sky must not freeze
+    /// those.
+    pub sky_offset: u32,
     /// Frame counter, driving everything that moves.
     pub tick: u32,
 }
@@ -52,8 +122,38 @@ impl Default for Atmos {
             moon_alt: 9,
             haze: 3,
             stars: 4,
+            day: DAY_TICKS,
+            sky_offset: 0,
             tick: 0,
         }
+    }
+}
+
+/// How much of a cell the sky fills, for a given luminance.
+///
+/// The two darkest levels come from the haze family, which is sparser than
+/// the lightest dither - a first-light sky should be a suggestion, not a
+/// texture - and the rest climb the dither ramp to solid.  In ASCII that is
+/// the difference between a blank sky at night and `. : - = +` grading up
+/// towards the horizon at noon, which is the only way a sky can have a
+/// gradient in a mode with no colour at all.
+///
+/// It stops short of a solid fill even at the top.  A cell is one colour, so
+/// a solid sky is a flat wash - and in ASCII it is a wall of `@`, which is
+/// the brightest thing the mode has and reads as a building rather than as
+/// air.  Six eighths is bright enough to be a noon sky in colour and light
+/// enough to still be sky without it.
+#[inline]
+fn sky_fill(luma: u8) -> catalog::GlyphId {
+    match luma {
+        0 => catalog::G_BLANK,
+        1 => catalog::G_HAZE + 1,
+        2 => catalog::G_HAZE + 2,
+        3 => catalog::G_HAZE + 3,
+        4 => catalog::shade(2),
+        5 => catalog::shade(3),
+        6 => catalog::shade(4),
+        _ => catalog::shade(6),
     }
 }
 
@@ -100,34 +200,151 @@ impl Atmos {
         rgb_index(hue, l)
     }
 
+    /// Which phase the sky is in, and how far through it, from 0 to
+    /// [`ONE`].
+    ///
+    /// With `day` at zero the sky holds wherever the tick counter left it,
+    /// which is what `--day 0` is for: a picture of one sky.
+    pub fn phase(&self) -> (usize, Fx) {
+        let each = (if self.day == 0 { DAY_TICKS } else { self.day } / DAY.len() as u32).max(1);
+        let cycle = each * DAY.len() as u32;
+        // Held, or running: the offset is where the cycle starts either way.
+        let t = if self.day == 0 {
+            self.sky_offset % cycle
+        } else {
+            self.tick.wrapping_add(self.sky_offset) % cycle
+        };
+        let i = (t / each) as usize % DAY.len();
+        let within = fixed::div(fixed::from_int((t % each) as i32), fixed::from_int(each as i32));
+        (i, within)
+    }
+
+    /// The tick offset that starts the cycle at phase `n`.
+    pub fn phase_offset(n: u32, day: u32) -> u32 {
+        let each = (if day == 0 { DAY_TICKS } else { day } / DAY.len() as u32).max(1);
+        // Half a phase in, so `--sky 5` is noon rather than the moment noon
+        // is still sweeping up over the morning.
+        (n % DAY.len() as u32) * each + each / 2
+    }
+
+    /// How much light the sky is throwing on the city, in luminance steps.
+    ///
+    /// Read off the phase's own brightness at the horizon, so it cannot
+    /// disagree with what the sky looks like: a night sky lights nothing, a
+    /// sunrise lights a little, noon lights everything by two steps.  It is
+    /// added to every surface whichever way it faces, because that is what
+    /// ambient means and because a directional daylight would want a second
+    /// shadow sweep - which is a real thing to want and is in the backlog.
+    pub fn daylight(&self) -> i8 {
+        // Read off the *zenith*, not the horizon.  The horizon is bright at
+        // sunrise because the sun is on it, and a city at sunrise is not lit
+        // like a city at noon; how high the light has got is what the top of
+        // the sky says.  Over the twelve phases this runs 0,0,1,1,1,2,2,2,
+        // 1,1,0,0, which is a day.
+        match DAY[self.phase().0].top {
+            0..=1 => 0,
+            2..=3 => 1,
+            _ => 2,
+        }
+    }
+
+    /// What to call the sky right now, for the status line.
+    pub fn phase_name(&self) -> &'static str {
+        DAY[self.phase().0].name
+    }
+
+    /// The hue and luminance of the sky this many rows above the horizon.
+    ///
+    /// # The sweep
+    ///
+    /// A phase change is not a cross-fade.  Two hues cannot be mixed in a
+    /// palette that gives a cell one colour, and dithering them together
+    /// costs a colour change per cell across the whole sky - which on a
+    /// terminal is a colour escape per cell, and the sky is half the frame.
+    ///
+    /// So the new sky *rises*, which is what a sky does anyway: for the
+    /// first half of a phase the incoming colour climbs from the horizon to
+    /// the zenith, and for the second half it holds.  Every row is one
+    /// colour, so a row is still one escape and a hundred and forty
+    /// characters, and the change reads as weather moving rather than as a
+    /// palette being swapped.
+    ///
+    /// The boundary itself is dithered by a row: without it the sweep is a
+    /// ruled line across the sky, which reads as a rendering artefact
+    /// because it is one.
+    pub fn sky_at(&self, rows_above: i32, jitter: u32) -> (u8, u8) {
+        let (i, t) = self.phase();
+        let now = DAY[i];
+        let before = DAY[(i + DAY.len() - 1) % DAY.len()];
+
+        // How high the new sky has climbed, in rows, over the first half of
+        // the phase.
+        let swept = fixed::floor(fixed::mul(
+            fixed::mul(t, fixed::from_int(2)).min(ONE),
+            fixed::from_int(SKY_SPAN),
+        ));
+        // One row of noise at the edge, so the boundary is a weather front
+        // and not a ruler.
+        let here = rows_above + (jitter & 1) as i32;
+        let p = if here <= swept { now } else { before };
+
+        // The gradient: palest at the horizon, darkening to the zenith.
+        let up = fixed::div(
+            fixed::from_int(rows_above.clamp(0, SKY_SPAN)),
+            fixed::from_int(SKY_SPAN),
+        );
+        let luma = fixed::floor(
+            fixed::lerp(fixed::from_int(p.bottom as i32), fixed::from_int(p.top as i32), up)
+                + fixed::HALF,
+        );
+        (p.hue, luma.clamp(0, 7) as u8)
+    }
+
     /// What is in the sky along a given ray, at a given row.
     ///
     /// `col_ang` is the compass bearing of the ray, so stars are fixed to
     /// the world rather than to the screen: turn around and the same stars
     /// come back.
     pub fn sky(&self, col_ang: Ang, row_above_horizon: i32) -> Cel {
-        if self.stars == 0 || row_above_horizon <= 0 {
+        if row_above_horizon <= 0 {
             return Cel::EMPTY;
         }
         // Bucket the bearing finely enough that stars do not visibly snap
         // between columns, coarsely enough that they do not swarm.
         let bucket = (col_ang >> 5) as u32;
         let h = hash3(bucket, row_above_horizon as u32, 0x5747_2A25);
-        if (h & 255) >= self.stars as u32 * 3 {
+        let (hue, luma) = self.sky_at(row_above_horizon, h >> 5);
+
+        // Stars, but only where it is dark enough to see one.  Nothing
+        // switches them off at dawn: the sky gets brighter and they stop
+        // being drawn, which is what happens.
+        let dark = 2u32.saturating_sub(luma as u32);
+        if self.stars > 0 && (h & 255) < self.stars as u32 * dark {
+            // A few stars twinkle; most do not, because all of them
+            // twinkling reads as static rather than as sky.
+            let twinkle = (h >> 17) & 7 == 0;
+            let star = if twinkle {
+                2 + ((self.tick >> 3) as u8 ^ (h >> 9) as u8) % 3
+            } else {
+                1 + (h >> 11) as u8 % 3
+            };
+            return Cel {
+                glyph: catalog::G_STAR + (h >> 24) as u8 % 8,
+                color: rgb_index(palette::H_WHITE, star),
+            };
+        }
+
+        // The sky itself, as coverage rather than as a flat wash.  A cell
+        // is one colour, so brightness has to come from how much of the
+        // cell is filled as well as from the luminance - which is the same
+        // thing the ground does, and it is what lets an ASCII sky have a
+        // gradient at all.  It also keeps the night empty: at the bottom of
+        // the ramp the glyph is a blank and the sky is the black it always
+        // was.
+        if luma == 0 {
             return Cel::EMPTY;
         }
-        // A few stars twinkle; most do not, because all of them twinkling
-        // reads as static rather than as sky.
-        let twinkle = (h >> 17) & 7 == 0;
-        let luma = if twinkle {
-            2 + ((self.tick >> 3) as u8 ^ (h >> 9) as u8) % 3
-        } else {
-            1 + (h >> 11) as u8 % 3
-        };
-        Cel {
-            glyph: catalog::G_STAR + (h >> 24) as u8 % 8,
-            color: rgb_index(palette::H_WHITE, luma),
-        }
+        Cel { glyph: sky_fill(luma), color: rgb_index(hue, luma) }
     }
 
     /// Where the moon lands on screen, if it is visible at all.
@@ -308,6 +525,113 @@ impl Atmos {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The day goes all the way round and comes back.
+    #[test]
+    fn the_sky_visits_every_phase_and_returns() {
+        let mut a = Atmos { day: 1200, ..Default::default() };
+        let mut seen = vec![false; DAY.len()];
+        let mut order = Vec::new();
+        for t in 0..1200u32 {
+            a.tick = t;
+            let (i, _) = a.phase();
+            seen[i] = true;
+            if order.last() != Some(&i) {
+                order.push(i);
+            }
+        }
+        assert!(seen.iter().all(|&s| s), "some phase never happened: {seen:?}");
+        assert_eq!(order, (0..DAY.len()).collect::<Vec<_>>(), "out of order");
+        // ...and wraps.
+        a.tick = 1200;
+        assert_eq!(a.phase().0, 0, "the day did not come round again");
+    }
+
+    /// A sky is palest where the light is, which is the horizon.
+    #[test]
+    fn the_sky_is_a_gradient_from_the_horizon_up() {
+        for n in 0..DAY.len() as u32 {
+            let a = Atmos {
+                day: 0,
+                sky_offset: Atmos::phase_offset(n, 0),
+                ..Default::default()
+            };
+            let (_, low) = a.sky_at(1, 0);
+            let (_, high) = a.sky_at(SKY_SPAN, 0);
+            assert!(
+                low >= high,
+                "{}: the zenith at {high} is brighter than the horizon at {low}",
+                DAY[n as usize].name
+            );
+        }
+    }
+
+    /// A phase change climbs out of the horizon rather than being swapped
+    /// in everywhere at once.
+    #[test]
+    fn a_new_sky_rises() {
+        let each = DAY_TICKS / DAY.len() as u32;
+        // A quarter of the way into a phase: the new hue is down at the
+        // horizon and the old one is still overhead.
+        let a = Atmos { day: DAY_TICKS, sky_offset: each / 4, ..Default::default() };
+        let (low, _) = a.sky_at(1, 0);
+        let (high, _) = a.sky_at(SKY_SPAN, 0);
+        assert_eq!(low, DAY[0].hue, "the new sky is not at the horizon");
+        assert_eq!(high, DAY[DAY.len() - 1].hue, "the old sky has already gone");
+        // And by the half-way point it has taken the whole sky.
+        let a = Atmos { day: DAY_TICKS, sky_offset: each * 3 / 4, ..Default::default() };
+        assert_eq!(a.sky_at(SKY_SPAN, 0).0, DAY[0].hue, "it never finished rising");
+    }
+
+    /// Stars are only drawn where the sky is dark enough to have any.
+    #[test]
+    fn the_stars_go_out_at_dawn() {
+        let night = Atmos {
+            day: 0,
+            sky_offset: Atmos::phase_offset(0, 0),
+            stars: 8,
+            ..Default::default()
+        };
+        let noon = Atmos { sky_offset: Atmos::phase_offset(5, 0), ..night };
+        let count = |a: &Atmos| {
+            (0..2000)
+                .filter(|i| {
+                    let c = a.sky((i * 31) as Ang, 1 + i % SKY_SPAN);
+                    catalog::is_star(c.glyph)
+                })
+                .count()
+        };
+        let dark = count(&night);
+        assert!(dark > 20, "a clear night sky had {dark} stars in it");
+        assert_eq!(count(&noon), 0, "there are stars out at noon");
+    }
+
+    /// The city is lit by the sky it is under.
+    #[test]
+    fn daylight_follows_the_sky() {
+        let night = Atmos { day: 0, sky_offset: Atmos::phase_offset(0, 0), ..Default::default() };
+        let noon = Atmos { sky_offset: Atmos::phase_offset(5, 0), ..night };
+        let dawn = Atmos { sky_offset: Atmos::phase_offset(3, 0), ..night };
+        assert_eq!(night.daylight(), 0, "the night is lighting the city");
+        assert_eq!(noon.daylight(), 2, "noon is not");
+        assert!(dawn.daylight() > night.daylight() && dawn.daylight() < noon.daylight());
+    }
+
+    /// Holding the sky holds it, and does not stop the rain.
+    #[test]
+    fn day_zero_holds_the_sky_where_it_was_put() {
+        let mut a = Atmos {
+            day: 0,
+            sky_offset: Atmos::phase_offset(5, 0),
+            ..Default::default()
+        };
+        let was = a.sky_at(4, 0);
+        for _ in 0..DAY_TICKS * 2 {
+            a.step();
+        }
+        assert_eq!(a.sky_at(4, 0), was, "it moved anyway");
+        assert_eq!(a.phase_name(), "NOON");
+    }
     use crate::arch::{self, Face};
 use crate::camera::Camera;
 

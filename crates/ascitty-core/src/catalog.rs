@@ -82,6 +82,12 @@ pub const G_MOON: GlyphId = 108;
 pub const G_HALO: GlyphId = 112;
 /// Eight star positions within a cell, `G_STAR + 0..7`.
 pub const G_STAR: GlyphId = 116;
+
+/// Whether a glyph is one of the stars.
+#[inline]
+pub const fn is_star(g: GlyphId) -> bool {
+    g >= G_STAR && g < G_STAR + 8
+}
 /// Four haze levels, sparser than the lightest dither.
 pub const G_HAZE: GlyphId = 124;
 

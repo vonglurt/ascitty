@@ -421,6 +421,42 @@ white green and light green at six is olive. The bright green is the greener
 of the two; the light-green tufts are what keeps a verge from being one flat
 colour.
 
+## 7b. The sky, and the day
+
+The sky is not black any more. It is a gradient — palest at the horizon,
+where the light is, darkening towards the zenith — and it turns through
+twelve phases on a cycle: night, morning, awakening, sunrise, dust, noon,
+afternoon, overcast, sunset, afterglow, gloaming, deep night, and round
+again. `DAY` in `atmos.rs` is the table, and no two adjacent phases share a
+hue, so the sky always visibly moves.
+
+Three things about it are worth writing down.
+
+**The gradient is the right way up.** A hue at the top of this palette's
+ramp is a washed, almost white version of itself, and that is what the
+bottom of a sky looks like; the zenith is the darker end. Getting it the
+other way round produces a ceiling.
+
+**A phase change rises rather than cross-fading.** Two hues cannot be mixed
+in a palette that gives a cell one colour, and dithering them together costs
+a colour escape per cell across half the frame — the sky is half the frame.
+So the new colour climbs out of the horizon over the first half of a phase
+and holds for the second, and every row stays one colour, which is one
+escape and a row of characters. The boundary carries a row of noise so it is
+a weather front and not a ruled line.
+
+**Brightness is coverage as well as luminance.** The sky is drawn with the
+haze and dither families, densest at the horizon, which is what lets it have
+a gradient in ASCII with no colour at all — a blank sky at night grading up
+through `. : - = +` at noon. It stops short of solid: in ASCII a solid fill
+is `@`, which reads as a building rather than as air.
+
+The city is lit by the sky it is under, at up to two luminance steps of
+ambient — `Atmos::daylight`, read off the phase's own brightness so the two
+cannot disagree. It is ambient rather than directional because a directional
+daylight would want a second shadow sweep, which is a real thing to want and
+is in the backlog.
+
 ## 8. The colours
 
 Eight facade hues, deliberately narrow: a night city is mostly two or three
