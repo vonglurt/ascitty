@@ -465,12 +465,12 @@ fn ground(city: &City, atmos: &Atmos, light: &Light, wx: Fx, wy: Fx, dist: Fx) -
         Kind::Park => {
             let h = hash3(gx as u32, gy as u32, (fixed::floor(fx * 4) + fixed::floor(fy * 4)) as u32);
             if h & 7 == 0 {
-                (catalog::FLORA_HEDGE, palette::H_GREEN, 3)
+                (catalog::FLORA_HEDGE, palette::H_GREEN, 4)
             } else {
-                (catalog::FLORA_GRASS, palette::H_GREEN, 2)
+                (catalog::FLORA_GRASS, palette::H_GREEN, 5)
             }
         }
-        Kind::Plaza => (catalog::ROAD_PAVING, palette::H_WHITE, 2),
+        Kind::Plaza => (catalog::ROAD_PAVING, palette::H_WHITE, 4),
         Kind::Building => (catalog::G_SOLID, palette::H_BLACK, 0),
     };
 
@@ -554,8 +554,9 @@ fn edge_distance(sides: u8, fx: Fx, fy: Fx) -> Fx {
 ///
 /// Four bands, because a pavement seen in perspective is mostly its edges:
 ///
-/// - the **kerb**, the brightest thing on the ground, and the line that says
-///   where the carriageway stops
+/// - the **kerb**, the brightest thing on the ground - and it has to stay
+///   the brightest, so raising the paving raises it too - and the line that
+///   says where the carriageway stops
 /// - the **verge**: grass, and what the trees are planted in.  This is the
 ///   band that separates the traffic from the people, and putting the trees
 ///   in it rather than in the paving is the difference between a street with
@@ -570,15 +571,23 @@ fn edge_distance(sides: u8, fx: Fx, fy: Fx) -> Fx {
 fn pavement(city: &City, gx: i32, gy: i32, fx: Fx, fy: Fx) -> (catalog::GlyphId, u8, u8) {
     let kerb = from_kerb(city, gx, gy, fx, fy);
     if kerb < KERB_BAND {
-        return (catalog::ROAD_KERB, palette::H_WHITE, 5);
+        return (catalog::ROAD_KERB, palette::H_WHITE, 6);
     }
     if kerb < VERGE_BAND {
         // Planted verge.
+        //
+        // Green rather than light green for the grass, which is the wrong
+        // way round until you look at what the two hues do at the top of
+        // their ramps: this palette scales chroma with luminance, so green
+        // at six is 162,226,162 - a pale, almost white green - while light
+        // green is 176,224,134, which is olive.  The bright green is the
+        // greener of the two, and the light-green tufts are what keeps a
+        // verge from being one flat colour.
         let h = hash3(gx as u32, gy as u32, 0x_9E_46_E0_00);
         return match h & 7 {
-            0 => (catalog::FLORA_HEDGE, palette::H_GREEN, 3),
-            1..=2 => (catalog::FLORA_GRASS, palette::H_LIGHT_GREEN, 3),
-            _ => (catalog::FLORA_GRASS, palette::H_GREEN, 2),
+            0 => (catalog::FLORA_HEDGE, palette::H_GREEN, 4),
+            1..=2 => (catalog::FLORA_GRASS, palette::H_LIGHT_GREEN, 5),
+            _ => (catalog::FLORA_GRASS, palette::H_GREEN, 5),
         };
     }
     if from_wall(city, gx, gy, fx, fy) < SEAM_BAND {
@@ -586,12 +595,18 @@ fn pavement(city: &City, gx: i32, gy: i32, fx: Fx, fy: Fx) -> (catalog::GlyphId,
     }
 
     // Cement, and what has been spilled on it.
+    //
+    // A step brighter than it was, all four of them, because at luminance
+    // two and three the pavement sat below the carriageway's own markings
+    // and the eye read the street as ending at the kerb.  Cement at night is
+    // not dark - it is the thing under the street lights - and the band that
+    // people are on should be the band you can see.
     let h = hash3(gx as u32, gy as u32, 0x_CE_11_7A_00);
     match h & 15 {
-        0 => (catalog::ROAD_GRATE, palette::H_WHITE, 2),
-        1 => (catalog::ROAD_PAVING, palette::H_BROWN, 2),
-        2..=4 => (catalog::ROAD_PAVING, palette::H_WHITE, 2),
-        _ => (catalog::ROAD_PAVING, palette::H_WHITE, 3),
+        0 => (catalog::ROAD_GRATE, palette::H_WHITE, 3),
+        1 => (catalog::ROAD_PAVING, palette::H_BROWN, 3),
+        2..=4 => (catalog::ROAD_PAVING, palette::H_WHITE, 3),
+        _ => (catalog::ROAD_PAVING, palette::H_WHITE, 4),
     }
 }
 
@@ -747,6 +762,74 @@ mod tests {
 
     /// Looking down puts the far edge of the visible world at the top of the
     /// frame, which is the whole claim [`pitch_down`] makes.
+    /// A cell of pavement, its bands sampled across their whole width.
+    fn pavement_bands(city: &City) -> Vec<(catalog::GlyphId, u8, u8)> {
+        // A pavement cell with a road on one side, which is what has a kerb.
+        let (gx, gy) = (0..SIZE as i32)
+            .flat_map(|y| (0..SIZE as i32).map(move |x| (x, y)))
+            .find(|&(x, y)| {
+                city.at(x, y).kind == Kind::Sidewalk
+                    && city.edges(x, y) >> world::EDGE_ROAD & 0x0f != 0
+            })
+            .expect("no pavement beside a road in the whole city");
+        let mut out = Vec::new();
+        for i in 0..16 {
+            for j in 0..16 {
+                let (fx, fy) = (fixed::ratio(i, 16), fixed::ratio(j, 16));
+                out.push(pavement(city, gx, gy, fx, fy));
+            }
+        }
+        out
+    }
+
+    /// The kerb stays the brightest thing on the ground.
+    ///
+    /// It is the line that says where the carriageway stops, and it only
+    /// reads as one while nothing beside it is as bright.  Raising the
+    /// paving without raising the kerb is what would break this, and the
+    /// paving has been raised twice.
+    #[test]
+    fn the_kerb_is_the_brightest_band_of_the_pavement() {
+        let city = City::generate(99);
+        let bands = pavement_bands(&city);
+        let kerb = bands
+            .iter()
+            .filter(|&&(g, _, _)| g == catalog::ROAD_KERB)
+            .map(|&(_, _, l)| l)
+            .min()
+            .expect("no kerb band");
+        for &(g, _, l) in &bands {
+            if g == catalog::ROAD_KERB {
+                continue;
+            }
+            assert!(l < kerb, "a band at luminance {l} is as bright as the kerb at {kerb}");
+        }
+    }
+
+    /// The pavement is somewhere you can see, and the grass is green.
+    ///
+    /// Both were a step or three darker and the street read as ending at
+    /// the kerb: cement at night is the thing under the street lights, and
+    /// the band that people are on should be the band you can see.  The
+    /// grass is the same argument with a hue on it - green at the top of
+    /// this palette's ramp is a pale, nearly white green, and that is what
+    /// a verge under a lamp looks like.
+    #[test]
+    fn the_pavement_and_the_grass_are_bright_enough_to_read() {
+        let city = City::generate(99);
+        for &(g, hue, l) in &pavement_bands(&city) {
+            if g == catalog::FLORA_GRASS || g == catalog::FLORA_HEDGE {
+                assert!(l >= 4, "grass at luminance {l}");
+                assert!(
+                    hue == palette::H_GREEN || hue == palette::H_LIGHT_GREEN,
+                    "the verge is hue {hue}"
+                );
+            } else if g == catalog::ROAD_PAVING || g == catalog::ROAD_GRATE {
+                assert!(l >= 3, "paving at luminance {l}");
+            }
+        }
+    }
+
     #[test]
     fn a_camera_aimed_down_has_the_furthest_ground_at_the_top() {
         let fov = crate::camera::fov_for_degrees(67.0);

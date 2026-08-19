@@ -128,7 +128,7 @@ make walk     # watch the camera walk instead
 make run4     # play the Plus/4 build in xplus4
 make demo4    # ...and leave it alone; it drives itself
 
-make test     # 279 tests, about half a second
+make test     # 281 tests, about half a second
 make check    # the gate: tests, both builds, and both actually rendering
 make bench    # frames a second on this machine
 
@@ -598,7 +598,7 @@ Everything is indexed at **[docs/index.md](docs/index.md)**.
 
 Working: the renderer, all three cameras, the city generator with six
 building archetypes, the procedural font, the weather, the driving physics,
-the fare loop, the terminal front end and the Plus/4 build. 279 tests.
+the fare loop, the terminal front end and the Plus/4 build. 281 tests.
 
 Not yet: sub-cell rooflines, proper roof surfaces, scoring and grades,
 sprites and driving on the Plus/4, and the assembly inner loop that would

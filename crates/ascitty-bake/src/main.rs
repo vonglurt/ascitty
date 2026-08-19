@@ -666,9 +666,15 @@ fn city(seed: u32) -> String {
                 None => {
                     let (col, tile) = match cell.kind {
                         Kind::Road => (palette::rgb_index(palette::H_WHITE, 1), catalog::ROAD_ASPHALT),
-                        Kind::Sidewalk => (palette::rgb_index(palette::H_WHITE, 2), catalog::ROAD_PAVING),
-                        Kind::Park => (palette::rgb_index(palette::H_GREEN, 2), catalog::FLORA_GRASS),
-                        _ => (palette::rgb_index(palette::H_WHITE, 2), catalog::ROAD_PAVING),
+                        // A cell of pavement is drawn in bands on the host
+                        // - kerb, verge, paving - and as one colour here,
+                        // so this is that cell's average and it moves when
+                        // the bands do.  Brighter, with the grass brighter
+                        // again, for the same reason: the ground people are
+                        // on should be the ground you can see.
+                        Kind::Sidewalk => (palette::rgb_index(palette::H_WHITE, 3), catalog::ROAD_PAVING),
+                        Kind::Park => (palette::rgb_index(palette::H_GREEN, 4), catalog::FLORA_GRASS),
+                        _ => (palette::rgb_index(palette::H_WHITE, 3), catalog::ROAD_PAVING),
                     };
                     colors.push(col);
                     tiles.push(tile);

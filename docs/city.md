@@ -387,6 +387,40 @@ just inside the edge of the box. The stripes run *with* the traffic and
 repeat *across* it, which is the way round they are painted: a pedestrian
 walking north over an avenue crosses a ladder of north–south bars.
 
+## 7a. The pavement, in bands
+
+A pavement is drawn in four bands from the kerb to the building line, in
+continuous coordinates like the markings, because a pavement seen in
+perspective is mostly its edges.
+
+| Band | Width from the kerb | What |
+|---|---|---|
+| Kerb | a sixth of a cell, 1 m | `ROAD_KERB`, white, and the brightest thing on the ground |
+| Verge | to half a cell, 3 m | grass and hedge; where the street trees are planted |
+| Paving | to the building line | cement, stained cell by cell from a hash |
+| Seam | an eighth of a cell at the wall | a dark line, which is what stops a wall appearing to float |
+
+Putting the trees in the verge rather than in the paving is the difference
+between a street with trees on it and a street with obstacles on it.
+
+The brightness of the first three is not arbitrary and was raised once,
+because the street read as ending at the kerb: cement at night is the thing
+under the street lights, and the band people are on should be the band you
+can see. Near the camera, and with the moon up:
+
+| | was | is |
+|---|---|---|
+| Kerb | 200,200,200 | 255,255,255 |
+| Paving | 126,126,126 | 156,156,156 |
+| Grass | 77,107,77 | 162,226,162 |
+
+The grass is `H_GREEN` rather than `H_LIGHT_GREEN`, which is the wrong way
+round until you look at what the two do at the top of their ramps. This
+palette scales chroma with luminance, so green at six is a pale, nearly
+white green and light green at six is olive. The bright green is the greener
+of the two; the light-green tufts are what keeps a verge from being one flat
+colour.
+
 ## 8. The colours
 
 Eight facade hues, deliberately narrow: a night city is mostly two or three
