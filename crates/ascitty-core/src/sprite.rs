@@ -206,93 +206,9 @@ const METER_ART: [&str; 8] = [
 
 /// A boxy four-wheel-drive, seen from the side: upright glass, no overhang
 /// worth speaking of, wheels at the corners.
-#[rustfmt::skip]
-const JEEP_SIDE_ART: [&str; 8] = [
-    "        ",
-    "        ",
-    "  ####  ",
-    " ###### ",
-    "########",
-    "########",
-    " o    o ",
-    "        ",
-];
-
 /// A long, low car of about 1972, seen from the side: most of it is bonnet,
 /// the cabin is set well back, and the roofline runs into the boot.
-#[rustfmt::skip]
-const MUSCLE_SIDE_ART: [&str; 8] = [
-    "        ",
-    "        ",
-    "        ",
-    "   ###  ",
-    " ###### ",
-    "########",
-    " o    o ",
-    "        ",
-];
-
 /// A bus from the side: a box on wheels, and nothing else to say about it.
-#[rustfmt::skip]
-const BUS_SIDE_ART: [&str; 8] = [
-    "        ",
-    "########",
-    "#.#.#.##",
-    "#.#.#.##",
-    "########",
-    "########",
-    " o    o ",
-    "        ",
-];
-
-#[rustfmt::skip]
-const CAR_ART: [&str; 8] = [
-    "        ",
-    "        ",
-    "  ####  ",
-    " ###### ",
-    "L######R",
-    "LL####RR",
-    " oo  oo ",
-    "  ====  ",
-];
-
-#[rustfmt::skip]
-const TAXI_ART: [&str; 8] = [
-    "   SS   ",
-    "  ####  ",
-    " ###### ",
-    " ###### ",
-    "LkkkkkkR",
-    "L######R",
-    "Lb#  #bR",
-    " oo  oo ",
-];
-
-#[rustfmt::skip]
-const WRECK_ART: [&str; 8] = [
-    "        ",
-    "    #   ",
-    "  ##.#  ",
-    " #.###. ",
-    "L#.##.#R",
-    "LL#..#RR",
-    " o    o ",
-    "  ====  ",
-];
-
-#[rustfmt::skip]
-const BUS_ART: [&str; 8] = [
-    "        ",
-    "########",
-    "#......#",
-    "#......#",
-    "########",
-    "L######R",
-    " oo  oo ",
-    " ====== ",
-];
-
 #[rustfmt::skip]
 const PED_ART: [&str; 8] = [
     "        ",
@@ -341,8 +257,17 @@ const DEBRIS_ART: [&str; 8] = [
     " ...#.. ",
 ];
 
+/// A blank card, for the stamps that are painted by a function rather than
+/// sampled from art - see [`paint_car`].  Nothing ever reads it.
+const NO_ART: [&str; 8] = ["        "; 8];
+
 impl Stamp {
     /// The art for this stamp.
+    ///
+    /// The vehicles have none: they are painted by [`paint_car`] at whatever
+    /// resolution they are drawn at, which is the whole point of that
+    /// function, and eight rows of eight characters left lying about for
+    /// them would rot the first time the painter changed.
     fn art(self) -> &'static [&'static str; 8] {
         match self {
             Stamp::LampPost => &LAMP_POST_ART,
@@ -352,17 +277,17 @@ impl Stamp {
             Stamp::Tree => &TREE_ART,
             Stamp::Bollard => &BOLLARD_ART,
             Stamp::Meter => &METER_ART,
-            Stamp::Car => &CAR_ART,
-            Stamp::JeepSide => &JEEP_SIDE_ART,
-            Stamp::MuscleSide => &MUSCLE_SIDE_ART,
-            Stamp::BusSide => &BUS_SIDE_ART,
-            Stamp::Taxi => &TAXI_ART,
-            Stamp::Wreck => &WRECK_ART,
-            Stamp::Bus => &BUS_ART,
             Stamp::Ped => &PED_ART,
             Stamp::Coin => &COIN_ART,
             Stamp::Pickup | Stamp::Dropoff => &PICKUP_ART,
             Stamp::Debris => &DEBRIS_ART,
+            Stamp::Car
+            | Stamp::JeepSide
+            | Stamp::MuscleSide
+            | Stamp::BusSide
+            | Stamp::Taxi
+            | Stamp::Wreck
+            | Stamp::Bus => &NO_ART,
         }
     }
 
@@ -492,6 +417,192 @@ pub fn silhouette(len: Fx, wid: Fx, yaw: Ang, vx: Fx, vy: Fx) -> (Fx, bool) {
     (width, across > along)
 }
 
+
+// --- cars, as a function ---------------------------------------------------
+//
+// Everything else in this file is eight rows of eight characters, sampled at
+// whatever size the thing ends up on screen.  That is the right shape for a
+// hydrant.  It is the wrong shape for the car you are looking at for the
+// whole game: a cab fourteen rows tall drawn from an eight-row picture is an
+// eight-row picture with fat pixels, and no amount of redrawing the eight
+// rows fixes it.
+//
+// So a car is a *function* of where you are on the card, evaluated at the
+// resolution it is actually drawn at - the same trick the font uses, for the
+// same reason.  Twenty rows of cab get twenty rows of detail.
+
+/// What kind of thing is being painted, and from which side.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Body {
+    /// Somebody else's car.
+    Saloon,
+    /// The one you are driving: chequer band, roof sign.
+    Taxi,
+    /// Longer, taller, flatter.
+    Bus,
+    /// A saloon that has been in the wars.
+    Wreck,
+}
+
+impl Body {
+    /// Which body a stamp is, and whether it is seen along its length.
+    fn of(stamp: Stamp) -> Option<(Body, bool)> {
+        Some(match stamp {
+            Stamp::Taxi => (Body::Taxi, false),
+            Stamp::Car => (Body::Saloon, false),
+            Stamp::JeepSide | Stamp::MuscleSide => (Body::Saloon, true),
+            Stamp::Bus => (Body::Bus, false),
+            Stamp::BusSide => (Body::Bus, true),
+            Stamp::Wreck => (Body::Wreck, false),
+            _ => return None,
+        })
+    }
+}
+
+/// Half the width of the body at a given height down the card.
+///
+/// This is the whole silhouette in one expression: a roof narrower than the
+/// waist, a waist that runs most of the height, and a slight tuck at the
+/// bottom where the sills are.  `v` is 0 at the top of the card and 1 at the
+/// ground.
+fn body_half(body: Body, side: bool, v: Fx) -> Fx {
+    let (roof_top, shoulder, sill) = match (body, side) {
+        // A bus is a box: it is nearly the same width all the way up.
+        (Body::Bus, _) => (fixed::ratio(42, 100), fixed::ratio(48, 100), fixed::ratio(46, 100)),
+        // Along its length, a car is long and low, and the greenhouse is a
+        // smaller box on top of it.
+        (_, true) => (fixed::ratio(30, 100), fixed::ratio(50, 100), fixed::ratio(48, 100)),
+        // End on, it is nearly as wide at the roof as at the waist.
+        (_, false) => (fixed::ratio(30, 100), fixed::ratio(46, 100), fixed::ratio(42, 100)),
+    };
+    let waist = waist_of(body, side);
+    if v < waist {
+        // The greenhouse: widening from the roof to the shoulder.
+        let t = fixed::div(v, waist).clamp(0, ONE);
+        fixed::lerp(roof_top, shoulder, t)
+    } else {
+        // The body: the shoulder tucking in a little towards the sills.
+        let t = fixed::div(v - waist, ONE - waist).clamp(0, ONE);
+        fixed::lerp(shoulder, sill, t)
+    }
+}
+
+/// Where the glass stops and the doors start, down the card.
+fn waist_of(body: Body, side: bool) -> Fx {
+    match (body, side) {
+        (Body::Bus, _) => fixed::ratio(55, 100),
+        (_, true) => fixed::ratio(42, 100),
+        (_, false) => fixed::ratio(38, 100),
+    }
+}
+
+/// Paint one point of a car.
+///
+/// `u` and `v` are where on the card you are, from 0 to 1, left to right and
+/// top to bottom.  `sky` is what the windows are reflecting.  `phase` is the
+/// two bits every car carries: bit 0 that you are looking at its front, bit
+/// 1 that it is braking.
+pub fn paint_car(
+    body: Body,
+    side: bool,
+    u: Fx,
+    v: Fx,
+    hue: u8,
+    phase: u8,
+    sky: (u8, u8),
+) -> Option<(GlyphId, u8, u8)> {
+    let mid = fixed::abs(u - fixed::HALF);
+    // Where the wheels start, and where the lamps do.
+    //
+    // The bands have to be wide enough to survive being sampled at the size
+    // a car is actually drawn: a cab six rows tall samples this function at
+    // v = 0.08, 0.25, 0.42, 0.58, 0.75 and 0.92, and a band narrower than
+    // the gap between two of those is a band that some cars simply do not
+    // have.  The brake lights were 0.80 to 0.91 and vanished on anything
+    // under eight rows, which is most of the traffic.
+    let ground = fixed::ratio(88, 100);
+    let lamps = fixed::ratio(70, 100);
+
+    // Wheels first: they stick out below the body and are the only part of
+    // it that is not the body's colour.
+    if v > ground {
+        let (near, far) = if side {
+            (fixed::ratio(22, 100), fixed::ratio(46, 100))
+        } else {
+            (fixed::ratio(26, 100), fixed::ratio(44, 100))
+        };
+        return if mid > near && mid < far {
+            Some((catalog::G_SOLID, palette::H_WHITE, 1))
+        } else {
+            None
+        };
+    }
+
+    let half = body_half(body, side, v);
+    if mid > half {
+        return None;
+    }
+
+    // The roof sign, above everything, on the cab only.
+    if body == Body::Taxi && v < fixed::ratio(10, 100) && mid < fixed::ratio(12, 100) {
+        return Some((catalog::G_SOLID, palette::H_YELLOW, 7));
+    }
+
+    let waist = waist_of(body, side);
+    let roof = fixed::mul(waist, fixed::ratio(35, 100));
+
+    // The roof: body colour, lifted, because it is the panel pointed at the
+    // sky.
+    if v < roof {
+        return Some((catalog::G_SOLID, hue, 6));
+    }
+
+    // The glass.  It takes the *sky's* hue rather than the car's, which is
+    // what a window does: a windscreen is a dark mirror pointed upwards, so
+    // it is blue in the afternoon and gold at sunrise without being told
+    // what time it is.  Inset from the body's edge by a pillar's width.
+    if v < waist && mid < half - fixed::ratio(6, 100) {
+        let (sh, sl) = sky;
+        // A vertical shade across the glass, brighter at the top where more
+        // of the sky is in it.
+        let t = fixed::div(v - roof, (waist - roof).max(1)).clamp(0, ONE);
+        let luma = sl.saturating_add(1).saturating_sub(fixed::floor(fixed::mul(t, ONE)) as u8);
+        return Some((catalog::G_SOLID, sh, luma.clamp(1, 7)));
+    }
+
+    // The chequer band, which is the whole of what makes a taxi a taxi.
+    if body == Body::Taxi {
+        let band = fixed::ratio(55, 100);
+        if v > band && v < fixed::ratio(70, 100) {
+            let square = fixed::floor(fixed::mul(u, fixed::from_int(8)));
+            let white = square.rem_euclid(2) == 0;
+            return Some((
+                catalog::G_SOLID,
+                if white { palette::H_WHITE } else { palette::H_BLACK },
+                if white { 7 } else { 0 },
+            ));
+        }
+    }
+
+    // Lamps, at the bottom corners of the end you are looking at.
+    if !side && v > lamps && mid > half - fixed::ratio(16, 100) {
+        return Some(if phase & 1 == 1 {
+            (catalog::G_SOLID, palette::H_WHITE, 7)
+        } else if phase & 2 == 2 {
+            (catalog::G_SOLID, palette::H_RED, 7)
+        } else {
+            (catalog::G_SOLID, palette::H_RED, 4)
+        });
+    }
+
+    // The body, shaded down towards the sills so that it reads as a rounded
+    // thing rather than as a rectangle.
+    let down = fixed::div(v - waist, (ONE - waist).max(1)).clamp(0, ONE);
+    let luma = 6 - fixed::floor(fixed::mul(down, fixed::from_int(2))).clamp(0, 2) as u8;
+    let dented = body == Body::Wreck && (fixed::floor(fixed::mul(u + v, fixed::from_int(9))) & 1) == 0;
+    Some((catalog::G_SOLID, hue, if dented { luma.saturating_sub(2).max(1) } else { luma }))
+}
+
 /// Draw one billboard.
 ///
 /// Returns false if it was entirely off screen or entirely hidden, which the
@@ -558,21 +669,37 @@ pub fn draw(f: &mut Frame, depth: &[Fx], cam: &Camera, atmos: &Atmos, p: &Proj, 
 
     let mut drawn = false;
     let art = b.stamp.art();
+    // A car is painted by a function at whatever resolution it is drawn at;
+    // everything else is eight rows of eight characters.  See `paint_car`.
+    let painted = Body::of(b.stamp);
+    let sky = atmos.sky_colour();
     for sy in top.max(0)..=(foot - 1).min(p.h - 1) {
         if sy < 0 {
             continue;
         }
         let v = ((sy - top) * 8 / rows.max(1)).clamp(0, 7) as usize;
+        let vf = fixed::div(fixed::from_int(sy - top) + fixed::HALF, fixed::from_int(rows.max(1)));
         // Rows nearer the top lean further over.
         let lean_px = shear * (7 - v as i32) * half_w / 8;
-        for sx in (cx - half_w + lean_px).max(0)..=(cx + half_w + lean_px).min(p.w - 1) {
+        let left = cx - half_w + lean_px;
+        let span = fixed::from_int((2 * half_w).max(1));
+        for sx in left.max(0)..=(cx + half_w + lean_px).min(p.w - 1) {
             let col = sx as usize;
             if col >= depth.len() || depth[col] < ty {
                 continue; // a building is in the way
             }
-            let u = ((sx - (cx - half_w + lean_px)) * 8 / (2 * half_w).max(1)).clamp(0, 7) as usize;
-            let ch = art[v].as_bytes().get(u).copied().unwrap_or(b' ') as char;
-            let Some((g, hue, luma)) = glyph_for(ch, b.hue, b.phase) else {
+            let paint = match painted {
+                Some((body, side)) => {
+                    let uf = fixed::div(fixed::from_int(sx - left) + fixed::HALF, span);
+                    paint_car(body, side, uf, vf, b.hue, b.phase, sky)
+                }
+                None => {
+                    let u = ((sx - left) * 8 / (2 * half_w).max(1)).clamp(0, 7) as usize;
+                    let ch = art[v].as_bytes().get(u).copied().unwrap_or(b' ') as char;
+                    glyph_for(ch, b.hue, b.phase)
+                }
+            };
+            let Some((g, hue, luma)) = paint else {
                 continue;
             };
             f.put(sx, sy, Cel { glyph: g, color: atmos.shade(hue, luma, ty) });
@@ -630,8 +757,8 @@ mod tests {
     fn every_stamp_has_eight_rows_of_eight() {
         for s in [
             Stamp::LampPost, Stamp::Signal, Stamp::Hydrant, Stamp::Mailbox, Stamp::Tree,
-            Stamp::Bollard, Stamp::Meter, Stamp::Car, Stamp::Wreck, Stamp::Bus, Stamp::Ped,
-            Stamp::Coin, Stamp::Pickup, Stamp::Debris,
+            Stamp::Bollard, Stamp::Meter, Stamp::Ped, Stamp::Coin, Stamp::Pickup,
+            Stamp::Debris,
         ] {
             let art = s.art();
             assert_eq!(art.len(), 8, "{s:?} has the wrong number of rows");
@@ -754,6 +881,70 @@ mod tests {
         let right = put(15.0, &mut f);
         if let (Some(l), Some(r)) = (left, right) {
             assert!(l < r, "a sprite to the left ({l}) drew right of one to the right ({r})");
+        }
+    }
+
+    /// A painted car is a car at any size it is drawn.
+    ///
+    /// The bands have to survive being sampled coarsely - see `paint_car` -
+    /// so this asks for every part of one at the sizes cars actually get.
+    #[test]
+    fn a_painted_car_has_all_of_its_parts_at_any_size() {
+        let sky = (palette::H_BLUE, 5);
+        for rows in [6, 7, 8, 10, 12, 16, 20, 30, 40] {
+            let mut glass = 0;
+            let mut lamp = 0;
+            let mut wheel = 0;
+            let mut band = 0;
+            for r in 0..rows {
+                let v = fixed::div(fixed::from_int(r) + fixed::HALF, fixed::from_int(rows));
+                for c in 0..rows * 2 {
+                    let u = fixed::div(fixed::from_int(c) + fixed::HALF, fixed::from_int(rows * 2));
+                    let Some((_, hue, luma)) = paint_car(Body::Taxi, false, u, v, palette::H_YELLOW, 2, sky)
+                    else {
+                        continue;
+                    };
+                    if hue == sky.0 {
+                        glass += 1;
+                    }
+                    if hue == palette::H_RED && luma == 7 {
+                        lamp += 1;
+                    }
+                    if hue == palette::H_WHITE && luma == 1 {
+                        wheel += 1;
+                    }
+                    if hue == palette::H_BLACK {
+                        band += 1;
+                    }
+                }
+            }
+            assert!(glass > 0, "{rows} rows: no windscreen");
+            assert!(lamp > 0, "{rows} rows: no brake lights");
+            assert!(wheel > 0, "{rows} rows: no wheels");
+            assert!(band > 0, "{rows} rows: no chequer band");
+        }
+    }
+
+    /// The windows take the sky's colour, whatever the sky is doing.
+    #[test]
+    fn the_windows_reflect_the_sky() {
+        for hue in [palette::H_BLUE, palette::H_ORANGE, palette::H_GREEN] {
+            let mut found = false;
+            for r in 0..16 {
+                let v = fixed::div(fixed::from_int(r) + fixed::HALF, fixed::from_int(16));
+                let got = paint_car(Body::Saloon, false, fixed::HALF, v, palette::H_RED, 0, (hue, 5));
+                if let Some((_, h, _)) = got {
+                    if h == hue {
+                        found = true;
+                    }
+                    // ...and the rest of it is still the car's own colour.
+                    assert!(
+                        h == hue || h == palette::H_RED || h == palette::H_WHITE || h == palette::H_BLACK,
+                        "a car painted in {hue} has a {h} panel"
+                    );
+                }
+            }
+            assert!(found, "no window took the sky's {hue}");
         }
     }
 

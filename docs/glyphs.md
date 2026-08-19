@@ -149,7 +149,7 @@ the day there is a font file to match against. See the backlog.
 
 ## 5. Sprites are ASCII art in the source
 
-Billboards — lamp posts, hydrants, cars, coins — are written as eight rows
+Billboards — lamp posts, hydrants, coins — are written as eight rows
 of eight characters, in `sprite.rs`, and each character names a catalogue
 glyph. That is not laziness. The whole project is about what a shape looks
 like when it is made of characters, and a sprite editor that is not itself
@@ -168,3 +168,39 @@ const MAILBOX_ART: [&str; 8] = [
     "  ====  ",
 ];
 ```
+
+## 6. ...except the cars, which are a function
+
+Eight rows of eight characters is the right shape for a hydrant. It is the
+wrong shape for the thing you look at for the whole game.
+
+A cab drawn fourteen rows tall from an eight-row picture is an eight-row
+picture with fat pixels, and no amount of redrawing the eight rows fixes
+that: the resolution is in the art, and the art has eight rows. So a car is a
+**function of where you are on the card** — `sprite::paint_car`, evaluated at
+whatever size the car is actually drawn at, the same trick the font itself
+uses and for the same reason. Twenty rows of cab get twenty rows of detail.
+
+The shape is one expression: `body_half(v)` is how wide the body is at each
+height down the card, lerped from a narrow roof out to the shoulder and then
+tucked back in towards the sills, which is a rounded car rather than a
+rectangle. On top of that sit the bands — roof, glass, chequer, lamps,
+wheels — and a shade that darkens towards the bottom.
+
+**The glass takes the sky's hue, not the car's.** A windscreen is a dark
+mirror pointed upwards, so it is blue in the afternoon and gold at sunrise
+without anything having to be told what time it is: it reads
+`Atmos::sky_colour`, which is the current phase's own hue a step down its
+ramp. It is the one place in the renderer where two systems that know nothing
+about each other — the day cycle and the sprite pass — produce something
+neither was written for.
+
+### The bands have to survive coarse sampling
+
+The catch with a function is that it is sampled at the resolution the thing
+is drawn at, and a car six rows tall samples it at `v = 0.08, 0.25, 0.42,
+0.58, 0.75, 0.92` and nowhere else. A band narrower than the gap between two
+of those is a band that some cars simply do not have. The brake lights were
+0.80 to 0.91 and vanished on anything under eight rows, which is most of the
+traffic. There is a test that asks for every part of a car at every size a
+car gets drawn at.

@@ -303,6 +303,17 @@ impl Atmos {
         }
     }
 
+    /// The colour of the sky, for things that reflect it.
+    ///
+    /// The phase's hue at its horizon brightness, dropped a step: a window is
+    /// a dark mirror, not a hole in the roof.  Glass that takes this is glass
+    /// that is blue in the afternoon and gold at sunrise without anything
+    /// having to be told what time it is.
+    pub fn sky_colour(&self) -> (u8, u8) {
+        let p = DAY[self.phase().0];
+        (p.hue, p.bottom.saturating_sub(1).max(1))
+    }
+
     /// What to call the sky right now, for the status line.
     pub fn phase_name(&self) -> &'static str {
         DAY[self.phase().0].name
