@@ -127,7 +127,7 @@ fn chase(cam: &mut Camera, sim: &Sim, city: &City, rows: i32) {
     while boom > fixed::ratio(1, 4) {
         let x = sim.taxi.x - fixed::mul(dx, boom);
         let y = sim.taxi.y - fixed::mul(dy, boom);
-        if city.walkable(fixed::floor(x), fixed::floor(y)) {
+        if city.open(fixed::floor(x), fixed::floor(y)) {
             cam.x = x;
             cam.y = y;
             break;
@@ -203,7 +203,7 @@ USAGE: ascitty [options]
   -h, --help        this
 
 WALKING ITSELF
-  --tour            the camera walks the streets and looks around on its own.
+  --tour, --demo    the camera walks the streets and looks around on its own.
                     Touch any movement key and you take over.
   --anim            play the tour and exit; --frames says for how long
   --record FILE     write the tour to an asciinema .cast file and exit
@@ -260,7 +260,11 @@ fn parse_args() -> Result<Opts, String> {
             "--no-moon" => o.atmos.moon = false,
             "--copter" => o.view = View::Copter,
             "--drive" => o.view = View::Drive,
-            "--tour" => o.tour = true,
+            // Both words, because both are in use: the Makefile target and
+            // the Plus/4 build call it a demo, this flag called it a tour,
+            // and a user should not have to know which half of the project
+            // they are talking to.
+            "--tour" | "--demo" => o.tour = true,
             "--anim" => {
                 o.tour = true;
                 o.anim = true;

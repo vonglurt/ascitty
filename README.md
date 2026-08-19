@@ -274,6 +274,7 @@ Everything is indexed at **[docs/index.md](docs/index.md)**.
 
 | | |
 |---|---|
+| [lab-report.md](docs/lab-report.md) | the design and measurement record, in IEEE form |
 | [architecture.md](docs/architecture.md) | how the whole thing fits together |
 | [camera.md](docs/camera.md) | the three modes, the autopilot, recording |
 | [renderer.md](docs/renderer.md) | the height-field walk, in detail |

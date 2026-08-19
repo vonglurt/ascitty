@@ -109,7 +109,24 @@ sphere, lamp glow as a shaded ball. Everything curved in the city is
 currently a billboard, which is right for cost and slightly wrong for the
 moon at the horizon.
 
-### Distribution ray tracing — **dropped**
+### Naming
+
+### A `no_std` core — **later**
+`ascitty-core` is written so its *arithmetic* transcribes to the 6502, not so
+that the crate compiles for one: frames and per-frame row tables are `Vec`.
+Caller-provided buffers and `no_std` would be a step towards a shared source
+rather than a transcription, and would make the claim in
+[`lab-report.md`](lab-report.md) §VIII-C unnecessary.
+
+### Audit the remaining identifiers — **soon**
+Section IV of the lab report found three identifiers asserting something
+other than what they measure, two of which preceded defects. The audit was
+not exhaustive. Candidates not yet examined: `Stamp` (a coinage, not from the
+specification), `Prop` (theatre jargon where the domain term is *street
+furniture*), and the split between `Tour` on the host and `cast_demo` on the
+target for one concept.
+
+## Distribution ray tracing — **dropped**
 Anti-aliasing, soft shadows, depth of field, glossy reflection and motion
 blur from one mechanism: many jittered samples per pixel. Its slogan is that
 it turns aliasing into *noise*.
@@ -294,6 +311,23 @@ depth cue would have to change from "drop the luminance" to a hand-picked
 ramp per hue, which is the interesting part.
 
 ---
+
+## Naming
+
+### A `no_std` core — **later**
+`ascitty-core` is written so its *arithmetic* transcribes to the 6502, not so
+that the crate compiles for one: frames and per-frame row tables are `Vec`.
+Caller-provided buffers and `no_std` would be a step towards a shared source
+rather than a transcription, and would make the claim in
+[`lab-report.md`](lab-report.md) §VIII-C unnecessary.
+
+### Audit the remaining identifiers — **soon**
+Section IV of the lab report found three identifiers asserting something
+other than what they measure, two of which preceded defects. The audit was
+not exhaustive. Candidates not yet examined: `Stamp` (a coinage, not from the
+specification), `Prop` (theatre jargon where the domain term is *street
+furniture*), and the split between `Tour` on the host and `cast_demo` on the
+target for one concept.
 
 ## Distribution
 

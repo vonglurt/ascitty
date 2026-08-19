@@ -538,13 +538,18 @@ impl City {
         }
     }
 
-    /// Whether a *vehicle* can be here - anything that is not built on.
+    /// Whether a cell is unbuilt: nothing stands here.
     ///
-    /// Not the same question as whether a person can be here; that is
-    /// [`crate::walk::WalkMap`], and conflating the two is what put
-    /// pedestrians in the middle of the avenue.
+    /// Named for what it measures rather than for who might use it.  This
+    /// was `walkable` for most of the project's life, which was wrong in a
+    /// way that cost real time: it is the test a *vehicle* wants, and a
+    /// pedestrian wants [`crate::walk::WalkMap`] instead.  Reading the name
+    /// as a statement about people is what put pedestrians in the middle of
+    /// the avenue and sent the camera wandering through parks.
+    ///
+    /// The predicate is unchanged; only the name now says what it is.
     #[inline(always)]
-    pub fn walkable(&self, x: i32, y: i32) -> bool {
+    pub fn open(&self, x: i32, y: i32) -> bool {
         self.elev.open(x, y)
     }
 
@@ -1208,7 +1213,7 @@ mod tests {
         let mut crossings = 0;
         for y in 0..SIZE as i32 {
             for x in 0..SIZE as i32 {
-                if c.plan.is_junction(x, y) && c.walkable(x, y) {
+                if c.plan.is_junction(x, y) && c.open(x, y) {
                     crossings += 1;
                 }
             }

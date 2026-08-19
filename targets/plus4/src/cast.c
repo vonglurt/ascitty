@@ -102,7 +102,7 @@ static int dirx, diry, plx, ply;
 static const unsigned char *rowh[CITY_SIZE];
 static const unsigned char *rowc[CITY_SIZE];
 static const unsigned char *rowt[CITY_SIZE];
-static const unsigned char *rows_[CITY_SIZE];
+static const unsigned char *rowshade[CITY_SIZE];
 
 void cast_init(void)
 {
@@ -113,7 +113,7 @@ void cast_init(void)
         rowh[i] = city_h + base;
         rowc[i] = city_c + base;
         rowt[i] = city_t + base;
-        rows_[i] = city_s + base;
+        rowshade[i] = city_s + base;
     }
 
     /* N.L for each wall.  For an axis-aligned normal that is just the
@@ -575,7 +575,7 @@ static void column(unsigned char sx)
         ** comparison per row.  The sweep that produced these numbers ran on
         ** a laptop; see docs/raytracing.md. */
         {
-            unsigned char sh = rows_[my][mx];
+            unsigned char sh = rowshade[my][mx];
             if (sh == 0) {
                 /* Nothing upstream.  Not "shadowed up to the ground": the
                 ** test below darkens every row past `shade_y`, and the base

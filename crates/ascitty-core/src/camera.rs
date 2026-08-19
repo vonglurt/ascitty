@@ -71,7 +71,7 @@ impl Camera {
                         continue; // only the ring, not the disc
                     }
                     let (px, py) = (x + dx, y + dy);
-                    if !city.walkable(px, py) {
+                    if !city.open(px, py) {
                         continue;
                     }
                     if city.at(px, py).kind == crate::world::Kind::Road {
@@ -82,7 +82,7 @@ impl Camera {
                 }
             }
         }
-        if !city.walkable(best.0, best.1) {
+        if !city.open(best.0, best.1) {
             if let Some(f) = fallback {
                 best = f;
             }
@@ -160,7 +160,7 @@ impl Camera {
     /// along its *heading* while the camera is looking somewhere else - you
     /// do not stop walking to look up at a building.
     pub fn slide(&mut self, city: &City, mx: Fx, my: Fx) {
-        self.slide_where(mx, my, |x, y| city.walkable(x, y));
+        self.slide_where(mx, my, |x, y| city.open(x, y));
     }
 
     /// Move by a world-space delta, but only onto ground `allowed` accepts.
@@ -261,7 +261,7 @@ mod tests {
         for (x, y) in [(0, 0), (48, 48), (95, 95), (30, 61)] {
             let c = Camera::spawn(&city, x, y);
             assert!(
-                city.walkable(fixed::floor(c.x), fixed::floor(c.y)),
+                city.open(fixed::floor(c.x), fixed::floor(c.y)),
                 "spawned inside a building near {x},{y}"
             );
         }
@@ -275,7 +275,7 @@ mod tests {
             c.walk(&city, fixed::ratio(1, 8), 0);
             c.turn(1237);
             assert!(
-                city.walkable(fixed::floor(c.x), fixed::floor(c.y)),
+                city.open(fixed::floor(c.x), fixed::floor(c.y)),
                 "walked into a building at {},{}",
                 fixed::to_f32(c.x),
                 fixed::to_f32(c.y)

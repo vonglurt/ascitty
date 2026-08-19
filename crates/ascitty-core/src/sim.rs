@@ -380,7 +380,7 @@ impl Sim {
                         continue;
                     }
                     let (px, py) = (x + dx, y + dy);
-                    if city.at(px, py).kind != Kind::Road || !city.walkable(px, py) {
+                    if city.at(px, py).kind != Kind::Road || !city.open(px, py) {
                         continue;
                     }
                     // Not in a junction and not on an alley: a cab waits at a
@@ -818,7 +818,7 @@ mod tests {
     #[test]
     fn the_taxi_starts_on_a_road() {
         let (city, sim) = shift();
-        assert!(city.walkable(fixed::floor(sim.taxi.x), fixed::floor(sim.taxi.y)));
+        assert!(city.open(fixed::floor(sim.taxi.x), fixed::floor(sim.taxi.y)));
     }
 
     #[test]
@@ -1016,7 +1016,7 @@ mod tests {
                 drive::HZ,
                 &mut ev,
             );
-            assert!(city.walkable(fixed::floor(sim.taxi.x), fixed::floor(sim.taxi.y)));
+            assert!(city.open(fixed::floor(sim.taxi.x), fixed::floor(sim.taxi.y)));
         }
         assert!(!sim.over);
     }

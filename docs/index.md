@@ -18,6 +18,12 @@ nothing important lives only in a commit message.
 
 ## The documents
 
+### [`lab-report.md`](lab-report.md)
+The design and measurement record, in IEEE form: origin, method of
+construction, the naming analysis, architecture, results, the four defects
+that survived visual inspection, and the prompt corpus the system was
+specified from. Start here if you want to know *why* rather than *how*.
+
 ### [`architecture.md`](architecture.md)
 How the whole thing is put together: the one renderer, the two targets, the
 bake step that joins them, and the reasoning behind the shape. Start at §1

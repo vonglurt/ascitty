@@ -154,7 +154,7 @@ impl Tour {
                 for dy in -r..=r {
                     for dx in -r..=r {
                         let (x, y) = (fixed::floor(cam.x) + dx, fixed::floor(cam.y) + dy);
-                        if on_street(city, x, y) && city.walkable(x, y) {
+                        if on_street(city, x, y) && city.open(x, y) {
                             cam.x = fixed::from_int(x) + fixed::HALF;
                             cam.y = fixed::from_int(y) + fixed::HALF;
                             break 'out;
@@ -250,7 +250,7 @@ impl Tour {
         self.cam.slide_where(
             fixed::mul(fx, d) + fixed::mul(-fy, side),
             fixed::mul(fy, d) + fixed::mul(fx, side),
-            |x, y| on_street(city, x, y) && city.walkable(x, y),
+            |x, y| on_street(city, x, y) && city.open(x, y),
         );
         self.cam.stand(city);
 
@@ -454,7 +454,7 @@ mod tests {
             for i in 0..9000 {
                 t.step(&city, HZ);
                 assert!(
-                    city.walkable(fixed::floor(t.cam.x), fixed::floor(t.cam.y)),
+                    city.open(fixed::floor(t.cam.x), fixed::floor(t.cam.y)),
                     "seed {seed} walked into a building at tick {i}: {},{}",
                     fixed::to_f32(t.cam.x),
                     fixed::to_f32(t.cam.y)

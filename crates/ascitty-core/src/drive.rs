@@ -248,8 +248,8 @@ impl Car {
         let probe = |x: Fx, y: Fx| -> bool {
             // Probe at the nose as well as the centre, so a car does not
             // bury half its length in a wall before anything notices.
-            city.walkable(fixed::floor(x), fixed::floor(y))
-                && city.walkable(
+            city.open(fixed::floor(x), fixed::floor(y))
+                && city.open(
                     fixed::floor(x + fixed::mul(fx, nose)),
                     fixed::floor(y + fixed::mul(fy, nose)),
                 )
@@ -368,7 +368,7 @@ pub fn collide(a: &mut Car, b: &mut Car, city: &City) -> Option<Fx> {
 /// Move a car by a delta if that leaves it somewhere it could have driven.
 fn nudge(c: &mut Car, dx: Fx, dy: Fx, city: &City) -> bool {
     let (nx, ny) = (c.x + dx, c.y + dy);
-    if city.walkable(fixed::floor(nx), fixed::floor(ny)) {
+    if city.open(fixed::floor(nx), fixed::floor(ny)) {
         c.x = nx;
         c.y = ny;
         true
@@ -419,7 +419,7 @@ mod tests {
             .expect("the plan laid no avenue at all");
         let x = fixed::from_int(col) + fixed::HALF;
         let y = fixed::from_int(6) + fixed::HALF;
-        assert!(city.walkable(col, 6), "the test avenue is not clear");
+        assert!(city.open(col, 6), "the test avenue is not clear");
         (city, Car::new(CarKind::Taxi, x, y, trig::QUARTER, 7))
     }
 
@@ -526,7 +526,7 @@ mod tests {
             }
             car.step(&Controls { throttle: ONE, steer, handbrake: i % 200 < 20 }, &city, HZ);
             assert!(
-                city.walkable(fixed::floor(car.x), fixed::floor(car.y)),
+                city.open(fixed::floor(car.x), fixed::floor(car.y)),
                 "drove into a building at tick {i}: {},{}",
                 fixed::to_f32(car.x),
                 fixed::to_f32(car.y)
