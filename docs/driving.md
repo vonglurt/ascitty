@@ -433,6 +433,60 @@ the tolerance to five cells - wider than a deliberate lane change - took it
 to five fares, and shortening the dodge's commitment from eight tenths of a
 second to four took the wandering out of the rest.
 
+## 5c. The demonstration uses the whole car
+
+The autopilot is what most people see of this program, and for a long time it
+drove like a milk float. It picked one speed - the fastest it could corner at
+- and held it everywhere, which meant the engine's wind-up never started at
+all: the throttle steps up only for a driver who *keeps* it down, and a
+driver easing in to hold a constant speed never does. The top half of the
+car existed for the player alone.
+
+So the target speed is now the road rather than a constant. The cab counts
+how far its own route runs straight ahead of it, and asks for twice the
+cornering pace where a block of straight is in front and the cornering pace
+where a junction is. The braking falls out of the same count: it shrinks as
+the corner comes up, so the car slows over the cells before the turn instead
+of at it. Six cells of that count are spent before any of the extra speed is
+- that is the braking distance, and without it the extra speed is just a way
+of arriving at the junction sideways.
+
+Three things had to change with it, and each of them is the same observation:
+a distance tuned at one speed is a *time* that shrinks as the speed rises.
+
+**The look-ahead for traffic scales with speed.** Six cells is a fifth of a
+second's warning at three times the cornering pace.
+
+**The lane lock softens with speed.** The steering that holds a lane at the
+cornering pace is a swerve at twice it - the car turns the same radius per
+cell of road either way, but it covers twice the cells before the correction
+shows up in the measurement, and a controller that cannot see what it has
+already done overshoots.
+
+**The cab looks along its own nose, not along its route.** A new check reads
+the cells straight ahead of the bumper and caps the speed at two cells a
+second for every clear cell it finds. The route is always on the road, so a
+route-shaped look-ahead cannot see the times the car is not on its route:
+understeering out of a junction, halfway through a dodge, sliding. The line
+is deliberately short - past the point where the answer exceeds the speed
+already wanted there is nothing to learn, and a seven-cell line swings a
+whole cell sideways for four degrees of yaw, so a long one reports the kerb
+it is passing rather than the wall it is heading for.
+
+Measured over four five-minute runs, driving ticks spent above twice the
+cornering pace: 1, 0, 1 and 1 per cent before, 10, 4, 6 and 6 after. Mean
+speed 2.6, 2.4, 2.5 and 2.5 cells a second before, 3.2, 2.7, 2.9 and 2.9
+after. Ticks on the correct side of the road 76, 75, 84 and 87 before, 77,
+71, 69 and 86 after, and cars and walls hit 74, 26, 68 and 43 before against
+77, 60, 33 and 43 after - so it drives a quarter faster for about the same
+number of bumps, which is what the three changes above bought.
+
+Three times the cornering pace was tried, and four. This is a grid with
+thirteen cells between blocks: the straights are short, and the extra speed
+goes into the junction rather than into crossing the city. The right-hand
+lane figure fell to 74, 72, 51 and 47 per cent. Twice is what the grid will
+take.
+
 ## 6. Where a fare stands
 
 Both ends of a job are on the **pedestrian** network — pavement, plaza or

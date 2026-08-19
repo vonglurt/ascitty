@@ -164,6 +164,56 @@ const RELEASE: i32 = 6_000;
 /// the same time.
 const CRUISE_MAX: Fx = fixed::ratio(3, 1);
 
+/// What it will do on a long straight, in cells a second.
+///
+/// Twice the cornering pace - about 130 mph - which is enough to wind the
+/// throttle up through its steps and to make the difference between a
+/// street and a junction something you can see from the passenger seat.  A
+/// demonstration that never uses the car's whole range is not a
+/// demonstration of the car.
+///
+/// It is only ever asked for where the route runs straight, and the same
+/// look-ahead brings it back down before the corner rather than at it - see
+/// [`Cabbie::open_road`].
+///
+/// Three times the cornering pace was tried, and four, and this is a grid:
+/// the blocks are thirteen cells apart, so the straights are short and the
+/// extra speed is spent arriving at the junction rather than crossing the
+/// city.  Ticks on the correct side of the road over four five-minute runs:
+/// 74, 72, 51 and 47 per cent at three times, against 77, 71, 69 and 86 at
+/// this figure - and 76, 75, 84 and 87 for the cab that never went above
+/// the cornering pace at all.  Twice is what the grid will take.
+const OPEN_ROAD: Fx = fixed::ratio(6, 1);
+
+/// How far ahead a straight has to run for the cab to use all of it, in
+/// cells.
+const STRAIGHT_FOR: i32 = 16;
+
+/// How much straight road is needed before any of it is spent going faster
+/// than the cornering pace, in cells.
+///
+/// This is the braking distance, and it is what makes the extra speed usable
+/// rather than a way of arriving at the junction sideways.
+const BRAKING_ROOM: i32 = 6;
+
+/// How much speed a cell of clear road ahead is worth, in cells a second per
+/// cell.
+///
+/// Two, so the cab needs three and a half cells of clear road in front of
+/// its bumper to be doing [`OPEN_ROAD`] and one to be walking pace.  That
+/// also sets how far it has to look - past the point where the answer would
+/// exceed the speed it wanted anyway there is nothing to learn - and a short
+/// line is the point: this is aimed along the *car*, and a line seven cells
+/// long swings a whole cell sideways for four degrees of yaw, so a long one
+/// reports the kerb it is passing rather than the wall it is heading for.
+const WALL_GAIN: Fx = fixed::ratio(2, 1);
+
+/// How far apart the samples along that line are, in cells.
+///
+/// Half a cell: a building corner clipped diagonally is about that wide, and
+/// stepping a whole cell at a time steps straight over it.
+const WALL_STEP: Fx = fixed::HALF;
+
 /// Forward speed below which reverse is what the throttle means.
 ///
 /// Mirrors the threshold in [`crate::drive`], where a negative throttle
@@ -441,15 +491,28 @@ impl Cabbie {
         };
         let _ = range;
 
+        // How much straight road there is to use, and so how fast this
+        // stretch is worth driving.
+        let open = self.open_road();
         // Something in the way, and which side it is being passed on.
-        let (lean, cap) = self.avoid(city, sim, hz);
+        let (lean, cap) = self.avoid(city, sim, hz, open);
 
         // One speed target, from whichever of the three reasons to slow down
         // is the more pressing: the corner being taken, the circle being
         // arrived at, and the car in front.  Expressing them as a speed
         // rather than as competing throttle rules is what stops them from
         // cancelling each other out.
-        let want = corner_speed(err).min(approach_speed(to_goal)).min(cap);
+        // And a speed that leaves room to stop before whatever the car is
+        // actually pointed at, which is what keeps it out of the buildings
+        // when it is not where its route thinks it is.
+        let look = fixed::div(open, WALL_GAIN);
+        let room = Self::room_ahead(city, taxi, look);
+        let wall = CREEP + fixed::mul(room, WALL_GAIN);
+
+        let want = corner_speed(err, open)
+            .min(approach_speed(to_goal, open))
+            .min(cap)
+            .min(wall);
         Controls {
             throttle: pace(vf, taxi.speed(), want),
             steer: fixed::clamp(steer + lean, -ONE, ONE),
@@ -558,7 +621,15 @@ impl Cabbie {
             return self.steer_for(psi, CRUISE_MAX);
         }
         self.committed = 0;
-        let angle = fixed::ratio(psi, FULL_LOCK);
+        // Softer with speed.  The lock that holds a lane at the cornering
+        // pace is a swerve at three times it: the car turns the same radius
+        // per cell of road either way, but it covers three times as many
+        // cells before the correction it just made has shown up in the
+        // measurement, and a controller that cannot see what it has already
+        // done overshoots.  Dividing by the speed ratio makes the cab lean
+        // on the lane rather than snatch at it.
+        let haste = fixed::div(speed, CRUISE_MAX).max(ONE);
+        let angle = fixed::div(fixed::ratio(psi, FULL_LOCK), haste);
         let pull = fixed::clamp(
             fixed::div(fixed::mul(CROSS, right_of_lane), speed + ONE),
             -CROSS_MAX,
@@ -736,6 +807,68 @@ impl Cabbie {
         (b.0 - a.0, b.1 - a.1)
     }
 
+    /// How fast the road ahead allows, from how far it runs straight.
+    ///
+    /// The cab used to pick one speed and hold it everywhere, which is a
+    /// tidy way to drive and wastes the whole top half of the car: the
+    /// throttle's wind-up only happens to somebody who *holds* the throttle,
+    /// and a driver pacing himself at a constant three never does.
+    ///
+    /// So the target is the road: a block of straight ahead is worth
+    /// [`OPEN_ROAD`], a corner is worth [`CRUISE_MAX`], and everything
+    /// between is between.  The braking falls out of it - the count shrinks
+    /// as the corner approaches, so the target comes down over the cells
+    /// before it rather than at it, which is what makes it possible to use
+    /// the speed at all.
+    ///
+    /// "Straight" is measured with the same coarse heading the lane
+    /// controller uses, over `BASELINE` cells, because a route across a wide
+    /// road staircases and every other cell of it is a turn.
+    fn open_road(&self) -> Fx {
+        if self.at + 1 >= self.route.len() {
+            return CRUISE_MAX;
+        }
+        let (hx, hy) = self.heading_at(self.at);
+        let (hx, hy) = (hx.signum(), hy.signum());
+        let mut clear = 0;
+        while clear < STRAIGHT_FOR && self.at + clear as usize + 1 < self.route.len() {
+            let (nx, ny) = self.heading_at(self.at + clear as usize);
+            if (nx.signum(), ny.signum()) != (hx, hy) {
+                break;
+            }
+            clear += 1;
+        }
+        let room = fixed::from_int((clear - BRAKING_ROOM).max(0));
+        let t = fixed::div(room, fixed::from_int(STRAIGHT_FOR - BRAKING_ROOM));
+        fixed::lerp(CRUISE_MAX, OPEN_ROAD, t.clamp(0, ONE))
+    }
+
+    /// How far it is to the first thing the cab cannot drive on.
+    ///
+    /// Measured from the bumper, straight along the way the car is pointing,
+    /// which is deliberately not the way the *route* goes: the route is
+    /// always on the road, and the whole point of this is to catch the times
+    /// when the car is not on the route - understeering out of a junction,
+    /// halfway through a dodge, sliding.  The route's own corners are dealt
+    /// with in [`Cabbie::open_road`], well before this notices them.
+    ///
+    /// Returns the look-ahead distance itself when the line is clear.
+    fn room_ahead(city: &City, taxi: &Car, look: Fx) -> Fx {
+        let (fx, fy) = (trig::cos(taxi.yaw), trig::sin(taxi.yaw));
+        let nose = taxi.kind.half_len();
+        let mut d = 0;
+        while d < look {
+            let ahead = nose + d;
+            let x = fixed::floor(taxi.x + fixed::mul(fx, ahead));
+            let y = fixed::floor(taxi.y + fixed::mul(fy, ahead));
+            if !city.drivable(x, y) {
+                return d;
+            }
+            d += WALL_STEP;
+        }
+        look
+    }
+
     /// Go round the thing in front rather than into it.
     ///
     /// Returns the lock to add to whatever the lane wants, and the fastest
@@ -755,10 +888,20 @@ impl Cabbie {
     /// left is passed on the right.  Where it is dead ahead, the tie is
     /// broken towards the middle of the road rather than towards the kerb,
     /// because the kerb is where the lamp posts are.
-    fn avoid(&mut self, city: &City, sim: &Sim, hz: i32) -> (Fx, Fx) {
+    fn avoid(&mut self, city: &City, sim: &Sim, hz: i32, open: Fx) -> (Fx, Fx) {
         let taxi = &sim.taxi;
         let (fx, fy) = (trig::cos(taxi.yaw), trig::sin(taxi.yaw));
         let (rx, ry) = (-fy, fx);
+
+        // How far ahead to look, and how close is too close, both in cells
+        // and both scaled by how fast the cab is going.  The distances were
+        // tuned when it drove everywhere at the cornering pace, where a
+        // fixed number of cells is a fixed number of *seconds*; at three
+        // times that speed the same four and a half cells is a sixth of a
+        // second's warning, which is no warning at all.
+        let haste = fixed::div(taxi.speed(), CRUISE_MAX).max(ONE);
+        let look = fixed::mul(DODGE_LOOK, haste);
+        let close = fixed::mul(DODGE_CLOSE, haste);
 
         // The nearest thing in the corridor ahead.
         // (how far up, how far right, how fast it is going)
@@ -766,7 +909,7 @@ impl Cabbie {
         for c in &sim.traffic {
             let (dx, dy) = (c.x - taxi.x, c.y - taxi.y);
             let lon = fixed::mul(dx, fx) + fixed::mul(dy, fy);
-            if lon <= 0 || lon > DODGE_LOOK {
+            if lon <= 0 || lon > look {
                 continue;
             }
             let lat = fixed::mul(dx, rx) + fixed::mul(dy, ry);
@@ -798,7 +941,7 @@ impl Cabbie {
             if self.dodge_for == 0 {
                 self.dodge = 0;
             }
-            return (0, CRUISE_MAX);
+            return (0, open);
         };
 
         // On a two-cell street the only room to pass is the oncoming lane,
@@ -818,10 +961,10 @@ impl Cabbie {
             self.dodge = 0;
             self.dodge_for = 0;
             let (gap, _, _) = near.unwrap();
-            let cap = if gap < DODGE_CLOSE {
-                fixed::div(fixed::mul(CRUISE_MAX, gap.max(0)), DODGE_CLOSE)
+            let cap = if gap < close {
+                fixed::div(fixed::mul(open, gap.max(0)), close)
             } else {
-                CRUISE_MAX
+                open
             };
             return (0, cap);
         }
@@ -858,18 +1001,14 @@ impl Cabbie {
 
         // Harder the closer it is, and nothing at all once it is behind the
         // bumper - by then the lane controller has it.
-        let close = fixed::clamp(
-            fixed::div(DODGE_LOOK - gap.max(0), DODGE_LOOK),
-            0,
-            ONE,
-        );
-        let lean = fixed::mul(fixed::mul(fixed::from_int(self.dodge), DODGE_LOCK), close);
+        let urgency = fixed::clamp(fixed::div(look - gap.max(0), look), 0, ONE);
+        let lean = fixed::mul(fixed::mul(fixed::from_int(self.dodge), DODGE_LOCK), urgency);
         // And lift off if it is close enough that steering alone will not do
         // it, which is what stops the cab from rear-ending a queue.
-        let cap = if gap < DODGE_CLOSE {
-            fixed::div(fixed::mul(CRUISE_MAX, gap.max(0)), DODGE_CLOSE)
+        let cap = if gap < close {
+            fixed::div(fixed::mul(open, gap.max(0)), close)
         } else {
-            CRUISE_MAX
+            open
         };
         (lean, cap)
     }
@@ -952,14 +1091,14 @@ fn full_lock_at(range: Fx) -> i32 {
 /// the wrong way can no longer turn and stays pointing the wrong way.  The
 /// floor is a crawl - and it is the speed at which the car turns its very
 /// hardest, which is the right place for the sharpest corners to be taken.
-fn corner_speed(err: i32) -> Fx {
+fn corner_speed(err: i32, open: Fx) -> Fx {
     let e = err.abs();
     if e > HARD {
         fixed::ratio(3, 2)
     } else if e > LIFT {
         CRUISE_MAX / 2
     } else {
-        CRUISE_MAX
+        open
     }
 }
 
@@ -969,9 +1108,9 @@ fn corner_speed(err: i32) -> Fx {
 /// rather than a braking distance, because braking distance depends on the
 /// speed the car happens to be doing and this does not: whatever it arrives
 /// at the top of the ramp doing, it leaves the bottom at a crawl.
-fn approach_speed(to_goal: Fx) -> Fx {
+fn approach_speed(to_goal: Fx, open: Fx) -> Fx {
     let t = fixed::clamp(fixed::div(to_goal - CRAWL, APPROACH - CRAWL), 0, ONE);
-    fixed::lerp(CREEP, CRUISE_MAX, t)
+    fixed::lerp(CREEP, open, t)
 }
 
 /// Throttle to hold a wanted speed.
@@ -1066,6 +1205,24 @@ mod tests {
         /// on the wrong half.
         right: u32,
         wrong: u32,
+        /// The fastest it went, in cells a second.
+        peak: Fx,
+        /// Speed summed over driving ticks, and how many there were, for a
+        /// mean.
+        sum: i64,
+        driving: u32,
+        /// Driving ticks spent above twice the cornering pace.
+        fast: u32,
+        /// The highest step of the throttle's wind-up it reached.
+        stepped: u32,
+        /// Ticks spent on a coin's boost.
+        boosted: u32,
+        /// Coins collected.
+        coins: u32,
+        /// Cars and walls hit.
+        bumps: u32,
+        /// Ticks spent escaping.
+        escaping: u32,
     }
 
     fn run(seed: u32, ticks: u32) -> Run {
@@ -1083,8 +1240,28 @@ mod tests {
                 match e {
                     Event::PickedUp => r.picked += 1,
                     Event::DroppedOff => r.dropped += 1,
+                    Event::Coin => r.coins += 1,
+                    Event::Rammed | Event::Crunched => r.bumps += 1,
                     _ => {}
                 }
+            }
+            // Only while it is driving: the escape manoeuvre holds the
+            // throttle wide open against a wall, which winds the engine all
+            // the way up and says nothing at all about how the cab drives.
+            if cab.backing > 0 {
+                r.escaping += 1;
+            } else {
+                let speed = dist(0, 0, sim.taxi.vx, sim.taxi.vy);
+                r.peak = r.peak.max(speed);
+                r.stepped = r.stepped.max(sim.taxi.stepped);
+                r.sum += speed as i64;
+                r.driving += 1;
+                if speed > CRUISE_MAX * 2 {
+                    r.fast += 1;
+                }
+            }
+            if sim.taxi.boost > 0 {
+                r.boosted += 1;
             }
             let Some(goal) = sim.target() else { continue };
             let near = dist(sim.taxi.x, sim.taxi.y, goal.0, goal.1) < APPROACH;
@@ -1150,6 +1327,53 @@ mod tests {
                 r.dropped
             );
         }
+    }
+
+    /// The demonstration drives the whole car.
+    ///
+    /// The autopilot is what most people will ever see of this program, and
+    /// for a long time it drove like a milk float: it held one speed
+    /// everywhere, so the engine's wind-up - which only happens to a driver
+    /// who *keeps* the throttle down - never started, and the top half of
+    /// the speed range existed only for somebody who took the wheel.
+    ///
+    /// So this is a test about the demonstration rather than about the
+    /// driving: that the cab spends real time above twice its cornering
+    /// pace, that its average is not the one speed it used to hold, and that
+    /// it picks up coins and spends the boost.  Measured over five minutes:
+    /// 10, 4, 6 and 6 per cent of driving ticks above twice the cornering
+    /// pace, against 1, 0, 1 and 1 before; means of 3.2, 2.7, 2.9 and 2.9
+    /// cells a second against 2.6, 2.4, 2.5 and 2.5; and 5,500 to 7,300 of
+    /// the 9,000 ticks on a coin's boost.
+    ///
+    /// Peak speed is deliberately not what is asserted on, and the escape
+    /// manoeuvre is why: it holds the throttle wide open against a wall, so
+    /// a badly stuck cab peaks higher than a well driven one.  Every figure
+    /// here is measured with the escape excluded.
+    #[test]
+    fn the_demonstration_drives_the_whole_car() {
+        let mut worst = (u32::MAX, Fx::MAX, u32::MAX);
+        for seed in [1u32, 7, 99, 4242] {
+            let r = run(seed, 9_000);
+            let mean = (r.sum / r.driving.max(1) as i64) as Fx;
+            println!(
+                "seed {seed}: mean {}.{:02} fast {}% peak {}.{:02} step {} boost {} coins {} bumps {} escaping {}",
+                mean / ONE,
+                (mean % ONE) * 100 / ONE,
+                r.fast * 100 / r.driving.max(1),
+                r.peak / ONE,
+                (r.peak % ONE) * 100 / ONE,
+                r.stepped,
+                r.boosted,
+                r.coins,
+                r.bumps,
+                r.escaping
+            );
+            worst = (worst.0.min(r.fast * 100 / r.driving.max(1)), worst.1.min(mean), worst.2.min(r.boosted));
+        }
+        assert!(worst.0 >= 2, "only {}% of driving ticks above twice the cornering pace", worst.0);
+        assert!(worst.1 > CRUISE_MAX * 4 / 5, "mean speed only {}", worst.1 / ONE);
+        assert!(worst.2 > 0, "never used a coin's boost");
     }
 
     /// While it is going somewhere, the cab is on the road.
