@@ -263,6 +263,15 @@ go winds it off over an eighth, which is what makes holding a key feel like
 leaning on a pedal rather than like setting a bit. It also composes with the
 engine curve above: the throttle ramps, and then the engine ramps.
 
+### The keys
+
+`wasd` is the car — throttle, brake, and the wheel on `a` and `d`, with `q`
+and `e` on the wheel as well because that is where a walker's turn keys are
+and getting into the cab should not move your hand. The arrows are the view:
+left and right swing the camera round the cab and let go to centre it, up and
+down are a second throttle and brake, because the chase camera sets its own
+pitch and there is nothing up there to look at.
+
 ### Ask the terminal for releases
 
 The progressive keyboard protocol — kitty's, implemented by ghostty, WezTerm,

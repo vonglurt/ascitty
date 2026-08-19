@@ -133,6 +133,19 @@ what makes a held key a pedal rather than a bit, and it is the same mechanism
 walking, flying and driving — turning, strafing, tilting the head and the
 throttle all read a level.
 
+**`wasd` is the vehicle and the arrows are the view**, in every mode. What a
+vehicle is changes — the wheel in the cab, a step sideways on foot and in the
+air — and so does what a view is: behind the cab the arrows swing the camera
+round the car, which is the driver looking about rather than the car turning,
+while up and down stay on the pedals because the chase camera sets its own
+pitch every frame. On foot and in the helicopter, `q` and `e` already turn
+you, so left and right go to the other useful thing and step you sideways.
+
+The pan is applied to the heading the chase camera is *chasing* rather than
+to the camera itself, so the lag that already smooths a turn pans it round
+smoothly, brings it back to centre when the key comes up, and swings the boom
+with it: the camera orbits the cab rather than turning its back on it.
+
 Whether a key is *down* is the harder half. A terminal sends a byte when a
 key goes down, nothing when it comes up, and autorepeats the most recently
 pressed key only — so two keys at once is not something the byte stream can

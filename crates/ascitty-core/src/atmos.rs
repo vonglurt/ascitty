@@ -38,7 +38,13 @@ pub struct Atmos {
 impl Default for Atmos {
     fn default() -> Self {
         Atmos {
-            rain: 2,
+            // Dry.  Rain is still here and `--rain 1..8` still asks for it,
+            // but it is no longer what you get without asking: a character
+            // cell is a large pixel, so a raindrop is a large raindrop, and
+            // a frame with a couple of hundred of them leaning across it is
+            // reading the weather rather than the city.  The city is the
+            // thing being drawn.
+            rain: 0,
             moon: true,
             // The same bearing the shadow sweep uses, so that the
             // shadows and the thing casting them agree.

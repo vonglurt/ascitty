@@ -176,10 +176,19 @@ impl CarKind {
     /// depends entirely on where you are looking from - a saloon is two
     /// metres across the back and ten metres down the side - so a single
     /// "width" cannot draw one.  See [`crate::sprite::silhouette`].
+    ///
+    /// The cab is deliberately the squattest of the three.  The chase camera
+    /// sits behind it and looks over it, so its roof is the bottom of what
+    /// you can see of the road ahead: at seven fifths of a cell its roofline
+    /// was two rows above the middle of a forty-row frame and the horizon
+    /// was behind it.  Six fifths puts the roof two character rows lower -
+    /// measured, from row 21 to row 23 - which is two more rows of street.
+    /// It is the one dimension here chosen for the camera rather than for
+    /// the car.
     pub fn hull(self) -> (Fx, Fx, Fx) {
         match self {
             CarKind::Bus => (fixed::from_int(4), fixed::ratio(9, 5), fixed::ratio(12, 5)),
-            CarKind::Taxi => (fixed::from_int(2), fixed::ratio(6, 5), fixed::ratio(7, 5)),
+            CarKind::Taxi => (fixed::from_int(2), fixed::ratio(6, 5), fixed::ratio(6, 5)),
             CarKind::Traffic => (fixed::ratio(8, 5), fixed::from_int(1), fixed::ratio(13, 10)),
         }
     }

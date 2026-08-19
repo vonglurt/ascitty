@@ -24,6 +24,7 @@ use ascitty_core::glyph::Mode;
 use ascitty_core::raycast;
 use ascitty_core::sim::{Event, Sim};
 use ascitty_core::tour::Tour;
+use ascitty_core::trig::{self, Ang};
 
 use ascitty_core::world::{City, SIZE};
 use paint::Depth;
@@ -144,10 +145,14 @@ enum Ctl {
     LookUp,
     /// Look.
     LookDown,
+    /// Swing the camera round the car without steering it.
+    PanLeft,
+    /// Swing the camera round the car without steering it.
+    PanRight,
 }
 
 /// How many there are.
-const CTLS: usize = 10;
+const CTLS: usize = 12;
 
 /// Everything the driver is holding this frame.
 #[derive(Default)]
@@ -234,26 +239,35 @@ impl Hands {
 
 /// Which control a key works, in a given view.
 ///
-/// The arrows are the interesting entry.  Driving, they are the whole car -
-/// up and down are the pedals, left and right are the wheel - because that
-/// is what an arrow key is for on anything that moves, and because the chase
-/// camera sets its own pitch every frame, so there is nothing for up and
-/// down to look at.  On foot they go back to being a head.
+/// `wasd` is the vehicle in every mode - forward, back, and left and right
+/// meaning whatever left and right mean to the thing you are in: the wheel
+/// in the cab, a step sideways on foot and in the air.  It never changes,
+/// which is the point of it.
+///
+/// The arrows are the *view*, and what a view is differs by mode.  Behind
+/// the cab they swing the camera round the car - the driver looking about
+/// rather than the car turning - while up and down stay on the pedals,
+/// because the chase camera sets its own pitch every frame and there is
+/// nothing there for them to look at.  On foot and in the helicopter,
+/// looking about is what `q` and `e` already do, so left and right go to
+/// the other useful thing instead and move you sideways.
 fn control_for(k: Key, view: View) -> Option<Ctl> {
     let driving = view == View::Drive;
     Some(match k {
         Key::Char('w') => Ctl::Gas,
         Key::Char('s') => Ctl::Brake,
-        Key::Char('q') => Ctl::Left,
-        Key::Char('e') => Ctl::Right,
         Key::Char('a') => Ctl::StrafeLeft,
         Key::Char('d') => Ctl::StrafeRight,
+        Key::Char('q') => Ctl::Left,
+        Key::Char('e') => Ctl::Right,
         Key::Char(' ') => Ctl::Up,
         Key::Char('z') => Ctl::Down,
-        Key::Left => Ctl::Left,
-        Key::Right => Ctl::Right,
+        Key::Left if driving => Ctl::PanLeft,
+        Key::Right if driving => Ctl::PanRight,
         Key::Up if driving => Ctl::Gas,
         Key::Down if driving => Ctl::Brake,
+        Key::Left => Ctl::StrafeLeft,
+        Key::Right => Ctl::StrafeRight,
         Key::Up => Ctl::LookUp,
         Key::Down => Ctl::LookDown,
         _ => return None,
@@ -382,8 +396,21 @@ impl Head {
 /// out of a building, because a chase camera that clips through a wall shows
 /// you the inside of the wall at exactly the moment you most need to see the
 /// road.
-fn chase(cam: &mut Camera, sim: &Sim, city: &City, rows: i32, head: &mut Head, hz: i32) {
-    let target = sim.taxi.yaw;
+/// How far round the car the camera swings at full deflection.
+///
+/// A quarter turn, which is enough to look down the cross street you are
+/// arriving at and not so far that you lose which way the car is pointing.
+/// It is applied to the heading the camera is *chasing* rather than to the
+/// camera, so the existing lag pans it round smoothly and returns it to
+/// centre when the key comes up, and the boom swings with it - the camera
+/// orbits the cab rather than turning its back on it.
+const PAN: i32 = trig::QUARTER as i32;
+
+fn chase(cam: &mut Camera, sim: &Sim, city: &City, rows: i32, head: &mut Head, hz: i32, pan: Fx) {
+    let target = sim
+        .taxi
+        .yaw
+        .wrapping_add((((pan as i64) * (PAN as i64)) >> 16) as Ang);
     let delta = target.wrapping_sub(cam.yaw) as i16 as i32;
     cam.yaw = cam.yaw.wrapping_add((delta / 6) as u16);
 
@@ -484,7 +511,7 @@ USAGE: ascitty [options]
   --size WxH        override the terminal size
   --fps N           frame rate cap            (default: 30)
   --fov DEGREES     horizontal field of view  (default: 67)
-  --rain N          0 dry .. 8 torrential     (default: 2)
+  --rain N          0 dry .. 8 torrential     (default: 0, dry)
   --haze N          0 clear .. 8 soup         (default: 3)
   --stars N         0 .. 8                    (default: 4)
   --no-moon         moonless night
@@ -495,6 +522,7 @@ USAGE: ascitty [options]
   --shot [N]        render N frames, print the last as plain text, exit
   --png FILE        write that shot as a picture instead of printing it
   --bench           render 200 frames as fast as possible and report
+  -V, --version     which build this is
   -h, --help        this
 
 DRIVING ITSELF
@@ -513,25 +541,30 @@ CONTROLS
   Any of these takes the car off the autopilot.  You are the driver from
   the first key, and the clock does not wait for you to be ready.
 
+  `wasd` is the vehicle, wherever you are: forward, back, and left and
+  right meaning whatever they mean to the thing you are in.  The arrows are
+  the view.
+
   DRIVING
-  w or up          throttle        s or down        brake, then reverse
-  q, a or left     steer left      e, d or right    steer right
-  space            handbrake       t                get out and walk
+  w  or up        throttle           s  or down      brake, then reverse
+  a  or q         steer left         d  or e         steer right
+  left  right     swing the camera round the cab, and let go to centre it
+  space           handbrake          t               get out and walk
 
   Hold them.  The throttle winds on while it is down and the engine pulls
   hardest low down, so the top of the range takes about a second and three
-  quarters to reach - and `q` and `w` together is a left-hander taken under
+  quarters to reach - and `a` and `w` together is a left-hander taken under
   power, which is what holding two keys at once is for.
 
   ON FOOT AND IN THE AIR
-  w s        forward, back            q e or left right   turn
-  a d        strafe sideways          up down             look
-  space      up                       z                   down
-  t          get in the taxi          c                   walk / copter
+  w s             forward, back      q e             turn
+  a d, left right step sideways      up down         look
+  space  z        up, down           c               walk / copter
+  t               get in the taxi
 
   ANY TIME
   g          ascii / unicode glyphs   m          moon
-  1-9 0      rain                     h          haze
+  1-9 0      rain, 0 dry              h          haze
   \\          back to the autopilot    esc        quit
 
   Two keys at once wants a terminal that reports key releases - kitty,
@@ -552,6 +585,13 @@ fn parse_args() -> Result<Opts, String> {
         match a.as_str() {
             "-h" | "--help" => {
                 print!("{USAGE}");
+                std::process::exit(0);
+            }
+            // Which build this is, in the form the pictures in the README
+            // are captioned with, so a frame can be tied to the code that
+            // drew it.
+            "-V" | "--version" => {
+                println!("ascitty {} (seed {:#010x})", ascitty_core::VERSION, ascitty_core::DEFAULT_SEED);
                 std::process::exit(0);
             }
             "--seed" => o.seed = val()?.parse().map_err(|_| "bad --seed".to_string())?,
@@ -748,14 +788,14 @@ fn run(mut o: Opts) -> Result<(), String> {
             if o.tour && view == View::Drive {
                 let c = cabbie.drive(&city, &sim, hz);
                 sim.step(&city, &c, hz, &mut events);
-                chase(&mut cam, &sim, &city, h as i32, &mut head, hz);
+                chase(&mut cam, &sim, &city, h as i32, &mut head, hz, 0);
             } else if o.tour {
                 tour.step(&city, hz);
                 cam = tour.cam;
                 cam.pitch = cam.pitch.clamp(-(h as i32 / 3), h as i32 / 3);
             } else if view == View::Drive {
                 sim.step(&city, &Controls { throttle: ONE, ..Default::default() }, hz, &mut events);
-                chase(&mut cam, &sim, &city, h as i32, &mut head, hz);
+                chase(&mut cam, &sim, &city, h as i32, &mut head, hz, 0);
             }
             raycast::render_to(&city, &cam, &o.atmos, &mut f, &mut depth);
             let proj = raycast::projection(&city, &cam, &f);
@@ -807,7 +847,7 @@ fn run(mut o: Opts) -> Result<(), String> {
             if view == View::Drive {
                 let c = cabbie.drive(&city, &sim, hz);
                 sim.step(&city, &c, hz, &mut events);
-                chase(&mut cam, &sim, &city, h as i32, &mut head, hz);
+                chase(&mut cam, &sim, &city, h as i32, &mut head, hz, 0);
             } else {
                 tour.step(&city, hz);
                 cam = tour.cam;
@@ -1066,7 +1106,7 @@ fn run(mut o: Opts) -> Result<(), String> {
                         Event::TimeUp => Some(("TIME UP", 200)),
                     };
                 }
-                chase(&mut cam, &sim, &city, f.h as i32, &mut head, hz);
+                chase(&mut cam, &sim, &city, f.h as i32, &mut head, hz, hands.at(Ctl::PanRight) - hands.at(Ctl::PanLeft));
             }
         }
 
@@ -1206,11 +1246,14 @@ mod tests {
 
     /// Both pairs of steering keys reach the wheel, and holding both is not
     /// two lots of lock.
+    ///
+    /// `a` and `d` are the wheel, and `q` and `e` are the same wheel: the
+    /// second pair is there because it is where a walker's turn keys are,
+    /// and getting into the cab should not move your hand.
     #[test]
     fn both_pairs_of_steering_keys_reach_the_wheel() {
         assert_eq!(control_for(Key::Char('q'), View::Drive), Some(Ctl::Left));
         assert_eq!(control_for(Key::Char('a'), View::Drive), Some(Ctl::StrafeLeft));
-        assert_eq!(control_for(Key::Left, View::Drive), Some(Ctl::Left));
         let mut h = Hands { trust_release: true, ..Default::default() };
         h.press(Ctl::Left);
         h.press(Ctl::StrafeLeft);
@@ -1220,13 +1263,54 @@ mod tests {
         assert_eq!(h.controls().steer, -ONE);
     }
 
-    /// The arrows drive, and go back to being a head when you get out.
+    /// `wasd` is the vehicle in every mode; the arrows are the view.
     #[test]
-    fn the_arrows_are_the_pedals_in_the_car_and_the_head_on_foot() {
+    fn the_arrows_are_the_view_and_wasd_is_the_vehicle() {
+        for view in [View::Drive, View::Walk, View::Copter] {
+            assert_eq!(control_for(Key::Char('w'), view), Some(Ctl::Gas));
+            assert_eq!(control_for(Key::Char('s'), view), Some(Ctl::Brake));
+            assert_eq!(control_for(Key::Char('a'), view), Some(Ctl::StrafeLeft));
+            assert_eq!(control_for(Key::Char('d'), view), Some(Ctl::StrafeRight));
+        }
+        // Driving, the arrows swing the camera and work the pedals.
+        assert_eq!(control_for(Key::Left, View::Drive), Some(Ctl::PanLeft));
+        assert_eq!(control_for(Key::Right, View::Drive), Some(Ctl::PanRight));
         assert_eq!(control_for(Key::Up, View::Drive), Some(Ctl::Gas));
         assert_eq!(control_for(Key::Down, View::Drive), Some(Ctl::Brake));
+        // On foot and in the air they step sideways and tilt the head.
+        assert_eq!(control_for(Key::Left, View::Walk), Some(Ctl::StrafeLeft));
+        assert_eq!(control_for(Key::Right, View::Copter), Some(Ctl::StrafeRight));
         assert_eq!(control_for(Key::Up, View::Walk), Some(Ctl::LookUp));
         assert_eq!(control_for(Key::Down, View::Copter), Some(Ctl::LookDown));
+    }
+
+    /// Panning swings the camera round the car, and lets go of it again.
+    #[test]
+    fn the_camera_swings_round_the_cab_and_comes_back() {
+        use ascitty_core::sim::Sim;
+        use ascitty_core::world::City;
+        let city = City::generate(99);
+        let sim = Sim::new(&city, 99);
+        let mut cam = ascitty_core::camera::Camera::spawn(&city, 117, 117);
+        let mut head = Head::default();
+        for _ in 0..HZ {
+            chase(&mut cam, &sim, &city, 40, &mut head, HZ, 0);
+        }
+        let straight = cam.yaw;
+        for _ in 0..HZ {
+            chase(&mut cam, &sim, &city, 40, &mut head, HZ, ONE);
+        }
+        let swung = (cam.yaw.wrapping_sub(straight) as i16 as i32).abs();
+        assert!(
+            swung > trig::QUARTER as i32 * 3 / 4,
+            "a second of full pan moved the camera {swung} units of {}",
+            trig::QUARTER
+        );
+        for _ in 0..HZ {
+            chase(&mut cam, &sim, &city, 40, &mut head, HZ, 0);
+        }
+        let back = (cam.yaw.wrapping_sub(straight) as i16 as i32).abs();
+        assert!(back < trig::QUARTER as i32 / 8, "it did not come back: {back} units off");
     }
 
     /// A key held across a change of view does not stay held.
@@ -1329,13 +1413,13 @@ mod tests {
         let mut sky = i32::MAX;
         for _ in 0..HZ {
             sim.step(&city, &Controls { throttle: ONE, ..Default::default() }, HZ, &mut ev);
-            chase(&mut cam, &sim, &city, rows, &mut head, HZ);
+            chase(&mut cam, &sim, &city, rows, &mut head, HZ, 0);
             sky = sky.min(cam.pitch);
         }
         let mut road = i32::MIN;
         for _ in 0..HZ / 2 {
             sim.step(&city, &Controls { throttle: -ONE, ..Default::default() }, HZ, &mut ev);
-            chase(&mut cam, &sim, &city, rows, &mut head, HZ);
+            chase(&mut cam, &sim, &city, rows, &mut head, HZ, 0);
             road = road.max(cam.pitch);
         }
         assert!(

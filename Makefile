@@ -47,7 +47,7 @@ GENHDRS = $(GEN)/charset.h $(GEN)/trig.h $(GEN)/recip.h $(GEN)/glyphs.h $(GEN)/c
 T4SRC   = $(T4)/src/main.c $(T4)/src/cast.c
 T4HDRS  = $(T4)/src/plus4.h $(T4)/src/cast.h
 
-.PHONY: all host prg disk bake run run4 demo walk demo4 cast gif shot test check bench sheet clean help
+.PHONY: all host prg disk bake run run4 demo walk demo4 cast gif shot test check bench sheet tag version clean help
 
 all: host prg disk
 
@@ -57,6 +57,7 @@ help:
 	@echo 'make disk    the Plus/4 build, on a .d64'
 	@echo 'make run     play it in this terminal - the cab drives until you do'
 	@echo 'make demo    the same thing; it is what run does'
+	@echo 'make tag     tag this commit as a release build'
 	@echo 'make walk    watch the camera walk the streets instead'
 	@echo 'make cast    record the walk to build/tour.cast (asciinema)'
 	@echo 'make gif     record the drive to docs/media/demo.gif'
@@ -121,6 +122,19 @@ gif: $(HOST)
 bench: $(HOST)
 	@$(HOST) --bench --size 160x48
 
+# Tag a build, so a picture in the README can name the code that drew it.
+# The version comes from Cargo.toml and nowhere else - `ascitty --version`
+# prints the same string - so bumping it there is the one edit a release
+# needs.
+VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+
+tag: check
+	git tag -a v$(VERSION) -m "ascitty v$(VERSION)"
+	@echo "  tagged v$(VERSION) - push it with: git push origin v$(VERSION)"
+
+version:
+	@echo $(VERSION)
+
 # --- the bridge -----------------------------------------------------------
 
 bake: $(GENHDRS)
@@ -182,13 +196,13 @@ check: test $(PRG)
 
 shot: $(HOST) $(PRG)
 	@mkdir -p docs/media
-	@$(HOST) --shot 1   --size 150x44 --mode ascii   --rain 0 --walk > docs/media/walk-ascii.txt
-	@$(HOST) --shot 1   --size 150x44 --mode unicode --rain 3 --walk > docs/media/walk-blocks.txt
+	@$(HOST) --shot 1   --size 150x44 --mode ascii   --walk > docs/media/walk-ascii.txt
+	@$(HOST) --shot 1   --size 150x44 --mode unicode --walk > docs/media/walk-blocks.txt
 	@$(HOST) --shot 200 --size 150x44 --mode ascii --drive     > docs/media/drive-ascii.txt
 	@$(HOST) --shot 1   --size 150x44 --mode unicode --copter  > docs/media/copter-blocks.txt
 	@$(HOST) --shot 520 --size 140x40 --seed 99 --tour --walk   --png docs/media/street.png
 	@$(HOST) --shot 750 --size 140x40 --seed 99 --demo --drive  --png docs/media/drive.png
-	@$(HOST) --shot 1   --size 140x40 --seed 99 --copter --haze 1 --rain 0 \
+	@$(HOST) --shot 1   --size 140x40 --seed 99 --copter --haze 1 \
 		--png docs/media/copter.png
 	@$(TOOLS)/strip.sh > docs/media/tour-strip.txt
 	@$(BAKE) --sheet > docs/media/glyph-sheet.txt
