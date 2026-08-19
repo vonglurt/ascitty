@@ -766,11 +766,11 @@ fn ceiling_of(city: &City) -> Fx {
 /// All three paths that draw the game - the interactive one, `--shot` and
 /// the recorder - call this, because a picture of the game without the thing
 /// you steer by is a picture of a different program.
-fn hud_layer(f: &mut Frame, sim: &Sim, cam: &Camera, atmos: &Atmos) {
+fn hud_layer(f: &mut Frame, sim: &Sim, cam: &Camera, atmos: &Atmos, p: &raycast::Proj) {
     if let Some((tx, ty)) = sim.target() {
         let want = ascitty_core::sim::atan2_approx(ty - cam.y, tx - cam.x);
         let rel = want.wrapping_sub(cam.yaw) as i16 as i32;
-        hud::arrow_on_the_road(f, rel, atmos.tick);
+        hud::arrow_on_the_road(f, p, cam.fov, rel, atmos.tick);
     }
 }
 
@@ -841,7 +841,7 @@ fn run(mut o: Opts) -> Result<(), String> {
             sim.draw(&mut f, &depth, &cam, &o.atmos, &proj);
             o.atmos.rain_over(&mut f, &cam);
             if view == View::Drive {
-                hud_layer(&mut f, &sim, &cam, &o.atmos);
+                hud_layer(&mut f, &sim, &cam, &o.atmos, &proj);
             }
         }
         if let Some(path) = &o.png {
@@ -900,7 +900,7 @@ fn run(mut o: Opts) -> Result<(), String> {
             sim.draw(&mut f, &depth, &cam, &o.atmos, &proj);
             o.atmos.rain_over(&mut f, &cam);
             if view == View::Drive {
-                hud_layer(&mut f, &sim, &cam, &o.atmos);
+                hud_layer(&mut f, &sim, &cam, &o.atmos, &proj);
             }
             if let Some(rec) = rec.as_mut() {
                 paint::paint(&f, o.mode, o.depth, &mut buf);
@@ -1196,7 +1196,7 @@ fn run(mut o: Opts) -> Result<(), String> {
         o.atmos.rain_over(&mut f, &cam);
         // The HUD layer: over the city, over the cab, over the weather.
         if view == View::Drive {
-            hud_layer(&mut f, &sim, &cam, &o.atmos);
+            hud_layer(&mut f, &sim, &cam, &o.atmos, &proj);
         }
         paint::paint(&f, o.mode, o.depth, &mut buf);
         hud::append(&mut buf, &hud::Status {

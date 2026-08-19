@@ -111,7 +111,13 @@ pub const REACH: Fx = fixed::ratio(5, 4);
 /// between stopping and having stopped.
 pub const KERB_REACH: Fx = STOP_RADIUS + fixed::HALF;
 
-/// How long a driver spends reversing after being hit, in ticks.
+/// How much clear road in front ends a reverse.
+///
+/// Two car lengths.  Enough to pull away into, and short enough that a car
+/// stops reversing the moment it can.
+const CLEAR: Fx = fixed::ratio(4, 1);
+
+/// The longest a driver spends reversing after being hit, in ticks.
 ///
 /// A quarter of a shift.  Fifteen seconds is a long time to be backing up -
 /// long enough to get clear of whatever it was, and long enough that on a
@@ -824,10 +830,27 @@ impl Sim {
         // how a wreck stops being a permanent obstacle.
         if self.traffic_backing[i] > 0 {
             self.traffic_backing[i] -= 1;
-            // The lock alternates by index, so a pile-up does not reverse in
-            // formation.
-            let lock = if i.is_multiple_of(2) { ONE } else { -ONE };
-            return Controls { throttle: -ONE, steer: fixed::mul(lock, fixed::HALF), handbrake: false };
+            // ...but only until it is clear of whatever it hit.  The quarter
+            // of a shift is a *limit*, not a duration: a car that reverses
+            // for fifteen seconds after every touch spends its life going
+            // backwards, and a street of them is a farce rather than a
+            // shunt.  Two car lengths of clear road in front and the driver
+            // gets on with it.
+            if !self.crowded(i, CLEAR) {
+                self.traffic_backing[i] = 0;
+            } else {
+                // The lock alternates by index, so a pile-up does not
+                // reverse in formation.  It is applied through a wheel that
+                // works backwards in reverse - see `Car::step` - so this is
+                // the direction the *tail* goes, which is the end that has
+                // to find the gap.
+                let lock = if i.is_multiple_of(2) { ONE } else { -ONE };
+                return Controls {
+                    throttle: -ONE,
+                    steer: fixed::mul(lock, fixed::HALF),
+                    handbrake: false,
+                };
+            }
         }
         let c = self.traffic[i];
         let (fx, fy) = (trig::cos(c.yaw), trig::sin(c.yaw));
@@ -861,6 +884,32 @@ impl Sim {
         let steer = fixed::clamp(angle - pull, -ONE, ONE);
 
         Controls { throttle: pace(vf, self.give_way(i)), steer, handbrake: false }
+    }
+
+    /// Whether anything is within `reach` of the front of car `i`.
+    ///
+    /// Used to decide that a car which has been shunted is clear again.  The
+    /// taxi counts: backing away from the thing that hit you is the point.
+    fn crowded(&self, i: usize, reach: Fx) -> bool {
+        let c = self.traffic[i];
+        let (fx, fy) = (trig::cos(c.yaw), trig::sin(c.yaw));
+        let (rx, ry) = (-fy, fx);
+        let others = self
+            .traffic
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != i)
+            .map(|(_, o)| o)
+            .chain(std::iter::once(&self.taxi));
+        for o in others {
+            let (dx, dy) = (o.x - c.x, o.y - c.y);
+            let lon = fixed::mul(dx, fx) + fixed::mul(dy, fy);
+            let lat = fixed::mul(dx, rx) + fixed::mul(dy, ry);
+            if lon > -c.kind.half_len() && lon < reach && fixed::abs(lat) < CORRIDOR {
+                return true;
+            }
+        }
+        false
     }
 
     /// The fastest car `i` should be going, given what is in front of it.

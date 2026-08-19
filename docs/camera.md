@@ -127,23 +127,28 @@ the second one is a fork and an exec and used to happen every frame.
 
 ### The arrow on the road
 
-The one piece of interface that is *in* the picture. A yellow arrow, twenty
-four cells long in the road's own plane, lying under the car and drawn over
-it, pointing at whatever end of the fare is current. It has a black outline,
-which is what keeps it legible over a yellow cab on a yellow-lit street: an
-arrow the same colour as what it is over is not an arrow.
+The one piece of interface that is *in* the picture: a yellow arrow lying on
+the **ground plane** a few cells in front of the camera, running from the
+bottom of the frame to about the middle of the taxi, pointing at whichever
+end of the fare is current.
 
-It is drawn as a *shape*, not as glyphs — every cell in its bounding box is
-rotated into the arrow's own coordinates, unsquashed, and tested against a
-shaft and a triangle — and it is drawn last, after the sprites and the
-weather. A decal on the road would disappear under the car at exactly the
-moment the car is what you are looking at.
+It is projected rather than drawn. Every cell below the horizon is turned
+back into the piece of road it is a picture of — the distance is `eye ×
+scale ÷ rows below the horizon`, the same expression the floor pass uses, and
+the column gives the offset across at that distance — and that point is
+rotated into the arrow's own frame and tested against a shaft and a triangle.
+So it converges with the street it is lying on, and swinging it round the
+compass sweeps it across the road the way a needle laid flat would.
 
-It is drawn three times wider than it is deep, which is a card laid most of
-the way down towards the floor rather than one standing up facing you. That
-squash is a constant rather than the real projection, because the arrow
-belongs to the screen: it has to read at any pitch, including the ones where
-the road under the car is not on screen at all.
+The version before it was rotated in screen x and y and squashed by a
+constant, and no amount of squashing fixed it: it read as a card held up in
+front of the car, because a card has no perspective in it.
+
+It carries a black outline — the same test, inflated, underneath — which is
+what keeps it legible over a yellow cab on a yellow-lit street. And it is
+drawn last, after the sprites and the weather, because a decal in the world
+would disappear under the car at exactly the moment the car is what you are
+looking at.
 
 ### The driver's head
 

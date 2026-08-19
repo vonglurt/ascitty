@@ -903,6 +903,38 @@ mod tests {
         assert!((s60 - s30).abs() < 0.5, "30 Hz ended at a different speed: {s60} against {s30}");
     }
 
+    /// The wheel works like a wheel: right is right going forward, and the
+    /// other way round in reverse.
+    ///
+    /// A car reversing with the wheel turned right pushes its *back* to the
+    /// right, so the nose swings left and the car's heading turns left.
+    /// Anybody who has reversed a car knows this in their hands and nobody
+    /// can explain it at the keyboard, which is why it is worth a test
+    /// rather than a comment.
+    #[test]
+    fn the_wheel_works_backwards_in_reverse() {
+        let city = open_ground();
+        let right = Controls { throttle: 0, steer: ONE, ..Default::default() };
+
+        let mut fwd = Car::new(CarKind::Taxi, fixed::from_int(8), fixed::from_int(8), 0, 7);
+        fwd.vx = fixed::from_int(3);
+        let was = fwd.yaw;
+        for _ in 0..HZ / 2 {
+            fwd.step(&right, &city, HZ);
+        }
+        let turned = fwd.yaw.wrapping_sub(was) as i16 as i32;
+        assert!(turned > 0, "the wheel to the right did not turn it right going forwards");
+
+        let mut back = Car::new(CarKind::Taxi, fixed::from_int(8), fixed::from_int(8), 0, 7);
+        back.vx = -fixed::from_int(3);
+        let was = back.yaw;
+        for _ in 0..HZ / 2 {
+            back.step(&right, &city, HZ);
+        }
+        let turned = back.yaw.wrapping_sub(was) as i16 as i32;
+        assert!(turned < 0, "the wheel to the right turned it right in reverse as well");
+    }
+
     #[test]
     fn a_parked_car_cannot_be_steered() {
         let (city, mut car) = on_the_road();

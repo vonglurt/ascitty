@@ -234,13 +234,21 @@ leaves the rest of it empty.
 ### Backing out of a shunt
 
 A driver who has just been hit does not carry on as though nothing happened:
-they reverse, with the wheel over, for a quarter of a shift. Fifteen seconds
-is a long time to be backing up - long enough to get clear of whatever it
-was, and long enough that on a street the player is still on, the car is
-recycled somewhere ahead before it finishes. That is the intent: a shunt
-clears itself off the road rather than becoming a permanent obstacle in the
-middle of it. The lock alternates by index so a pile-up does not reverse in
-formation.
+they reverse, with the wheel over, until they are clear — two car lengths of
+empty road in front — or for a quarter of a shift, whichever comes first.
+
+The quarter of a shift is a *limit*, not a duration. A car that reverses for
+fifteen seconds after every touch spends its life going backwards, and a
+street of them is a farce rather than a shunt. What it is there for is the
+car that has been wedged against a kerb by the cab: it keeps backing until
+something gives, and on a street the player is still on it is recycled
+somewhere ahead before the limit runs out.
+
+The lock alternates by index so that a pile-up does not reverse in formation.
+It goes through a wheel that **works backwards in reverse**, which is not a
+detail: a car reversing with the wheel to the right pushes its back to the
+right and its nose swings left, which is what every driver knows in their
+hands and nobody can explain at a keyboard. There is a test for it.
 
 ### Giving way is two rules
 
