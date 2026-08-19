@@ -201,7 +201,7 @@ const CREEP: Fx = fixed::ratio(3, 4);
 /// Six cells is a second and a half at the speed it cruises, which is about
 /// as far ahead as a decision to change lanes is worth making: further out
 /// and it is dodging cars that will have moved by the time it arrives.
-const DODGE_LOOK: Fx = fixed::ratio(6, 1);
+const DODGE_LOOK: Fx = fixed::ratio(9, 2);
 /// Half the width of the corridor in front that counts as blocked.
 const DODGE_WIDE: Fx = fixed::ratio(11, 10);
 /// The most lock a dodge asks for, on top of whatever the lane wants.
@@ -212,7 +212,11 @@ const DODGE_WIDE: Fx = fixed::ratio(11, 10);
 /// avoid a parked van.
 const DODGE_LOCK: Fx = fixed::ratio(3, 10);
 /// How long a decision to go one way round is kept, in ticks at 30 Hz.
-const DODGE_HOLD: u32 = 24;
+///
+/// Four tenths of a second: long enough that the choice of side cannot
+/// dither, short enough that the cab is not still leaning at something it
+/// passed half a second ago.
+const DODGE_HOLD: u32 = 12;
 /// How close something has to be in front before the cab lifts off for it.
 const DODGE_CLOSE: Fx = fixed::ratio(5, 2);
 /// Below this, a car is not slow, it is stopped - and worth crossing the
@@ -247,10 +251,19 @@ const DODGE_ROOM: Fx = fixed::ratio(3, 2);
 /// than planning again: the aim point is then several cells away across
 /// whatever is between, and the car drives at it through a park.
 ///
-/// The cursor only ever sits one waypoint behind the car, so three cells is
+/// The cursor only ever sits one waypoint behind the car, so this is
 /// measured from somewhere meaningful.  It was six, which on a street grid
-/// is wide enough to be on the next street but one.
-const OFF_ROUTE: Fx = fixed::ratio(3, 1);
+/// is wide enough to be on the next street but one, and then three, which
+/// turned out to be narrower than a deliberate lane change.
+///
+/// Five, because the cab now *pulls out* to pass things.  A dodge is a
+/// lane's width and at three cells it invalidated the plan, so the route was
+/// thrown away and rebuilt from wherever the car had swerved to - and a
+/// breadth-first search asked the same question from two slightly different
+/// places answers it two different ways.  The cab wandered: measured, 921
+/// cells driven and one completed fare in five minutes, against five fares
+/// once a plan could survive an overtake.
+const OFF_ROUTE: Fx = fixed::ratio(5, 1);
 
 /// What the road asks of the car where it currently is.
 struct Track {
@@ -1278,5 +1291,6 @@ mod tests {
         }
     }
 }
+
 
 

@@ -398,6 +398,41 @@ carriageway against 2; overtaking merely-slower traffic on a two-cell street
 - where the only room is the oncoming lane - took the right-hand-lane figure
 from 85 per cent to 57.
 
+## 5b. How far away the next fare is
+
+At least a block, and the block is [`zone::BLOCK_PITCH`] - the nominal
+road-to-road spacing, an eight-cell block with a pavement each side and a
+road. It was four cells, which is the length of two cars: the circle for the
+next job appeared on the pavement the cab was already stopped at, and the
+whole job was "turn round".
+
+The drop-off is a block from the **pickup**, not from the cab. Both being far
+from the cab says nothing about them being far from each other - a pickup a
+block north and a drop-off a block and a half north is a fare of four cells -
+so it is chosen with several tries against that constraint, and a short fare
+is kept if none of them satisfies it, because a short fare is better than no
+fare.
+
+The range is checked *after* the spot is snapped to the pedestrian network,
+not before. The snap moves the point by up to six cells, and it moves it
+towards walkable ground rather than away from the cab: two fares in sixty
+landed inside the minimum that way.
+
+### It cost the autopilot most of its fares, once
+
+Longer fares meant longer routes, and longer routes exposed something that
+had been invisible: a plan was thrown away whenever the car strayed three
+cells from it, and the cab now *pulls out to pass things*, which is a lane's
+width. So every overtake invalidated the plan, the route was rebuilt from
+wherever the car had swerved to, and a breadth-first search asked the same
+question from two slightly different places answers it two different ways.
+
+The cab wandered. Measured on one city: 921 cells driven, 8,799 of 9,000
+ticks spent travelling, and **one** completed fare in five minutes. Widening
+the tolerance to five cells - wider than a deliberate lane change - took it
+to five fares, and shortening the dodge's commitment from eight tenths of a
+second to four took the wandering out of the rest.
+
 ## 6. Where a fare stands
 
 Both ends of a job are on the **pedestrian** network — pavement, plaza or

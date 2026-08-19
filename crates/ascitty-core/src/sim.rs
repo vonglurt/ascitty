@@ -63,6 +63,25 @@ pub const TRAFFIC: usize = 12;
 pub const PEDS: usize = 48;
 /// Beyond this many cells, a pooled actor is recycled somewhere nearer.
 pub const RECYCLE: i32 = 34;
+/// How near the cab the next fare may be waiting, in cells.
+///
+/// A block.  It was four cells - the length of two cars - which puts the
+/// circle for the next job on the pavement you are already stopped at, so
+/// the whole job is "turn round".  A fare is somewhere you have to *drive*
+/// to, and the shortest distance that means anything on this grid is one
+/// block: [`crate::zone::BLOCK_PITCH`] is the nominal road-to-road spacing,
+/// an eight-cell block with a pavement each side and a road.
+pub const HAIL_NEAR: i32 = crate::zone::BLOCK_PITCH as i32;
+/// And how far, so the pickup is a short drive rather than a trek.
+pub const HAIL_FAR: i32 = HAIL_NEAR * 2;
+/// How far the drop-off has to be from the pickup, in cells.
+///
+/// A block again, and measured from the *pickup* rather than from the cab -
+/// which is the distance the passenger is paying for.  Both being far from
+/// the cab says nothing about them being far from each other: a pickup a
+/// block north and a drop-off a block and a half north is a fare of four
+/// cells.
+pub const FARE_MIN: i32 = HAIL_NEAR;
 /// Seconds on the clock at the start of a shift.
 pub const START_TIME: i32 = 60;
 /// Seconds a coin is worth.
@@ -521,6 +540,14 @@ impl Sim {
             // a pavement outright do miss - measured, often enough that the
             // fallback below was placing dropoffs in the middle of avenues.
             let Some((px, py)) = city.walk.nearest(x, y, 6) else { continue };
+            // The snap can pull the spot back towards the cab - up to six
+            // cells of it - so the range has to be checked *after* it and
+            // not before.  Two fares in sixty landed inside the minimum
+            // that way, which is the one place a player would notice: the
+            // circle for the next job on the pavement they are stopped at.
+            if (px - tx).abs() + (py - ty).abs() < min {
+                continue;
+            }
             // On the walking network *and* off the carriageway.  The two are
             // not the same test: an alley is road with no pavement beside
             // it, so people walk down the middle of one and it is marked
@@ -701,7 +728,7 @@ impl Sim {
     /// car can actually be; the coins are strung between those two, since
     /// they are collected by driving over them.
     pub fn hail(&mut self, city: &City) {
-        let (from, from_stop) = match self.kerb_near(city, 4, 14) {
+        let (from, from_stop) = match self.kerb_near(city, HAIL_NEAR, HAIL_FAR) {
             Some(v) => v,
             // Nowhere to stand within reach: rather than leave the shift
             // with no job at all, take any road cell.  The next tick tries
@@ -711,9 +738,23 @@ impl Sim {
                 None => return,
             },
         };
-        let (to, to_stop) = match self.kerb_near(city, 18, RECYCLE) {
+        // The drop-off, at least a block from the pickup as well as from the
+        // cab.  Several tries, because the constraint is on a pair and the
+        // dart only knows about one of them; the last candidate is kept if
+        // none of them is far enough, since a short fare is better than no
+        // fare.
+        let mut far = None;
+        for _ in 0..8 {
+            let Some(v) = self.kerb_near(city, HAIL_NEAR * 2, RECYCLE) else { break };
+            let d = (v.0 .0 - from.0).abs() + (v.0 .1 - from.1).abs();
+            far = Some(v);
+            if d >= FARE_MIN {
+                break;
+            }
+        }
+        let (to, to_stop) = match far {
             Some(v) => v,
-            None => match self.road_near(city, 18, RECYCLE) {
+            None => match self.road_near(city, HAIL_NEAR * 2, RECYCLE) {
                 Some(c) => (c, c),
                 None => return,
             },
@@ -2028,6 +2069,40 @@ mod tests {
                     "seed {seed}: a cab at the kerb cannot reach the passenger"
                 );
             }
+        }
+    }
+
+    /// A fare is somewhere you have to drive to.
+    ///
+    /// The pickup is at least a block from where the cab is standing, and
+    /// the drop-off at least a block from the pickup - the second measured
+    /// from the *pickup*, because that is the distance the passenger is
+    /// paying for and two places can both be far from the cab and next door
+    /// to each other.
+    #[test]
+    fn the_next_fare_is_at_least_a_block_away() {
+        for seed in [1u32, 7, 99, 4242] {
+            let city = City::generate(seed);
+            let mut sim = Sim::new(&city, seed);
+            let (mut near_cab, mut short_fare) = (0, 0);
+            for _ in 0..60 {
+                sim.hail(&city);
+                let fare = sim.fare.as_ref().expect("no fare");
+                let cab = (fixed::floor(sim.taxi.x), fixed::floor(sim.taxi.y));
+                let at = (fixed::floor(fare.from.0), fixed::floor(fare.from.1));
+                let to = (fixed::floor(fare.to.0), fixed::floor(fare.to.1));
+                if (at.0 - cab.0).abs() + (at.1 - cab.1).abs() < HAIL_NEAR {
+                    near_cab += 1;
+                }
+                if (to.0 - at.0).abs() + (to.1 - at.1).abs() < FARE_MIN {
+                    short_fare += 1;
+                }
+            }
+            // The pickup is a hard floor - it is what the dart is thrown at.
+            assert_eq!(near_cab, 0, "seed {seed}: {near_cab} fares within a block of the cab");
+            // The pair is a preference: eight tries at it, and a short fare
+            // is better than none.  Measured at zero on all four cities.
+            assert!(short_fare < 4, "seed {seed}: {short_fare} of 60 fares were shorter than a block");
         }
     }
 
