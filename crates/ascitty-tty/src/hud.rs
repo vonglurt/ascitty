@@ -41,50 +41,59 @@ pub struct Status<'a> {
     pub flash: Option<&'static str>,
 }
 
-/// Where the middle of the arrow sits, in cells of road in front of the
-/// camera.
+/// Where the middle of the arrow sits, as a fraction of the way down the
+/// frame.
 ///
-/// Four cells.  The chase camera sits five and a half behind the cab, and
-/// the bottom row of the frame is about two and a half cells of road in
-/// front of it, so an arrow centred here runs from the bottom edge of the
-/// screen to about the middle of the taxi - which is where it was asked to
-/// be, and which is the only part of the road you can see all of.
-const ARROW_AHEAD: Fx = fixed::ratio(4, 1);
-/// Half its length, in cells of road.
-const ARROW_LONG: Fx = fixed::ratio(8, 5);
-/// Half the width of its shaft, in cells of road.
-const ARROW_SHAFT: Fx = fixed::ratio(7, 20);
-/// Half the width of the head where it is widest.
-const ARROW_BARB: Fx = fixed::ratio(11, 10);
-/// Where along the arrow the head starts, from the middle.
-const ARROW_NECK: Fx = fixed::ratio(2, 5);
-/// How thick the black outline is, in cells of road.
-const ARROW_EDGE: Fx = fixed::ratio(1, 6);
-/// How far back from the point the tip is a different colour, in cells of
-/// road.
+/// Four fifths: low enough to be under the car and out of the way of the
+/// road ahead, high enough to be on the screen.
+///
+/// A *screen* position rather than a distance, and that is the point of it.
+/// The obvious version is "four cells in front of the camera", and it works
+/// until the camera moves: raising the eye and shortening the boom - which
+/// is one change to how the game is framed, not to the arrow - put four
+/// cells of road off the bottom of the frame and took the arrow with it.
+/// Solving for the distance that lands on a given row instead means the
+/// arrow stays where it was put whatever the camera does.
+const ARROW_ROW: Fx = fixed::ratio(4, 5);
+/// Half the arrow's length, as a fraction of how far away it is.
+///
+/// It is sized in world units, so this keeps it the same size on the screen
+/// as the camera changes: further away, proportionally bigger.
+const ARROW_LONG: Fx = fixed::ratio(2, 5);
+/// Half the width of its shaft, as a fraction of its length.
+const ARROW_SHAFT: Fx = fixed::ratio(22, 100);
+/// Half the width of the head where it is widest, likewise.
+const ARROW_BARB: Fx = fixed::ratio(70, 100);
+/// Where along the arrow the head starts, from the middle, likewise.
+const ARROW_NECK: Fx = fixed::ratio(25, 100);
+/// How thick the black outline is, likewise.
+const ARROW_EDGE: Fx = fixed::ratio(10, 100);
+/// How far back from the point the tip is a different colour, as a fraction
+/// of the arrow's length.
 ///
 /// Half a cell.  An arrow is symmetrical enough at a glance that the head
 /// and the tail can be read the wrong way round in the corner of your eye,
 /// and the whole job of this thing is to be read in the corner of your eye.
 /// One end being a different colour settles it without needing a second
 /// look.
-const ARROW_TIP: Fx = fixed::ratio(3, 5);
+const ARROW_TIP: Fx = fixed::ratio(3, 10);
 
 /// Whether a point in the arrow's own coordinates is inside it.
 ///
 /// `u` runs along the arrow, positive towards the point; `v` runs across.
 /// `grow` inflates the whole shape, which is how the outline is drawn: the
 /// same test, a little bigger, in black, underneath.
-fn in_arrow(u: Fx, v: Fx, grow: Fx) -> bool {
-    let long = ARROW_LONG + grow;
+fn in_arrow(u: Fx, v: Fx, size: Fx, grow: Fx) -> bool {
+    let long = size + grow;
+    let neck = fixed::mul(size, ARROW_NECK);
     if u < -long || u > long {
         return false;
     }
-    if u <= ARROW_NECK {
-        fixed::abs(v) <= ARROW_SHAFT + grow
+    if u <= neck {
+        fixed::abs(v) <= fixed::mul(size, ARROW_SHAFT) + grow
     } else {
-        let along = fixed::div(long - u, long - ARROW_NECK).clamp(0, ONE);
-        fixed::abs(v) <= fixed::mul(ARROW_BARB + grow, along)
+        let along = fixed::div(long - u, long - neck).clamp(0, ONE);
+        fixed::abs(v) <= fixed::mul(fixed::mul(size, ARROW_BARB) + grow, along)
     }
 }
 
@@ -136,6 +145,16 @@ pub fn arrow_on_the_road(f: &mut Frame, p: &Proj, fov: Fx, bearing: i32, tick: u
     let tip = Cel { glyph: catalog::G_SOLID, color: palette::rgb_index(palette::H_ORANGE, 6) };
     let outline = Cel { glyph: catalog::G_SOLID, color: palette::rgb_index(palette::H_BLACK, 0) };
 
+    // How far up the road the arrow sits, solved from where on the screen it
+    // is wanted: ground `d` away lands `eye x scale / d` rows below the
+    // horizon, so a row four fifths down the frame is this far out.
+    let want_row = fixed::floor(fixed::mul(fixed::from_int(p.h), ARROW_ROW));
+    let below = fixed::from_int((want_row - p.horizon).max(1));
+    let ahead = fixed::div(fixed::mul(p.eye, p.proj), below);
+    let size = fixed::mul(ahead, ARROW_LONG);
+    let edge = fixed::mul(size, ARROW_EDGE);
+    let tip_at = size - fixed::mul(size, ARROW_TIP);
+
     let half = fixed::from_int(p.w / 2);
     for y in (p.horizon + 1).max(0)..p.h.min(f.h as i32) {
         // How far up the road this row is.  The same expression the floor
@@ -148,18 +167,17 @@ pub fn arrow_on_the_road(f: &mut Frame, p: &Proj, fov: Fx, bearing: i32, tick: u
         }
         // Where the arrow is, relative to this row: along the road, and
         // then rotated into the arrow's own frame.
-        let ahead = d - ARROW_AHEAD;
+        let along = d - ahead;
         for x in 0..f.w as i32 {
             // How far across the road this column is, at that distance.
             let camx = fixed::div(fixed::from_int(x) + fixed::HALF - half, half);
             let across = fixed::mul(fixed::mul(d, fov), camx);
-            let u = fixed::mul(ahead, cos) + fixed::mul(across, sin);
-            let v = fixed::mul(across, cos) - fixed::mul(ahead, sin);
-            if in_arrow(u, v, 0) {
+            let u = fixed::mul(along, cos) + fixed::mul(across, sin);
+            let v = fixed::mul(across, cos) - fixed::mul(along, sin);
+            if in_arrow(u, v, size, 0) {
                 // The point itself, and only the point.
-                let end = u > ARROW_LONG - ARROW_TIP;
-                f.put(x, y, if end { tip } else { body });
-            } else if in_arrow(u, v, ARROW_EDGE) {
+                f.put(x, y, if u > tip_at { tip } else { body });
+            } else if in_arrow(u, v, size, edge) {
                 f.put(x, y, outline);
             }
         }
