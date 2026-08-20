@@ -199,20 +199,28 @@ pub fn draw_distance(haze: u8) -> i32 {
     // Every figure doubled with the grid - a hundred cells was four blocks
     // and is now under two - and then raised again, because the far end of
     // the range is now a dissolve rather than a cliff and there is no longer
-    // a reason to keep the cliff close.  At the clearest setting the whole
-    // of the built city is in front of you from the farmland.
+    // a reason to keep the cliff close.  And then doubled once more, for the
+    // helicopter: from six hundred feet the whole point of being up there is
+    // to see where you are, and a city that ran out two blocks short of the
+    // horizon was a city you could not read from the air.
+    //
+    // At the clearest setting this is 1,300 cells against a map 728 across,
+    // which is to say the whole world including the sea - deliberately, so
+    // that `9` means "everything" rather than "a lot".  It is only ever the
+    // *ray* that goes that far; the dissolve has taken the city to nothing
+    // well before it.
     BLOCK
         + match haze {
-            0 => 640,
-            1 => 520,
-            2 => 400,
-            3 => 300,
-            4 => 225,
-            5 => 168,
-            6 => 126,
-            7 => 94,
-            8 => 70,
-            _ => 52,
+            0 => 1280,
+            1 => 1040,
+            2 => 800,
+            3 => 600,
+            4 => 450,
+            5 => 336,
+            6 => 252,
+            7 => 188,
+            8 => 140,
+            _ => 104,
         }
 }
 
@@ -797,11 +805,19 @@ use crate::camera::Camera;
         }
     }
 
+    /// The depth cue holds a hue and spends luminance.
+    ///
+    /// Measured as fractions of the draw distance rather than at fixed
+    /// ranges: what the cue *is* is a ramp over the visible world, so a test
+    /// written in cells has to be rewritten every time the world gets
+    /// bigger - and it was, twice, quietly reading "no fade at all" the
+    /// second time because sixty cells had stopped being far away.
     #[test]
     fn shading_keeps_the_hue_and_loses_the_light() {
         let a = Atmos::default();
-        let near = a.shade(palette::H_BLUE, 7, fixed::from_int(1));
-        let far = a.shade(palette::H_BLUE, 7, fixed::from_int(60));
+        let range = fixed::from_int(draw_distance(a.haze));
+        let near = a.shade(palette::H_BLUE, 7, fixed::mul(range, fixed::ratio(1, 20)));
+        let far = a.shade(palette::H_BLUE, 7, fixed::mul(range, fixed::ratio(3, 4)));
         assert_eq!(palette::hue_of(near), palette::H_BLUE);
         assert_eq!(palette::hue_of(far), palette::H_BLUE);
         assert!(palette::luma_of(far) < palette::luma_of(near));

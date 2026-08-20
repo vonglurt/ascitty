@@ -567,16 +567,21 @@ impl Body {
 ///
 /// `u` runs nose-first: 0 is the front bumper and 1 is the back one, so the
 /// caller flips it when the car is pointing the other way.
-fn flank_top(body: Body, u: Fx) -> Fx {
-    // A bus is a box and has no bonnet worth drawing at this size.
-    if body == Body::Bus {
-        return 0;
-    }
+/// Where the cabin starts and stops along the flank, and how far down the
+/// bonnet and the boot sit.
+///
+/// One table, read by three things: the roofline in profile
+/// ([`flank_top`]), where the side glass may be ([`flank_glass`]), and the
+/// height of the deck you see edge-on from either end ([`deck_of`]).  It has
+/// to be one table or the car does not agree with itself - a boot lid drawn
+/// at one height in profile and another from behind is a car that changes
+/// shape as you drive round it.
+///
+/// The cabin of a land yacht is set a long way back, because most of that
+/// car is in front of the driver; a jeep is nearly all cabin.
+fn boxes(body: Body) -> (Fx, Fx, Fx, Fx) {
     let waist = waist_of(body, true);
-    // Where the cabin starts and stops, and how far down the bonnet and the
-    // boot sit.  The cabin of a land yacht is set a long way back - most of
-    // the car is in front of the driver - and a jeep is nearly all cabin.
-    let (front, back, bonnet, boot) = match body {
+    match body {
         Body::Jeep => (
             fixed::ratio(16, 100),
             fixed::ratio(92, 100),
@@ -595,7 +600,41 @@ fn flank_top(body: Body, u: Fx) -> Fx {
             fixed::mul(waist, fixed::ratio(88, 100)),
             fixed::mul(waist, fixed::ratio(76, 100)),
         ),
-    };
+    }
+}
+
+/// How far down the card the bonnet or the boot lid is, seen from the end.
+///
+/// The same two figures the profile uses, which is the whole point of it: on
+/// a car the bottom of the backlight *is* the front of the boot lid, so a
+/// rear view whose glass ran down to the waist and then straight into the
+/// tail panel had no boot at all - a rear window sitting directly on a
+/// bumper, which is a hatchback at best and a van at worst, and which did
+/// not line up with the three-box profile the same car showed from the side.
+fn deck_of(body: Body, front: bool) -> Option<Fx> {
+    // A bus has no deck: it is glass to the waist at both ends.
+    if body == Body::Bus {
+        return None;
+    }
+    let (_, _, bonnet, boot) = boxes(body);
+    Some(if front { bonnet } else { boot })
+}
+
+/// How much of the card a deck seen edge-on takes.
+///
+/// A boot lid is a horizontal panel and you are looking along it, so it is
+/// foreshortened to very little - but not to nothing, because it is the
+/// panel most squarely facing the sky and so the brightest thing on the back
+/// of the car.  A twentieth of the card, which is between half a row and two
+/// rows at the sizes a car is drawn.
+const DECK: Fx = fixed::ratio(5, 100);
+
+fn flank_top(body: Body, u: Fx) -> Fx {
+    // A bus is a box and has no bonnet worth drawing at this size.
+    if body == Body::Bus {
+        return 0;
+    }
+    let (front, back, bonnet, boot) = boxes(body);
     // The screen pillars are the slopes, and they are what make a car look
     // fast or slow: a short steep one is upright and formal, a long shallow
     // one is a fastback.
@@ -1130,15 +1169,34 @@ pub fn paint_face_at(
     // what time it is.  Inset from the body's edge by a pillar's width - and
     // on a flank, inset from the bonnet and the boot as well, because glass
     // that ran to the ends of the car is what made a saloon a van.
+    // Where the glass stops.  Along the flank that is the waist, which runs
+    // the length of the car; from either end it is the deck - the bottom of
+    // the backlight is the front edge of the boot lid, and the bottom of the
+    // windscreen is the back edge of the bonnet.
+    let deck = if side { None } else { deck_of(body, phase & 1 == 1) };
+    let glass_to = deck.map_or(waist, |d| d.max(roof + fixed::ratio(4, 100)));
     let pillar = fixed::ratio(6, 100);
     let glassy = !side || (top <= 0 && flank_glass(body, along_u, pillar));
-    if glassy && v < waist && mid < half - pillar {
+    if glassy && v < glass_to && mid < half - pillar {
         let (sh, sl) = sky;
         // A vertical shade across the glass, brighter at the top where more
         // of the sky is in it.
-        let t = fixed::div(v - roof, (waist - roof).max(1)).clamp(0, ONE);
+        let t = fixed::div(v - roof, (glass_to - roof).max(1)).clamp(0, ONE);
         let luma = sl.saturating_add(1).saturating_sub(fixed::floor(fixed::mul(t, ONE)) as u8);
         return Some((catalog::G_SOLID, sh, luma.clamp(1, 7)));
+    }
+
+    // The deck: the boot lid or the bonnet, seen edge-on.
+    //
+    // Brighter than the roof, because it is the panel most squarely facing
+    // the sky and there is nothing above it to shade it.  It is what turns a
+    // rear view from "window, then car" into "window, then boot, then car",
+    // and it is the band that makes the back of the cab line up with the
+    // side of it.
+    if let Some(d) = deck {
+        if v >= glass_to && v < d.max(roof) + DECK {
+            return Some((catalog::G_SOLID, hue, 7));
+        }
     }
 
     // The chequer band, which is the whole of what makes a taxi a taxi.

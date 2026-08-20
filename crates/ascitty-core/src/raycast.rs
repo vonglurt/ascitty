@@ -329,6 +329,23 @@ fn column(
     // than one a cell: the phase does not change inside a frame.
     let sky = atmos.haze_colour();
 
+    // The most grid cells this ray may step through before it gives up.
+    //
+    // A backstop against a walk that will not terminate, and it has to be
+    // set from the draw distance or it becomes a *second* draw distance -
+    // a shorter one, applied to some columns and not others.  It was a flat
+    // 512, which is 256 cells of straight-line distance and rather fewer
+    // diagonally: on the ground that is further than anything is ever drawn,
+    // but from a helicopter, looking down a long shallow ray, the average
+    // column stepped 513 cells at the clearest setting.  So half the frame
+    // was hitting the cap, *which* half changed as the camera moved, and
+    // distant buildings flickered in and out of the city.
+    //
+    // A ray crossing `n` cells of distance steps at most `2n` of them - one
+    // boundary on each axis - so twice the draw distance is the figure that
+    // can never bind, and a few cells over for the rounding.
+    let cap = 2 * fixed::floor(far) as u32 + 8;
+
     let mut map_x = fixed::floor(cam.x);
     let mut map_y = fixed::floor(cam.y);
 
@@ -366,7 +383,7 @@ fn column(
             d
         };
         steps += 1;
-        if dist >= far || steps > 512 {
+        if dist >= far || steps > cap {
             return (steps, 0, nearest);
         }
 

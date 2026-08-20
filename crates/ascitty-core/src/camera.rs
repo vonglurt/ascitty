@@ -240,6 +240,15 @@ pub fn degrees_for_fov(fov: Fx) -> f64 {
 
 /// One unit of walking speed, per second.
 pub const WALK_SPEED: Fx = fixed::ratio(9, 2);
+/// Flying speed, per second.
+///
+/// Seven times walking pace, and about two and a half times what flight used
+/// to be.  A helicopter that moves at a walk is a very expensive stepladder:
+/// the built city is sixteen blocks of twenty-six cells, so four hundred and
+/// sixteen of them across, and crossing the middle of that took half a
+/// minute with nothing on the way you could not see from where you started.
+/// At thirty-two cells a second it is thirteen seconds, which is a flight.
+pub const FLY_SPEED: Fx = fixed::from_int(32);
 /// Turning speed, in angle units per second.
 pub const TURN_SPEED: i32 = 24_000;
 

@@ -15,7 +15,7 @@ mod png;
 mod term;
 
 use ascitty_core::atmos::Atmos;
-use ascitty_core::camera::{Camera, TURN_SPEED, WALK_SPEED};
+use ascitty_core::camera::{Camera, FLY_SPEED, TURN_SPEED, WALK_SPEED};
 use ascitty_core::cabbie::Cabbie;
 use ascitty_core::drive::Controls;
 use ascitty_core::fixed::{self, Fx, ONE};
@@ -885,6 +885,41 @@ fn aim_at_city(cam: &mut Camera, city: &City, atmos: &Atmos, w: usize, h: usize)
     );
 }
 
+/// How far a helicopter noses over under power, and how far it flares to
+/// stop, in degrees.
+///
+/// A helicopter has no throttle in the sense a car does.  It goes forward by
+/// tipping the disc forward and putting some of its lift into thrust, so
+/// *pointing down is how you accelerate* - and it stops by tipping back and
+/// spilling that thrust the other way.  Anybody who has watched one arrive
+/// has watched it flare nose-up over the pad.
+///
+/// Thirty degrees down and fifteen up, so the two are not mirror images:
+/// the nose-over is a commitment you hold for the length of a flight and the
+/// flare is a moment.  It is also the difference between the two that reads
+/// as a helicopter rather than as a camera on a stick.
+const NOSE_OVER: f64 = 30.0;
+const FLARE: f64 = 15.0;
+
+/// The attitude a helicopter is flying at, in screen rows.
+///
+/// `throttle` is the same ramped axis everything else reads, so this eases
+/// in and out with the key rather than snapping - which is the difference
+/// between an aircraft changing attitude and a camera cutting to a new one.
+///
+/// Rows rather than degrees, because [`Camera::pitch`] is rows: a text
+/// renderer shears the horizon rather than rotating it.  The conversion is
+/// the projection's own - `rows = tan(angle) * scale` is exactly what
+/// [`raycast::pitch_down`] solves in the other direction - so the angle is
+/// the angle it looks like and not a number that happens to feel right at
+/// one frame size.
+fn attitude(throttle: Fx, w: usize, fov: Fx) -> i32 {
+    let deg = if throttle >= 0 { NOSE_OVER } else { -FLARE };
+    let t = deg.to_radians().tan();
+    let rows = fixed::mul(raycast::scale(w as i32, fov), fixed::from_f64(t));
+    fixed::floor(fixed::mul(rows, fixed::abs(throttle)))
+}
+
 /// How far down the camera may be tilted in this view.
 ///
 /// Walking and driving keep the horizon on the screen, because a view of
@@ -1121,6 +1156,7 @@ fn run(mut o: Opts) -> Result<(), String> {
 
     let dt = std::time::Duration::from_micros(1_000_000 / o.fps.clamp(1, 240) as u64);
     let step = fixed::div(WALK_SPEED, fixed::from_int(o.fps as i32));
+    let fly = fixed::div(FLY_SPEED, fixed::from_int(o.fps as i32));
     let turn = TURN_SPEED / o.fps as i32;
     let mut stats = raycast::Stats::default();
     let mut fps_ms = 0.0f64;
@@ -1129,6 +1165,9 @@ fn run(mut o: Opts) -> Result<(), String> {
     let mut hands = Hands { trust_release: term.holds_keys, ..Default::default() };
     // The fraction of a row of tilt left over from the last frame.
     let mut tilt_carry: Fx = 0;
+    // How much of the camera's pitch is the helicopter's attitude rather
+    // than the pilot's head.  See `attitude`.
+    let mut attitude_now: i32 = 0;
     let mut tour = Tour::new(&city, o.seed);
     tour.cam.fov = lens;
     let mut cabbie = Cabbie::new();
@@ -1260,9 +1299,14 @@ fn run(mut o: Opts) -> Result<(), String> {
 
         // The axes, as movement.  Walking and flying steer the camera
         // directly; driving hands the same three controls to the car.
-        let fwd = fixed::mul(hands.at(Ctl::Gas) - hands.at(Ctl::Brake), step);
-        let side = fixed::mul(hands.at(Ctl::StrafeRight) - hands.at(Ctl::StrafeLeft), step);
-        let rise = fixed::mul(hands.at(Ctl::Up) - hands.at(Ctl::Down), step);
+        // Flying is not walking, and the difference is a factor rather than
+        // a mode: the same three axes, scaled by how fast the thing you are
+        // in goes.
+        let pace = if view == View::Copter { fly } else { step };
+        let throttle = hands.at(Ctl::Gas) - hands.at(Ctl::Brake);
+        let fwd = fixed::mul(throttle, pace);
+        let side = fixed::mul(hands.at(Ctl::StrafeRight) - hands.at(Ctl::StrafeLeft), pace);
+        let rise = fixed::mul(hands.at(Ctl::Up) - hands.at(Ctl::Down), pace);
         if view != View::Drive && !autopilot {
             let spin = hands.at(Ctl::Right) - hands.at(Ctl::Left);
             cam.turn(((turn as i64 * spin as i64) >> 16) as i32);
@@ -1288,8 +1332,25 @@ fn run(mut o: Opts) -> Result<(), String> {
             // is clamped again here against the real one.
             cam.pitch = cam.pitch.clamp(-(f.h as i32 / 3), f.h as i32 / 3);
         }
+        // The helicopter's attitude, on top of wherever the pilot is
+        // looking.
+        //
+        // Taken off before the clamp and put back after it, rather than
+        // folded into `pitch` and left there.  Two reasons, and both of them
+        // are bugs that were there when it was a single addition: the tilt
+        // limit would clamp a pitch that included the attitude and the
+        // attitude would then be subtracted from the clamped figure, so the
+        // pilot's own look drifted a row every time the nose went down; and
+        // letting go of the stick has to put the nose back where the pilot
+        // was looking rather than wherever the flight happened to leave it.
+        cam.pitch -= attitude_now;
         let tilt = tilt_limit(view, &cam, &city, &o.atmos, f.w, f.h);
         cam.pitch = cam.pitch.clamp(-tilt, tilt);
+        attitude_now = match view {
+            View::Copter if !autopilot => attitude(throttle, f.w, cam.fov),
+            _ => 0,
+        };
+        cam.pitch += attitude_now;
         match view {
             View::Walk if autopilot => {}
             View::Walk => {
@@ -1300,10 +1361,16 @@ fn run(mut o: Opts) -> Result<(), String> {
                 // Flight ignores buildings horizontally - you are above them
                 // - but not the floor of the mode, which keeps the camera
                 // over the roofline where the view is worth having.
+                // `pace` is already the flying speed - see `FLY_SPEED` - so
+                // there is no multiplier here any more.  There used to be
+                // one of three on the ground plane and four on the climb,
+                // which is a walking speed wearing a hat: the number that
+                // says how fast a helicopter goes now says so.
                 let (dx, dy) = cam.dir();
-                cam.x += fixed::mul(dx, fwd * 3) + fixed::mul(-dy, side * 3);
-                cam.y += fixed::mul(dy, fwd * 3) + fixed::mul(dx, side * 3);
-                cam.z = (cam.z + rise * 4).clamp(fixed::from_int(4), fixed::from_int(160));
+                cam.x += fixed::mul(dx, fwd) + fixed::mul(-dy, side);
+                cam.y += fixed::mul(dy, fwd) + fixed::mul(dx, side);
+                // Climbing is slower than flying forward, as it is.
+                cam.z = (cam.z + rise / 2).clamp(fixed::from_int(4), fixed::from_int(160));
             }
             View::Drive => {
                 // The driver is either you or the cabbie, and the rest of
@@ -1730,6 +1797,46 @@ mod tests {
             sky - road >= 6,
             "the horizon moved {} rows between flat out and hard on the brakes",
             sky - road
+        );
+    }
+
+    /// A helicopter noses over to go and flares to stop.
+    ///
+    /// It has no throttle in the sense a car does: it tips the disc forward
+    /// and puts some of its lift into thrust, so pointing down *is* the
+    /// accelerator.  The two are deliberately not mirror images - thirty
+    /// degrees down against fifteen up - and the asymmetry is most of what
+    /// reads as an aircraft rather than as a camera on a stick.
+    #[test]
+    fn the_helicopter_points_where_it_is_going() {
+        let fov = ascitty_core::camera::fov_for_degrees(90.0);
+        let level = attitude(0, 160, fov);
+        let going = attitude(ONE, 160, fov);
+        let stopping = attitude(-ONE, 160, fov);
+        assert_eq!(level, 0, "a helicopter at rest is not level");
+        assert!(going > 0, "full power did not put the nose down: {going}");
+        assert!(stopping < 0, "the brake did not flare the nose up: {stopping}");
+        // Down further than up, and by about the ratio of the two angles.
+        assert!(
+            going > -stopping,
+            "it flares harder than it accelerates: {going} against {stopping}"
+        );
+        assert!(
+            going < -stopping * 3,
+            "the nose-over is out of proportion to the flare: {going} against {stopping}"
+        );
+
+        // ...and it eases, because the axis it reads is a ramp.  Half the
+        // stick is about half the attitude.
+        let half = attitude(ONE / 2, 160, fov);
+        assert!(half > 0 && half < going, "half power is not half attitude: {half} of {going}");
+
+        // The angle is an angle: a wider frame at the same lens is more rows
+        // for the same tilt, which is what makes it thirty degrees rather
+        // than thirty of something.
+        assert!(
+            attitude(ONE, 320, fov) > going,
+            "the attitude is measured in rows rather than in degrees"
         );
     }
 

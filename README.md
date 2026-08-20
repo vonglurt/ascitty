@@ -99,7 +99,7 @@ It starts in the first one.
 |---|---|
 | **Drive** | third person behind a taxi that tracks its nose through town and hangs the tail out at speed, with a fare on the clock |
 | **Walk** | first person, eye height, down the avenues |
-| **Copter** | free flight above the roofline, looking down |
+| **Copter** | free flight above the roofline at thirty-two cells a second, looking down |
 
 ![The city from above the tallest roof: towers seen down their faces, rooftops and fire escapes below](docs/media/copter.png)
 
@@ -264,7 +264,8 @@ the corner off the whole map through a field.
 
 The south is a coast — beach, then sea, always the south so that "drive
 towards the water" is a direction you can learn. And the draw distance runs
-from 52 cells in soup to 640 in the clear, set live with the `0`–`9` keys,
+from 104 cells in soup to 1,300 in the clear - the whole map, sea included -
+set live with the `0`–`9` keys,
 for the same reason all of this is here: from the fields the towers have to
 be visible, so the way back to the middle is something you can see rather
 than something you have to remember.
@@ -290,6 +291,16 @@ and a crawling one boils the whole skyline.
 `0`–`9` set how far you can see, counted the way a player thinks about it:
 `0` is the next block, `9` is the far side of the city. `--distance N` does
 the same from the command line.
+
+The ray walk's step cap has to come from that number and not from a constant
+of its own, or it becomes a *second* draw distance — a shorter one, applied
+to some columns and not others. It was a flat 512 steps, which on the ground
+is further than anything is ever drawn; from a helicopter, looking down a
+long shallow ray, the average column stepped 513, so half the frame was
+hitting the cap, *which* half changed as the camera moved, and distant
+buildings flickered in and out of the city. A ray crossing `n` cells steps
+at most `2n` of them, so twice the draw distance is the figure that can
+never bind.
 
 ### The blocks have seams
 
@@ -362,6 +373,13 @@ The city is lit by whatever is overhead: two luminance steps of ambient at
 noon, one at dawn, none at night. A lit sky over a black street is the one
 thing a day cycle can get obviously wrong.
 
+A helicopter has no throttle in the sense a car does: it goes forward by
+tipping the disc forward and putting some of its lift into thrust, so
+**pointing down is how you accelerate**. `w` noses the view over thirty
+degrees and `s` flares it back fifteen, easing in and out with the key, and
+the two are deliberately not mirror images — the nose-over is a commitment
+you hold for the length of a flight and the flare is a moment.
+
 And the rest of it: a draw distance you set live from `0` to `9`, stars 0–8
 (they stop being drawn as the sky brightens, which is what happens), and a
 moon that can be switched off.
@@ -389,6 +407,7 @@ drawn.
 | A body with a lit side and a dark one | the flank is a curved panel: it faces you in the middle of the card and turns away at the edges, so the light lands on one side of it and not the other. Which side is the sun's, and the sun rises in the east and sets in the west, so the highlight walks round the bodywork over a day and the shade stays opposite it |
 | An edge that ends rather than stopping | the outermost sixth of the width is at a grazing angle, and a painted panel at a grazing angle is a mirror — so it is drawn in the *sky's* colour, through a dither, so the cell is only partly covered and the background comes through. That is the highlight and the anti-aliasing at once: the silhouette used to stop dead on a character boundary in the body's own colour, which is a staircase of solid blocks |
 | A three-box profile | bonnet, cabin, boot, with the glass only in the cabin. Without it a side view is a slab of glass the whole length of the vehicle, which reads as a van whatever colour it is painted |
+| ...that agrees with itself from the back | the bottom of the backlight *is* the front of the boot lid, so the rear view has a bright deck between the window and the tail panel, at the height the profile puts it. One table of figures, read by the roofline in profile and by the deck seen edge-on, or the car changes shape as you drive round it |
 | A car seen from wherever you stand | the card is split between the end of the car and its flank in the proportions they actually appear in, so a three-quarter view is a boot and a flank side by side, and it moves continuously through every angle instead of flipping between two pictures |
 | Three bodies that differ in shape | a jeep is short, tall and glassy; a land yacht is a quarter longer and a fifth lower; a saloon is between them. Fixed per vehicle, so a car does not change shape when the pool recycles it |
 | A collision box on the wheels | five eighths of the length, which is the wheelbase — a car's overhangs are the part you can put past another car without touching it, which is why two of them can turn across each other in a junction |
