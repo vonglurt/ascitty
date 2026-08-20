@@ -635,20 +635,32 @@ fn flank_top(body: Body, u: Fx) -> Fx {
         return 0;
     }
     let (front, back, bonnet, boot) = boxes(body);
-    // The screen pillars are the slopes, and they are what make a car look
-    // fast or slow: a short steep one is upright and formal, a long shallow
-    // one is a fastback.
-    let rake = fixed::ratio(10, 100);
     if u >= front && u <= back {
         return 0;
     }
+    // The windscreen is raked and the backlight is *upright*, and the
+    // difference between the two is most of what a checker cab looks like.
+    //
+    // It matters more than a styling note, because the back of the cabin is
+    // where the two faces of a three-quarter view meet: a raked backlight
+    // gives a flank whose roofline slopes away over a tenth of the car while
+    // the rear face's roofline is level, so the two disagree at the corner
+    // and the roof appears to fold.  Upright, the flank drops the same
+    // vertical wall the rear face is, they meet at the same height, and the
+    // roofline runs across the corner unbroken.  It is also simply what the
+    // car looked like: those cabs had a near-vertical backlight and a boot
+    // you could stand a suitcase on.
     if u < front {
-        let t = fixed::div((front - u).min(rake), rake);
+        let t = fixed::div((front - u).min(RAKE), RAKE);
         return fixed::mul(bonnet, t.clamp(0, ONE));
     }
-    let t = fixed::div((u - back).min(rake), rake);
-    fixed::mul(boot, t.clamp(0, ONE))
+    boot
 }
+
+/// How far along the car the windscreen leans, as a fraction of its length.
+///
+/// A tenth.  Only the front has one: see [`flank_top`].
+const RAKE: Fx = fixed::ratio(10, 100);
 
 /// Whether a point along the flank is in the glasshouse rather than in the
 /// bonnet or the boot.
@@ -661,6 +673,12 @@ fn flank_glass(body: Body, u: Fx, pillar: Fx) -> bool {
     }
     // Where the roofline is flat is where the cabin is, and a step in from
     // each end of it is where the glass is.
+    //
+    // Asked on both sides, so the pillars are pillars: the glass stops a
+    // pillar's width before the roofline starts to fall at the front and a
+    // pillar's width before it drops at the back.  Without the second test
+    // the backlight ran into the vertical wall behind it and the C-pillar
+    // vanished.
     let flat = flank_top(body, u) <= 0;
     flat
         && flank_top(body, (u - pillar).max(0)) <= 0
@@ -743,6 +761,13 @@ fn body_half(body: Body, side: bool, v: Fx) -> Fx {
 /// arrangement, and it survives all the way down to the smallest car drawn.
 const BUMPER: Fx = fixed::ratio(82, 100);
 
+/// The narrowest band the card is ever divided into, as a fraction of it.
+///
+/// Not a threshold - see [`paint_car`] - just the point at which a division
+/// stops being worth doing in fixed point.  A four-thousandth of a card is a
+/// fiftieth of a character at any size a car is ever drawn.
+const EPS: Fx = fixed::ratio(1, 4096);
+
 /// How far across the half-width the bodywork runs before the rim starts.
 ///
 /// Five sixths.  The last sixth of a car's width, seen from anywhere, is
@@ -792,16 +817,27 @@ fn waist_of(body: Body, side: bool) -> Fx {
 /// identified at a glance from behind, in traffic, at night.
 const SIGN_BAND: Fx = fixed::ratio(20, 100);
 
-/// The box itself, as a fraction of the card: where it starts and stops
-/// across, and where it stops down.
+/// How far the box reaches either side of the middle of the card, seen from
+/// the end of the car and seen along it.
 ///
-/// The bracket legs live in the gap between the bottom of the box and the
-/// roof, and they are what make it a sign *mounted on* a car rather than a
-/// yellow brick lying on one.  Anybody who has looked at a cab has looked at
-/// those two little legs without noticing them; take them away and the sign
-/// reads as part of the roof.
-const SIGN_HALF: Fx = fixed::ratio(15, 100);
-const SIGN_BOX: Fx = fixed::ratio(12, 100);
+/// Two figures, because a roof sign is very nearly square in plan and a car
+/// is not: seen from behind, a sign is a good two fifths of the width of the
+/// car, and seen from the side it is a fifth of its length.  One fraction of
+/// the card for both is a sign that grows as the car turns broadside, which
+/// is a sign that is not attached to anything.
+///
+/// Interpolated on how much of the card is the end - see [`Aspect::end`] -
+/// which is exact at the two ends and near enough in between.
+///
+/// There is no separate box height any more: the box *is* the band, and it
+/// sits directly on the roof.  It used to stand on two bracket legs with a
+/// gap under it, on the reasoning that the legs are what make it a sign
+/// mounted on a car rather than a yellow brick lying on one.  Looked at, it
+/// is the other way round: at the size a cab is drawn the gap is one or two
+/// rows of daylight between the sign and the roof, and daylight under a
+/// thing is what makes it *float*.
+const SIGN_HALF_END: Fx = fixed::ratio(20, 100);
+const SIGN_HALF_SIDE: Fx = fixed::ratio(12, 100);
 
 /// A 3x3 alphabet, four letters wide, spelling one word.
 ///
@@ -844,28 +880,29 @@ const TYPE_COLS: i32 = 15;
 /// Returns `None` where the sign is not, which is most of the band: the
 /// caller treats the whole top of the card as the sign's and draws nothing
 /// where this declines.
-fn roof_sign(u: Fx, v: Fx, sky: (u8, u8), rows: i32, cols: i32) -> Option<(GlyphId, u8, u8)> {
+fn roof_sign(u: Fx, v: Fx, rows: i32, cols: i32, end: Fx) -> Option<(GlyphId, u8, u8)> {
     if v >= SIGN_BAND {
         return None;
     }
+    let sign_half = fixed::lerp(SIGN_HALF_SIDE, SIGN_HALF_END, end.clamp(0, ONE));
     let mid = fixed::abs(u - fixed::HALF);
-    if v < SIGN_BOX {
-        if mid > SIGN_HALF {
-            return None;
-        }
+    if mid > sign_half {
+        return None;
+    }
+    {
         // The rim of the box, which is what gives it a thickness: a lit
         // panel with no darker edge is a hole in the picture rather than an
         // object in front of it.
         let rim = fixed::ratio(3, 100);
-        if mid > SIGN_HALF - rim || v < rim || v > SIGN_BOX - rim {
+        if mid > sign_half - rim || v < rim || v > SIGN_BAND - rim {
             return Some((catalog::G_SOLID, palette::H_BROWN, 2));
         }
         // Inside it: the word, in the dark, on a lit ground.  The lettering
         // is measured across the *inner* box rather than the whole card, so
         // it stays centred whatever the rim costs.
-        let inner_half = SIGN_HALF - rim;
+        let inner_half = sign_half - rim;
         let lu = fixed::div(u - (fixed::HALF - inner_half), inner_half * 2);
-        let lv = fixed::div(v - rim, SIGN_BOX - rim * 2);
+        let lv = fixed::div(v - rim, SIGN_BAND - rim * 2);
         // A margin round the type, so the letters never touch the rim.
         //
         // ...and only if the box is tall enough to hold the alphabet.  Five
@@ -875,7 +912,7 @@ fn roof_sign(u: Fx, v: Fx, sky: (u8, u8), rows: i32, cols: i32) -> Option<(Glyph
         // what a roof sign at forty metres is anyway.
         let (mx, my) = (fixed::ratio(8, 100), fixed::ratio(18, 100));
         let inside = lu > mx && lu < ONE - mx && lv > my && lv < ONE - my;
-        let box_rows = fixed::floor(fixed::mul(SIGN_BOX, fixed::from_int(rows)));
+        let box_rows = fixed::floor(fixed::mul(SIGN_BAND, fixed::from_int(rows)));
         let box_cols = fixed::floor(fixed::mul(inner_half * 2, fixed::from_int(cols)));
         if inside && box_rows >= TYPE_ROWS && box_cols >= TYPE_COLS {
             let col = fixed::floor(fixed::mul(
@@ -902,18 +939,8 @@ fn roof_sign(u: Fx, v: Fx, sky: (u8, u8), rows: i32, cols: i32) -> Option<(Glyph
         // ...and the ground it is on, which is the one thing on the car
         // that is a *lamp*: it is at full luminance whatever the sky is
         // doing, because a roof sign is lit from inside.
-        return Some((catalog::G_SOLID, palette::H_YELLOW, 7));
+        Some((catalog::G_SOLID, palette::H_YELLOW, 7))
     }
-    // The bracket: two legs, inset from the ends of the box, standing on the
-    // roof.  Dark, and taking a little of the sky the way a chromed bar
-    // does, so it is a bar in the air rather than a gap in the sign.
-    let leg = fixed::ratio(4, 100);
-    let stand = SIGN_HALF - fixed::ratio(6, 100);
-    if fixed::abs(mid - stand) < leg / 2 {
-        let (sh, sl) = sky;
-        return Some((catalog::G_SOLID, sh, sl.saturating_sub(3).max(1)));
-    }
-    None
 }
 
 /// Paint one point of a car, from wherever you happen to be standing.
@@ -943,17 +970,27 @@ pub fn paint_car(
     rows: i32,
     cols: i32,
 ) -> Option<(GlyphId, u8, u8)> {
-    // A band narrower than this is not worth a seam: at a hair off dead
-    // astern the flank is a fraction of a character wide, and drawing it
-    // costs a pillar down the edge of every car in the city.
-    const SLIVER: Fx = fixed::ratio(12, 100);
-    let end = view.end.clamp(0, ONE);
-    if end >= ONE - SLIVER {
-        return paint_face(body, false, u, v, hue, phase, sky, key, rows, cols);
+    // No cutoff.  There used to be one - a band under an eighth of the card
+    // was dropped and the other face drawn across the whole of it - on the
+    // reasoning that a hairline of boot is not worth a seam.  It is the one
+    // thing in here that was not worth having: at the moment the band
+    // crossed that width the *other* face jumped from all of the card to
+    // seven eighths of it, so a car turning through broadside changed
+    // proportion in a single frame, which is exactly the transition it was
+    // supposed to smooth.  A hairline band costs a hairline; a step costs
+    // the illusion.
+    //
+    // The clamp is only to keep the division honest at dead astern and dead
+    // broadside, where one of the two bands really is zero wide.
+    // The sign belongs to the card rather than to either face of the car:
+    // it sits in the middle of the roof, which is the middle of the card
+    // from every angle, and there is one of it.
+    if body == Body::Taxi {
+        if let Some(paint) = roof_sign(u, v, rows, cols, view.end) {
+            return Some(paint);
+        }
     }
-    if end <= SLIVER {
-        return paint_face(body, true, u, v, hue, phase, sky, key, rows, cols);
-    }
+    let end = view.end.clamp(EPS, ONE - EPS);
     let (in_end, local) = if view.end_left {
         (u < end, if u < end { fixed::div(u, end) } else { fixed::div(u - end, ONE - end) })
     } else {
@@ -1007,6 +1044,13 @@ pub fn paint_face(
     rows: i32,
     cols: i32,
 ) -> Option<(GlyphId, u8, u8)> {
+    // One face filling the whole card, so this one *does* own the sign.
+    if body == Body::Taxi {
+        let end = if side { 0 } else { ONE };
+        if let Some(paint) = roof_sign(u, v, rows, cols, end) {
+            return Some(paint);
+        }
+    }
     paint_face_at(body, side, u, v, hue, phase, sky, key, rows, cols, 0, true)
 }
 
@@ -1025,21 +1069,21 @@ pub fn paint_face_at(
     phase: u8,
     sky: (u8, u8),
     key: Fx,
-    rows: i32,
-    cols: i32,
+    // Kept in the signature although the body does not read them: the sign
+    // does, and the sign is the one thing on a car whose detail depends on
+    // how big the card is.  A face that dropped them would have to be given
+    // them back the moment anything else on a car earns a level of detail.
+    _rows: i32,
+    _cols: i32,
     seam: i8,
     nose_left: bool,
 ) -> Option<(GlyphId, u8, u8)> {
-    // The cab wears its sign above its roof, so the top of its card is not
-    // its roof - see `roof_sign`.  Everything below here works in body
-    // coordinates, with the sign's band already taken off the top.
-    if body == Body::Taxi {
-        if let Some(paint) = roof_sign(u, v, sky, rows, cols) {
-            return Some(paint);
-        }
-        if v < SIGN_BAND {
-            return None;
-        }
+    // The sign is drawn by whoever owns the whole card - see `paint_car` -
+    // because there is one of it and there are two faces.  Drawn here it was
+    // drawn once per face, so a cab at a three-quarter angle wore two roof
+    // signs, one on each half of itself.
+    if body == Body::Taxi && v < SIGN_BAND {
+        return None;
     }
     let v = if body == Body::Taxi {
         fixed::div(v - SIGN_BAND, ONE - SIGN_BAND)
@@ -1796,6 +1840,66 @@ mod silhouette_tests {
         );
     }
 
+    /// Turning through broadside does not change the car.
+    ///
+    /// [`aspect`] already moves smoothly - that is
+    /// `a_car_is_seen_from_wherever_you_are_standing` - but moving smoothly
+    /// is no use if the painter rounds it off.  There used to be a cutoff:
+    /// a band under an eighth of the card was dropped and the *other* face
+    /// drawn across the whole of it, so at the moment a car turned past that
+    /// width its proportions jumped in a single frame.  It was there to save
+    /// a hairline of boot and it cost the thing it was meant to smooth.
+    ///
+    /// Measured on the painted area of the whole card.  The two faces have
+    /// different profiles - a flank has a bonnet and a boot cut out of its
+    /// roofline, an end face is full height across - so swapping which one
+    /// covers a band of the card moves the silhouette, and the area is the
+    /// reading that sees it.
+    #[test]
+    fn a_car_turning_past_broadside_does_not_jump() {
+        let sky = (palette::H_BLUE, 5u8);
+        let (rows, cols) = (24, 48);
+        let banded = |end: Fx| -> i32 {
+            let view = Aspect { width: ONE, end, end_left: false, front: false, nose_left: true };
+            let mut n = 0;
+            for r in 0..rows {
+                let v = fixed::div(fixed::from_int(r) + fixed::HALF, fixed::from_int(rows));
+                for c in 0..cols {
+                    let u = fixed::div(fixed::from_int(c) + fixed::HALF, fixed::from_int(cols));
+                    // The whole silhouette, not one feature of it.  What
+                    // the cutoff changed was which *profile* the card was
+                    // drawn with - the flank has a bonnet and a boot cut out
+                    // of its roofline and the end face does not - so the
+                    // painted area is the reading that sees it.
+                    if paint_car(Body::Taxi, view, u, v, palette::H_YELLOW, 0, sky, 0, rows, cols)
+                        .is_some()
+                    {
+                        n += 1;
+                    }
+                }
+            }
+            n
+        };
+        let cells = rows * cols;
+        let mut worst = 0;
+        let mut worst_at = 0;
+        let mut last = banded(0);
+        for i in 1..=100 {
+            let now = banded(fixed::ratio(i, 100));
+            let jump = (now - last).abs();
+            if jump > worst {
+                worst = jump;
+                worst_at = i;
+            }
+            last = now;
+        }
+        // A hundredth of a turn of the card may move a fiftieth of it.
+        assert!(
+            worst * 50 < cells,
+            "the picture jumped by {worst} of {cells} cells at end = {worst_at}/100"
+        );
+    }
+
     /// Dead astern is all boot, broadside is all flank, and the corner is
     /// where the two meet.
     #[test]
@@ -1920,18 +2024,21 @@ mod silhouette_tests {
         assert!(thinnest < 8, "the rim is solid all the way to the silhouette");
     }
 
-    /// The cab wears a lit box on a bracket, above its roof.
+    /// The cab wears a lit box on its roof.
     ///
-    /// Three things, and all three have to be there or it is a lump: a box
-    /// with a rim so it has thickness, something written in it, and a gap
-    /// underneath with legs in it so it is mounted on the car rather than
-    /// part of it.
+    /// Three things, and all three have to be there or it is a lump: a rim
+    /// so the box has thickness, something written in it, and sky either
+    /// side of it so it is a box on a roof rather than a raised roof.
+    ///
+    /// It stood on bracket legs with a gap under it once.  At the size a cab
+    /// is drawn the gap is one or two rows of daylight between the sign and
+    /// the roof, and daylight under a thing is what makes it float.
     #[test]
-    fn the_cab_has_a_roof_sign_on_a_bracket() {
+    fn the_cab_has_a_roof_sign() {
         let sky = (palette::H_BLUE, 5u8);
         // Big enough to set the word in: see `TYPE_ROWS` and `TYPE_COLS`.
         let (rows, cols) = (60, 240);
-        let (mut lit, mut ink, mut leg, mut air) = (0, 0, 0, 0);
+        let (mut lit, mut ink, mut rim, mut air) = (0, 0, 0, 0);
         for r in 0..rows {
             let v = fixed::div(fixed::from_int(r) + fixed::HALF, fixed::from_int(rows));
             if v >= SIGN_BAND {
@@ -1943,15 +2050,24 @@ mod silhouette_tests {
                     None => air += 1,
                     Some((_, h, l)) if h == palette::H_YELLOW && l == 7 => lit += 1,
                     Some((_, h, _)) if h == palette::H_BLACK => ink += 1,
-                    Some((_, h, _)) if h == sky.0 => leg += 1,
+                    Some((_, h, _)) if h == palette::H_BROWN => rim += 1,
                     Some(_) => {}
                 }
             }
         }
         assert!(lit > 0, "the sign is not lit");
         assert!(ink > 0, "nothing is written on the sign");
-        assert!(leg > 0, "the sign has no bracket under it");
+        assert!(rim > 0, "the sign has no rim, so it is a hole rather than a box");
         assert!(air > 0, "the sign fills the whole band; there is no sky beside it");
+
+        // ...and it stands *on* the roof.  The bottom row of the band is the
+        // sign, not daylight: a gap there is a floating sign.
+        let just_above = SIGN_BAND - fixed::ratio(1, 200);
+        assert!(
+            paint_face(Body::Taxi, false, fixed::HALF, just_above, palette::H_YELLOW, 0, sky, 0, rows, cols)
+                .is_some(),
+            "there is daylight between the sign and the roof"
+        );
 
         // And a saloon has none of it.
         for r in 0..rows {
