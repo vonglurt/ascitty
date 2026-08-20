@@ -425,13 +425,18 @@ pub struct Aspect {
     pub end_left: bool,
     /// Whether the end you can see is the front of the car.
     pub front: bool,
+    /// Whether the car's nose points to the left of the card.  Well defined
+    /// at every angle, including broadside, which is where the flank's
+    /// bonnet and boot have to be told apart.
+    pub nose_left: bool,
 }
 
 impl Aspect {
     /// Looked at down its own length: what everything that is not a vehicle
     /// gets, and what a vehicle gets before anybody has worked out where the
     /// camera is.
-    pub const END_ON: Aspect = Aspect { width: 0, end: ONE, end_left: false, front: false };
+    pub const END_ON: Aspect =
+        Aspect { width: 0, end: ONE, end_left: false, front: false, nose_left: false };
 }
 
 /// Where the camera is standing relative to a car, in the terms the painter
@@ -471,7 +476,7 @@ pub fn aspect(len: Fx, wid: Fx, yaw: Ang, vx: Fx, vy: Fx) -> Aspect {
     let (hi, lo) = if a > b { (a, b) } else { (b, a) };
     let n = hi + fixed::mul(lo, fixed::ratio(3, 8));
     if n <= 0 {
-        return Aspect { width: wid, end: ONE, end_left: false, front: false };
+        return Aspect::END_ON;
     }
     let (ux, uy) = (fixed::div(vx, n), fixed::div(vy, n));
     // The signed view along the car's axis and across it.  `vx, vy` runs
@@ -483,15 +488,22 @@ pub fn aspect(len: Fx, wid: Fx, yaw: Ang, vx: Fx, vy: Fx) -> Aspect {
     let end_w = fixed::mul(wid, fa);
     let side_w = fixed::mul(len, fc);
     let width = end_w + side_w;
-    Aspect {
-        width,
-        end: if width > 0 { fixed::div(end_w, width) } else { ONE },
-        // The end is on the left of the card when the flank you can see is
-        // the car's left, which is the sign of the same cross product that
-        // gave `across`.
-        end_left: across > 0,
-        front: along < 0,
-    }
+    // Which way the car's nose points across the screen.
+    //
+    // The camera's right-hand axis is `(-uy, ux)` - see `Camera::plane` -
+    // and the car's nose dotted into it is `-across`, so the nose points to
+    // the left of the card exactly when `across` is positive.  This is
+    // well defined everywhere, including broadside, where `along` is nearly
+    // zero and its sign is noise.
+    let nose_left = across > 0;
+    // The visible end is the nose if you are in front of it and the tail if
+    // you are behind it, so which side the end band goes on is the nose's
+    // side or the other one.  It used to be the nose's side unconditionally,
+    // which is right in front of a car and wrong behind one - and behind one
+    // is where the chase camera lives, so the boot was drawn on the wrong
+    // corner of the cab for every frame of the game.
+    let front = along < 0;
+    Aspect { width, end: if width > 0 { fixed::div(end_w, width) } else { ONE }, end_left: nose_left == front, front, nose_left }
 }
 
 
@@ -545,6 +557,106 @@ impl Body {
     }
 }
 
+/// The top of the body along the flank, as a `v` down the card.
+///
+/// This is the three-box profile, and it is the single most recognisable
+/// thing about a car seen from the side: bonnet, cabin, boot.  Without it a
+/// side view is a slab of glass the whole length of the vehicle with a roof
+/// on top - which is what this drew for a long time, and which reads as a
+/// van whatever colour it is painted.
+///
+/// `u` runs nose-first: 0 is the front bumper and 1 is the back one, so the
+/// caller flips it when the car is pointing the other way.
+fn flank_top(body: Body, u: Fx) -> Fx {
+    // A bus is a box and has no bonnet worth drawing at this size.
+    if body == Body::Bus {
+        return 0;
+    }
+    let waist = waist_of(body, true);
+    // Where the cabin starts and stops, and how far down the bonnet and the
+    // boot sit.  The cabin of a land yacht is set a long way back - most of
+    // the car is in front of the driver - and a jeep is nearly all cabin.
+    let (front, back, bonnet, boot) = match body {
+        Body::Jeep => (
+            fixed::ratio(16, 100),
+            fixed::ratio(92, 100),
+            fixed::mul(waist, fixed::ratio(70, 100)),
+            fixed::mul(waist, fixed::ratio(55, 100)),
+        ),
+        Body::Boat => (
+            fixed::ratio(46, 100),
+            fixed::ratio(80, 100),
+            fixed::mul(waist, fixed::ratio(92, 100)),
+            fixed::mul(waist, fixed::ratio(80, 100)),
+        ),
+        _ => (
+            fixed::ratio(32, 100),
+            fixed::ratio(76, 100),
+            fixed::mul(waist, fixed::ratio(88, 100)),
+            fixed::mul(waist, fixed::ratio(76, 100)),
+        ),
+    };
+    // The screen pillars are the slopes, and they are what make a car look
+    // fast or slow: a short steep one is upright and formal, a long shallow
+    // one is a fastback.
+    let rake = fixed::ratio(10, 100);
+    if u >= front && u <= back {
+        return 0;
+    }
+    if u < front {
+        let t = fixed::div((front - u).min(rake), rake);
+        return fixed::mul(bonnet, t.clamp(0, ONE));
+    }
+    let t = fixed::div((u - back).min(rake), rake);
+    fixed::mul(boot, t.clamp(0, ONE))
+}
+
+/// Whether a point along the flank is in the glasshouse rather than in the
+/// bonnet or the boot.
+///
+/// The same cabin `flank_top` uses, brought in by a pillar's width at each
+/// end so the windscreen and the backlight have something to sit in.
+fn flank_glass(body: Body, u: Fx, pillar: Fx) -> bool {
+    if body == Body::Bus {
+        return u > pillar && u < ONE - pillar;
+    }
+    // Where the roofline is flat is where the cabin is, and a step in from
+    // each end of it is where the glass is.
+    let flat = flank_top(body, u) <= 0;
+    flat
+        && flank_top(body, (u - pillar).max(0)) <= 0
+        && flank_top(body, (u + pillar).min(ONE)) <= 0
+}
+
+/// The last of the width, drawn as the sky rather than as the car.
+///
+/// Where the panel has turned furthest from you it is at a *grazing* angle,
+/// and a painted panel at a grazing angle is a mirror: what you see along
+/// the edge of a car is not its colour, it is the sky.  That is the fix for
+/// the edge as well as a highlight - the silhouette used to end on a
+/// character boundary in the body's own colour, which is a staircase of
+/// solid blocks with the city showing through the steps.
+///
+/// So the last of the width is drawn in the sky's hue, with a *dither*
+/// rather than a solid glyph, so the cell is only partly covered and the
+/// background comes through it.  A car now ends rather than stopping, and it
+/// ends in the colour of what is behind it, which is what makes an edge
+/// disappear.
+fn rim(edge: Fx, u: Fx, key: Fx, sky: (u8, u8)) -> (GlyphId, u8, u8) {
+    let (sh, sl) = sky;
+    let t = fixed::div(edge - RIM, ONE - RIM).clamp(0, ONE);
+    // Solid at the inner side of the rim and thinning to a quarter covered
+    // at the silhouette, so the fade is in *coverage* as well as in colour.
+    let cover = 8 - fixed::floor(fixed::mul(t, fixed::from_int(6))).clamp(0, 6);
+    // The rim is the sky, lifted where the sun is behind that edge: the
+    // bright side of a car has a bright edge and the dark side has a dark
+    // one, or the rim reads as a wire round the outside.
+    let side_key = if u > fixed::HALF { key } else { -key };
+    let up = fixed::floor(fixed::mul(side_key.max(0), fixed::from_int(2)));
+    let l = (sl as i32 + up).clamp(1, 7) as u8;
+    (catalog::shade(cover as u8), sh, l)
+}
+
 /// Half the width of the body at a given height down the card.
 ///
 /// This is the whole silhouette in one expression: a roof narrower than the
@@ -559,9 +671,14 @@ fn body_half(body: Body, side: bool, v: Fx) -> Fx {
         // roof as wide as the waist - which is the whole of what tells a
         // four-wheel-drive from a saloon at thirty characters.
         (Body::Jeep, _) => (fixed::ratio(40, 100), fixed::ratio(47, 100), fixed::ratio(45, 100)),
-        // Along its length, a car is long and low, and the greenhouse is a
-        // smaller box on top of it.
-        (_, true) => (fixed::ratio(30, 100), fixed::ratio(50, 100), fixed::ratio(48, 100)),
+        // Along its length a car is very nearly a rectangle: the sills, the
+        // waist and the roof are all close to the full length, and what
+        // shortens the roof is the bonnet and the boot in front of and
+        // behind it rather than a taper.  That is `flank_top`'s job, and
+        // doing it here as well used to do it twice - a roof that was
+        // shorter *and* a cabin that was shorter, so a saloon in profile had
+        // a greenhouse a third of its length.
+        (_, true) => (fixed::ratio(50, 100), fixed::ratio(50, 100), fixed::ratio(48, 100)),
         // End on, it is nearly as wide at the roof as at the waist.
         (_, false) => (fixed::ratio(30, 100), fixed::ratio(46, 100), fixed::ratio(42, 100)),
     };
@@ -587,6 +704,22 @@ fn body_half(body: Body, side: bool, v: Fx) -> Fx {
 /// arrangement, and it survives all the way down to the smallest car drawn.
 const BUMPER: Fx = fixed::ratio(82, 100);
 
+/// How far across the half-width the bodywork runs before the rim starts.
+///
+/// Five sixths.  The last sixth of a car's width, seen from anywhere, is
+/// panel that has turned nearly edge-on to you - which on a real car is the
+/// part that shows you the sky instead of the paint.  See the rim in
+/// [`paint_face`].
+const RIM: Fx = fixed::ratio(83, 100);
+
+/// How far down from the top edge of the body the same fade reaches, as a
+/// fraction of the card.
+///
+/// A twenty-fifth, which on the sizes a car is drawn at is between half a
+/// row and two rows: enough to soften a roofline against a bright sky and
+/// not enough to eat the roof.
+const RIM_TOP: Fx = fixed::ratio(4, 100);
+
 /// How far up the card the wheel arches are cut, from the ground line.
 ///
 /// A fifth of the card: about half the height of the body below the waist,
@@ -594,17 +727,154 @@ const BUMPER: Fx = fixed::ratio(82, 100);
 const ARCH: Fx = fixed::ratio(20, 100);
 
 fn waist_of(body: Body, side: bool) -> Fx {
-    match (body, side) {
-        (Body::Bus, _) => fixed::ratio(55, 100),
+    let _ = side;
+    match body {
+        Body::Bus => fixed::ratio(55, 100),
         // A jeep is glass down to the waist and the waist is high, so it is
         // mostly window; a land yacht is the opposite - a low roof over a
         // great deal of flank.
-        (Body::Jeep, _) => fixed::ratio(58, 100),
-        (Body::Boat, true) => fixed::ratio(34, 100),
-        (Body::Boat, false) => fixed::ratio(32, 100),
-        (_, true) => fixed::ratio(42, 100),
-        (_, false) => fixed::ratio(38, 100),
+        Body::Jeep => fixed::ratio(58, 100),
+        // One figure for both faces of a body, not two.  A waist line is
+        // the bottom of the glass and it runs *round* a car: two faces that
+        // put it at different heights meet at the corner with a step in it,
+        // and a step in the waist reads as a crease down the wing.
+        Body::Boat => fixed::ratio(33, 100),
+        _ => fixed::ratio(40, 100),
     }
+}
+
+/// How much of the top of the cab's card the roof sign occupies.
+///
+/// A fifth.  A real one is about a foot tall on a car five feet high, which
+/// is a tenth - but a tenth of a card that is often twelve rows is one row,
+/// and one row cannot hold a bracket, a box and four letters.  A fifth is
+/// the smallest band that can be *read* as a roof sign rather than as a
+/// lump, and the cab is the one vehicle in the city that has to be
+/// identified at a glance from behind, in traffic, at night.
+const SIGN_BAND: Fx = fixed::ratio(20, 100);
+
+/// The box itself, as a fraction of the card: where it starts and stops
+/// across, and where it stops down.
+///
+/// The bracket legs live in the gap between the bottom of the box and the
+/// roof, and they are what make it a sign *mounted on* a car rather than a
+/// yellow brick lying on one.  Anybody who has looked at a cab has looked at
+/// those two little legs without noticing them; take them away and the sign
+/// reads as part of the roof.
+const SIGN_HALF: Fx = fixed::ratio(15, 100);
+const SIGN_BOX: Fx = fixed::ratio(12, 100);
+
+/// A 3x3 alphabet, four letters wide, spelling one word.
+///
+/// Three rows of a `u16`, three bits a letter, most significant bit first,
+/// reading `T A X I` left to right with a blank column between each pair.
+/// Fifteen bits of the sixteen, which is the whole font: this is the only
+/// word the program ever writes.
+///
+/// Three rows rather than the five a legible alphabet wants, because three
+/// is what there is.  The sign box is about an eighth of the cab's card, and
+/// a cab filling half the height of a fifty-row frame gives that eighth four
+/// rows: a five-row glyph sampled at four rows is not small type, it is a
+/// different pattern, and `T` comes out as a bar.  At three rows every
+/// letter here survives being sampled at three, which is the only size that
+/// matters.
+// The grouping is the letters, not a number's digits: three bits a glyph
+// with a blank column between.  Clippy would rather they were nibbles.
+#[allow(clippy::unusual_byte_groupings)]
+#[rustfmt::skip]
+const TAXI_ROWS: [u16; 3] = [
+    //  T      A      X      I
+    0b111_0_111_0_101_0_111,
+    0b010_0_111_0_010_0_010,
+    0b010_0_101_0_101_0_111,
+];
+
+/// The rows and columns the sign box needs before the word is set in it.
+///
+/// One row and one column per feature, and a font this coarse has three of
+/// each per letter with a gap between: fifteen columns and three rows is the
+/// point below which the letters stop being letters.  Below it the sign
+/// still says something - see the bar in [`roof_sign`] - it just stops
+/// pretending to be readable, which is what a lit sign does at any distance
+/// at all.
+const TYPE_ROWS: i32 = 3;
+const TYPE_COLS: i32 = 15;
+
+/// The lit box, the legs it stands on, and the word in it.
+///
+/// Returns `None` where the sign is not, which is most of the band: the
+/// caller treats the whole top of the card as the sign's and draws nothing
+/// where this declines.
+fn roof_sign(u: Fx, v: Fx, sky: (u8, u8), rows: i32, cols: i32) -> Option<(GlyphId, u8, u8)> {
+    if v >= SIGN_BAND {
+        return None;
+    }
+    let mid = fixed::abs(u - fixed::HALF);
+    if v < SIGN_BOX {
+        if mid > SIGN_HALF {
+            return None;
+        }
+        // The rim of the box, which is what gives it a thickness: a lit
+        // panel with no darker edge is a hole in the picture rather than an
+        // object in front of it.
+        let rim = fixed::ratio(3, 100);
+        if mid > SIGN_HALF - rim || v < rim || v > SIGN_BOX - rim {
+            return Some((catalog::G_SOLID, palette::H_BROWN, 2));
+        }
+        // Inside it: the word, in the dark, on a lit ground.  The lettering
+        // is measured across the *inner* box rather than the whole card, so
+        // it stays centred whatever the rim costs.
+        let inner_half = SIGN_HALF - rim;
+        let lu = fixed::div(u - (fixed::HALF - inner_half), inner_half * 2);
+        let lv = fixed::div(v - rim, SIGN_BOX - rim * 2);
+        // A margin round the type, so the letters never touch the rim.
+        //
+        // ...and only if the box is tall enough to hold the alphabet.  Five
+        // rows of type sampled at three rows is not small type, it is a
+        // different pattern - the `T` comes out as a bar and the word reads
+        // as a picket fence.  Below that the sign is simply lit, which is
+        // what a roof sign at forty metres is anyway.
+        let (mx, my) = (fixed::ratio(8, 100), fixed::ratio(18, 100));
+        let inside = lu > mx && lu < ONE - mx && lv > my && lv < ONE - my;
+        let box_rows = fixed::floor(fixed::mul(SIGN_BOX, fixed::from_int(rows)));
+        let box_cols = fixed::floor(fixed::mul(inner_half * 2, fixed::from_int(cols)));
+        if inside && box_rows >= TYPE_ROWS && box_cols >= TYPE_COLS {
+            let col = fixed::floor(fixed::mul(
+                fixed::div(lu - mx, ONE - mx * 2),
+                fixed::from_int(TYPE_COLS),
+            ))
+            .clamp(0, TYPE_COLS - 1);
+            let row = fixed::floor(fixed::mul(
+                fixed::div(lv - my, ONE - my * 2),
+                fixed::from_int(TAXI_ROWS.len() as i32),
+            ))
+            .clamp(0, TAXI_ROWS.len() as i32 - 1);
+            if TAXI_ROWS[row as usize] >> (TYPE_COLS - 1 - col) & 1 == 1 {
+                return Some((catalog::G_SOLID, palette::H_BLACK, 0));
+            }
+        } else if inside && lv > fixed::ratio(35, 100) && lv < fixed::ratio(65, 100) {
+            // Too small to set the word, so the word becomes what it looks
+            // like from across the street: a dark bar in a lit box.  Which
+            // is not a placeholder - it is what writing on an illuminated
+            // sign resolves to before you can read it, and a sign that goes
+            // blank at range reads as a lamp rather than as a sign.
+            return Some((catalog::G_SOLID, palette::H_BLACK, 0));
+        }
+        // ...and the ground it is on, which is the one thing on the car
+        // that is a *lamp*: it is at full luminance whatever the sky is
+        // doing, because a roof sign is lit from inside.
+        return Some((catalog::G_SOLID, palette::H_YELLOW, 7));
+    }
+    // The bracket: two legs, inset from the ends of the box, standing on the
+    // roof.  Dark, and taking a little of the sky the way a chromed bar
+    // does, so it is a bar in the air rather than a gap in the sign.
+    let leg = fixed::ratio(4, 100);
+    let stand = SIGN_HALF - fixed::ratio(6, 100);
+    if fixed::abs(mid - stand) < leg / 2 {
+        let (sh, sl) = sky;
+        return Some((catalog::G_SOLID, sh, sl.saturating_sub(3).max(1)));
+    }
+    None
 }
 
 /// Paint one point of a car, from wherever you happen to be standing.
@@ -621,6 +891,7 @@ fn waist_of(body: Body, side: bool) -> Fx {
 /// from, and the seam between them is the corner of the car.  It moves
 /// continuously: a car turning across a junction rolls from one view into
 /// the other rather than cutting between two pictures.
+#[allow(clippy::too_many_arguments)]
 pub fn paint_car(
     body: Body,
     view: Aspect,
@@ -629,6 +900,9 @@ pub fn paint_car(
     hue: u8,
     phase: u8,
     sky: (u8, u8),
+    key: Fx,
+    rows: i32,
+    cols: i32,
 ) -> Option<(GlyphId, u8, u8)> {
     // A band narrower than this is not worth a seam: at a hair off dead
     // astern the flank is a fraction of a character wide, and drawing it
@@ -636,10 +910,10 @@ pub fn paint_car(
     const SLIVER: Fx = fixed::ratio(12, 100);
     let end = view.end.clamp(0, ONE);
     if end >= ONE - SLIVER {
-        return paint_face(body, false, u, v, hue, phase, sky);
+        return paint_face(body, false, u, v, hue, phase, sky, key, rows, cols);
     }
     if end <= SLIVER {
-        return paint_face(body, true, u, v, hue, phase, sky);
+        return paint_face(body, true, u, v, hue, phase, sky, key, rows, cols);
     }
     let (in_end, local) = if view.end_left {
         (u < end, if u < end { fixed::div(u, end) } else { fixed::div(u - end, ONE - end) })
@@ -647,13 +921,41 @@ pub fn paint_car(
         let seam = ONE - end;
         (u >= seam, if u >= seam { fixed::div(u - seam, end) } else { fixed::div(u, seam) })
     };
-    paint_face(body, !in_end, local.clamp(0, ONE), v, hue, phase, sky)
+    // Which side of *this* face the corner of the car is on.
+    //
+    // Without it the two faces each taper to their own silhouette and the
+    // card comes out as two separate cars with a hole between them: at
+    // forty-five degrees there was a column of daylight down the corner of
+    // every vehicle in the city, with a rim highlight on both sides of it,
+    // which reads as a car that has been cut in half.  A body does not end
+    // at its own corner - it turns.  So the face nearer the seam runs
+    // straight out to it, and only the two outside edges get an edge.
+    let seam: i8 = if view.end_left == in_end { 1 } else { -1 };
+    // The key light is in *card* space, so it does not care which face this
+    // point belongs to - the two faces of a three-quarter view are lit by
+    // the same sun from the same side, and a light that flipped at the seam
+    // would draw the corner of the car as a crease.
+    paint_face_at(
+        body,
+        !in_end,
+        local.clamp(0, ONE),
+        v,
+        hue,
+        phase,
+        sky,
+        key,
+        rows,
+        cols,
+        seam,
+        view.nose_left,
+    )
 }
 
 /// Paint one point of one face of a car - the end of it, or the flank.
 ///
 /// `side` is true for the flank.  `phase` is the two bits every car carries:
 /// bit 0 that you are looking at its front, bit 1 that it is braking.
+#[allow(clippy::too_many_arguments)]
 pub fn paint_face(
     body: Body,
     side: bool,
@@ -662,7 +964,49 @@ pub fn paint_face(
     hue: u8,
     phase: u8,
     sky: (u8, u8),
+    key: Fx,
+    rows: i32,
+    cols: i32,
 ) -> Option<(GlyphId, u8, u8)> {
+    paint_face_at(body, side, u, v, hue, phase, sky, key, rows, cols, 0, true)
+}
+
+/// [`paint_face`], plus which side of this face the corner of the car is on:
+/// 0 for neither, -1 for the left of the card, +1 for the right.
+///
+/// A face with a seam does not end on that side - it runs out to it, and the
+/// face on the other side of the seam carries on from there.
+#[allow(clippy::too_many_arguments)]
+pub fn paint_face_at(
+    body: Body,
+    side: bool,
+    u: Fx,
+    v: Fx,
+    hue: u8,
+    phase: u8,
+    sky: (u8, u8),
+    key: Fx,
+    rows: i32,
+    cols: i32,
+    seam: i8,
+    nose_left: bool,
+) -> Option<(GlyphId, u8, u8)> {
+    // The cab wears its sign above its roof, so the top of its card is not
+    // its roof - see `roof_sign`.  Everything below here works in body
+    // coordinates, with the sign's band already taken off the top.
+    if body == Body::Taxi {
+        if let Some(paint) = roof_sign(u, v, sky, rows, cols) {
+            return Some(paint);
+        }
+        if v < SIGN_BAND {
+            return None;
+        }
+    }
+    let v = if body == Body::Taxi {
+        fixed::div(v - SIGN_BAND, ONE - SIGN_BAND)
+    } else {
+        v
+    };
     let mid = fixed::abs(u - fixed::HALF);
     // Where the wheels start, and where the lamps do.
     //
@@ -737,17 +1081,42 @@ pub fn paint_face(
         }
     }
 
-    if v > ground || mid > half {
+    // Off the end of the card, or outside the body - unless this is the
+    // side the corner is on, where the body carries on into the next face.
+    let towards_seam = (seam > 0 && u > fixed::HALF) || (seam < 0 && u < fixed::HALF);
+    if v > ground || (mid > half && !towards_seam) {
         return None;
     }
-
-    // The roof sign, above everything, on the cab only.
-    if body == Body::Taxi && v < fixed::ratio(10, 100) && mid < fixed::ratio(12, 100) {
-        return Some((catalog::G_SOLID, palette::H_YELLOW, 7));
+    // ...and above the bonnet or the boot, which on a flank is sky.  `u`
+    // runs nose-first, so it is flipped when the car points the other way.
+    let along_u = if nose_left { u } else { ONE - u };
+    let top = if side { flank_top(body, along_u) } else { 0 };
+    if v < top {
+        return None;
     }
 
     let waist = waist_of(body, side);
     let roof = fixed::mul(waist, fixed::ratio(35, 100));
+
+    // The rim, before anything that is painted on the body, because a
+    // grazing angle shows you the sky whatever panel is behind it - and
+    // because the chequer band used to reach the silhouette and put a hard
+    // black-and-white staircase down the edge of the cab.
+    let edge = if towards_seam { 0 } else { fixed::div(mid, half.max(1)) };
+    if edge > RIM {
+        return Some(rim(edge, u, key, sky));
+    }
+    // The same thing along the top.  A roofline, and the slope of a bonnet
+    // or a boot, are silhouette edges exactly as the sides are, and they
+    // were the ones still ending on a character boundary: the wedge of a
+    // three-box profile came to a staircase of solid blocks against the sky.
+    // Expressed as a fraction of the same rim so the two agree at the
+    // corner where they meet.
+    let above = v - top.max(0);
+    if above < RIM_TOP {
+        let t = ONE - fixed::div(above, RIM_TOP);
+        return Some(rim(fixed::lerp(RIM, ONE, t.clamp(0, ONE)), u, key, sky));
+    }
 
     // The roof: body colour, lifted, because it is the panel pointed at the
     // sky.
@@ -758,8 +1127,12 @@ pub fn paint_face(
     // The glass.  It takes the *sky's* hue rather than the car's, which is
     // what a window does: a windscreen is a dark mirror pointed upwards, so
     // it is blue in the afternoon and gold at sunrise without being told
-    // what time it is.  Inset from the body's edge by a pillar's width.
-    if v < waist && mid < half - fixed::ratio(6, 100) {
+    // what time it is.  Inset from the body's edge by a pillar's width - and
+    // on a flank, inset from the bonnet and the boot as well, because glass
+    // that ran to the ends of the car is what made a saloon a van.
+    let pillar = fixed::ratio(6, 100);
+    let glassy = !side || (top <= 0 && flank_glass(body, along_u, pillar));
+    if glassy && v < waist && mid < half - pillar {
         let (sh, sl) = sky;
         // A vertical shade across the glass, brighter at the top where more
         // of the sky is in it.
@@ -769,10 +1142,17 @@ pub fn paint_face(
     }
 
     // The chequer band, which is the whole of what makes a taxi a taxi.
-    if body == Body::Taxi {
+    //
+    // Along the flank only, because that is where it is on the car this one
+    // is dressed as: a checker cab wears the band down each side and the
+    // ends are plain.  Drawing it round the back as well put a chequered
+    // stripe across the boot, and in a three-quarter view - where the card
+    // is a boot and a flank side by side - the two halves of it met at the
+    // corner at slightly different heights and read as a crease.
+    if body == Body::Taxi && side {
         let band = fixed::ratio(55, 100);
         if v > band && v < fixed::ratio(70, 100) {
-            let square = fixed::floor(fixed::mul(u, fixed::from_int(8)));
+            let square = fixed::floor(fixed::mul(u, fixed::from_int(10)));
             let white = square.rem_euclid(2) == 0;
             return Some((
                 catalog::G_SOLID,
@@ -782,12 +1162,57 @@ pub fn paint_face(
         }
     }
 
-    // The body, shaded down towards the sills so that it reads as a rounded
-    // thing rather than as a rectangle.
+    // The body.
+    //
+    // Two terms, and the second is the one that makes it a car rather than a
+    // shape cut out of paper.
+    //
+    // Down the card, it darkens towards the sills, because the lower the
+    // panel the more of the road it is facing and the less of the sky.
     let down = fixed::div(v - waist, (ONE - waist).max(1)).clamp(0, ONE);
-    let luma = 6 - fixed::floor(fixed::mul(down, fixed::from_int(2))).clamp(0, 2) as u8;
+    let mut luma = 6 - fixed::floor(fixed::mul(down, fixed::from_int(2))).clamp(0, 2) as i32;
+
+    // Across the card, it turns away from you.  A car's flank is a *curved*
+    // panel: it faces you in the middle of the card and faces sideways at
+    // the edges, so the light lands on one side of it and not the other, and
+    // which side is the sun's business - see `key_light`.  That is the whole
+    // of the volume, and it costs one multiply.
+    //
+    // `turn` is how far round the panel has gone, signed: -1 at the left
+    // edge of the card, 0 down the middle, +1 at the right.  A panel whose
+    // normal points at the sun is a step and a half brighter than one facing
+    // straight at the camera, and one pointing away is a step and a half
+    // darker, so the two sides of a car are three steps apart.  On an
+    // eight-level ramp that is as much as it can be without the dark side
+    // going black.
+    let turn = fixed::clamp(fixed::div(u - fixed::HALF, half.max(1)), -ONE, ONE);
+    let lit = fixed::mul(turn, key);
+    luma += fixed::floor(fixed::mul(lit, fixed::ratio(3, 2)) + fixed::HALF);
+
     let dented = body == Body::Wreck && (fixed::floor(fixed::mul(u + v, fixed::from_int(9))) & 1) == 0;
-    Some((catalog::G_SOLID, hue, if dented { luma.saturating_sub(2).max(1) } else { luma }))
+    if dented {
+        luma -= 2;
+    }
+    Some((catalog::G_SOLID, hue, luma.clamp(1, 7) as u8))
+}
+
+/// Where the sun is, across the view, from -1 (hard left) to +1 (hard
+/// right).
+///
+/// The component of the sun's bearing along the camera's *right* axis.  Sun
+/// behind you or in front of you gives nothing, which is correct: the card
+/// has no way to show a light that is not across it, and a car lit from
+/// straight behind the camera is evenly lit, which is what a flat card
+/// already looks like.
+fn key_light(atmos: &Atmos, cam: &Camera) -> Fx {
+    let a = atmos.sun_az();
+    let (sx, sy) = (trig::cos(a), trig::sin(a));
+    let (dx, dy) = cam.dir();
+    // The camera's right-hand axis, which is its direction turned a quarter.
+    let (rx, ry) = (-dy, dx);
+    // The light comes *from* the sun, so a sun on the right lights the right
+    // of everything, and the sign is the dot product as it stands.
+    fixed::clamp(fixed::mul(sx, rx) + fixed::mul(sy, ry), -ONE, ONE)
 }
 
 /// Draw one billboard.
@@ -797,6 +1222,18 @@ pub fn paint_face(
 pub fn draw(f: &mut Frame, depth: &[Fx], cam: &Camera, atmos: &Atmos, p: &Proj, b: &Billboard) -> bool {
     let (dx, dy) = cam.dir();
     let (px, py) = cam.plane();
+    // Which side of the card the light is on.
+    //
+    // A billboard always faces the camera, so the only part of the sun's
+    // direction the card can express is the part *across* the view - and
+    // that part is exactly what makes a car look like a volume rather than a
+    // painted rectangle.  The sun rises in the east and sets in the west, so
+    // this swings from one side of every car in the city to the other over
+    // the course of a day and takes the shading with it: the highlight walks
+    // round the bodywork and the shadow stays opposite it.
+    //
+    // One dot product a billboard, not one a cell.
+    let key = key_light(atmos, cam);
 
     // Into camera space.  The 2x2 matrix [plane | dir] takes camera space to
     // world space, so its inverse takes the sprite the other way; `ty` comes
@@ -878,7 +1315,7 @@ pub fn draw(f: &mut Frame, depth: &[Fx], cam: &Camera, atmos: &Atmos, p: &Proj, 
             let paint = match painted {
                 Some(body) => {
                     let uf = fixed::div(fixed::from_int(sx - left) + fixed::HALF, span);
-                    paint_car(body, b.view, uf, vf, b.hue, b.phase, sky)
+                    paint_car(body, b.view, uf, vf, b.hue, b.phase, sky, key, rows, 2 * half_w)
                 }
                 None => {
                     let u = ((sx - left) * 8 / (2 * half_w).max(1)).clamp(0, 7) as usize;
@@ -1075,10 +1512,17 @@ mod tests {
     ///
     /// The bands have to survive being sampled coarsely - see `paint_car` -
     /// so this asks for every part of one at the sizes cars actually get.
+    ///
+    /// The row counts are the *body's*, and the card is a quarter taller
+    /// again because the cab's roof sign is drawn on the same card and takes
+    /// a fifth off the top of it - see `SIGN_BAND` and `CarKind::hull`.  A
+    /// six-row body is what is being defended here, and a six-row body on a
+    /// cab arrives as a seven-row card.
     #[test]
     fn a_painted_car_has_all_of_its_parts_at_any_size() {
         let sky = (palette::H_BLUE, 5);
-        for rows in [6, 7, 8, 10, 12, 16, 20, 30, 40] {
+        for body_rows in [6, 7, 8, 10, 12, 16, 20, 30, 40] {
+            let rows = body_rows * 5 / 4;
             let mut glass = 0;
             let mut lamp = 0;
             let mut wheel = 0;
@@ -1087,7 +1531,12 @@ mod tests {
                 let v = fixed::div(fixed::from_int(r) + fixed::HALF, fixed::from_int(rows));
                 for c in 0..rows * 2 {
                     let u = fixed::div(fixed::from_int(c) + fixed::HALF, fixed::from_int(rows * 2));
-                    let Some((_, hue, luma)) = paint_face(Body::Taxi, false, u, v, palette::H_YELLOW, 2, sky)
+                    // Both faces, because they carry different parts: the
+                    // lamps are on the ends and the chequer band runs along
+                    // the flanks, exactly as they do on the car.
+                    for side in [false, true] {
+                    let Some((_, hue, luma)) =
+                        paint_face(Body::Taxi, side, u, v, palette::H_YELLOW, 2, sky, 0, rows, rows * 2)
                     else {
                         continue;
                     };
@@ -1101,18 +1550,25 @@ mod tests {
                     // is the dark square of the chequer band.  The two are
                     // the same colour and are told apart by where they are,
                     // which is also how you tell them apart looking at it.
-                    if hue == palette::H_BLACK && v > fixed::ratio(70, 100) {
+                    //
+                    // Measured down the *body* rather than down the card:
+                    // the two are the same thing on every vehicle except
+                    // this one, and on this one the sign band has pushed
+                    // everything a fifth of a card lower.
+                    let bv = fixed::div(v - SIGN_BAND, ONE - SIGN_BAND);
+                    if hue == palette::H_BLACK && bv > fixed::ratio(70, 100) {
                         wheel += 1;
                     }
-                    if hue == palette::H_BLACK && v < fixed::ratio(70, 100) {
+                    if hue == palette::H_BLACK && bv > 0 && bv < fixed::ratio(70, 100) {
                         band += 1;
+                    }
                     }
                 }
             }
-            assert!(glass > 0, "{rows} rows: no windscreen");
-            assert!(lamp > 0, "{rows} rows: no brake lights");
-            assert!(wheel > 0, "{rows} rows: no wheels");
-            assert!(band > 0, "{rows} rows: no chequer band");
+            assert!(glass > 0, "{body_rows} rows: no windscreen");
+            assert!(lamp > 0, "{body_rows} rows: no brake lights");
+            assert!(wheel > 0, "{body_rows} rows: no wheels");
+            assert!(band > 0, "{body_rows} rows: no chequer band");
         }
     }
 
@@ -1132,7 +1588,7 @@ mod tests {
             let mut body = 0;
             for c in 0..rows * 2 {
                 let u = fixed::div(fixed::from_int(c) + fixed::HALF, fixed::from_int(rows * 2));
-                match paint_face(Body::Saloon, true, u, v, palette::H_RED, 0, sky) {
+                match paint_face(Body::Saloon, true, u, v, palette::H_RED, 0, sky, 0, 24, 48) {
                     Some((_, palette::H_BLACK, _)) => black += 1,
                     Some((_, h, _)) if h == palette::H_RED => body += 1,
                     _ => {}
@@ -1156,7 +1612,7 @@ mod tests {
             let mut found = false;
             for r in 0..16 {
                 let v = fixed::div(fixed::from_int(r) + fixed::HALF, fixed::from_int(16));
-                let got = paint_face(Body::Saloon, false, fixed::HALF, v, palette::H_RED, 0, (hue, 5));
+                let got = paint_face(Body::Saloon, false, fixed::HALF, v, palette::H_RED, 0, (hue, 5), 0, 24, 48);
                 if let Some((_, h, _)) = got {
                     if h == hue {
                         found = true;
@@ -1311,6 +1767,148 @@ mod silhouette_tests {
         assert_ne!(q.end_left, other.end_left, "the boot is on the same side from both quarters");
     }
 
+    /// The highlight walks round the car as the sun does.
+    ///
+    /// The sun rises in the east and sets in the west, so a car watched from
+    /// one place is lit from one side in the morning and the other in the
+    /// evening, with the shade always opposite.  That is the whole of what
+    /// makes the card read as a volume rather than as a painted rectangle,
+    /// and it is one dot product.
+    #[test]
+    fn the_lit_side_of_a_car_follows_the_sun() {
+        // Looking north, so east is to one side of the frame and west the
+        // other.  The camera's position does not matter; only its heading.
+        let cam = Camera { yaw: trig::QUARTER, ..Default::default() };
+        let sun = |deg: f64| {
+            // The same dot product `key_light` takes, with the bearing given
+            // rather than read off the clock: what is being defended is that
+            // the shading answers to where the sun *is*, and `Atmos::sun_az`
+            // has its own test for where that is at a given hour.
+            let (sx, sy) = (trig::cos(trig::from_degrees(deg)), trig::sin(trig::from_degrees(deg)));
+            let (dx, dy) = cam.dir();
+            fixed::clamp(fixed::mul(sx, -dy) + fixed::mul(sy, dx), -ONE, ONE)
+        };
+        // East is bearing zero here - see `Atmos::sun_az` - and the camera
+        // faces north, so a sunrise is on one side and a sunset the other.
+        let dawn = sun(0.0);
+        let dusk = sun(180.0);
+        assert!(dawn != 0, "the morning sun is edge on to the camera");
+        assert!(
+            (dawn > 0) != (dusk > 0),
+            "the sun set on the same side it rose: {} then {}",
+            fixed::to_f32(dawn),
+            fixed::to_f32(dusk)
+        );
+
+        // ...and the painter answers to it.  Mean brightness of the left
+        // half of a card against the right, with the light from each side.
+        let sky = (palette::H_BLUE, 5u8);
+        let lit = |key: Fx| -> (i32, i32) {
+            let (mut l, mut r) = (0, 0);
+            for row in 4..20 {
+                let v = fixed::ratio(row, 24);
+                for col in 4..44 {
+                    let u = fixed::ratio(col, 48);
+                    let Some((g, _, luma)) =
+                        paint_face(Body::Saloon, false, u, v, palette::H_RED, 0, sky, key, 24, 48)
+                    else {
+                        continue;
+                    };
+                    // The rim is the sky rather than the car, so it is not
+                    // part of what the body's shading is being asked about.
+                    if g != catalog::G_SOLID {
+                        continue;
+                    }
+                    if u < fixed::HALF { l += luma as i32 } else { r += luma as i32 }
+                }
+            }
+            (l, r)
+        };
+        let (fl, fr) = lit(fixed::ratio(4, 5));
+        let (nl, nr) = lit(-fixed::ratio(4, 5));
+        assert!(fr > fl, "the sun on the right did not light the right: {fl} against {fr}");
+        assert!(nl > nr, "the sun on the left did not light the left: {nl} against {nr}");
+    }
+
+    /// A car ends in the colour of what is behind it.
+    ///
+    /// The silhouette used to stop dead on a character boundary in the
+    /// body's own colour, which is a staircase of solid blocks with the city
+    /// showing through the steps.  The outermost of the bodywork is now the
+    /// sky, and it is drawn with a dither so the cell is only partly
+    /// covered - the fade is in coverage as well as in colour.
+    #[test]
+    fn a_car_fades_into_the_sky_at_its_edges() {
+        let sky = (palette::H_BLUE, 5u8);
+        let at = |u: Fx| paint_face(Body::Saloon, false, u, fixed::ratio(60, 100), palette::H_RED, 0, sky, 0, 24, 48);
+        // Down the middle it is the car.
+        let (mg, mh, _) = at(fixed::HALF).expect("no car in the middle of the card");
+        assert_eq!(mh, palette::H_RED, "the middle of the car is not the car's colour");
+        assert_eq!(mg, catalog::G_SOLID, "the middle of the car is see-through");
+        // Walking out to the edge, the last of it is the sky, and it is not
+        // solid.
+        let mut rim_seen = 0;
+        let mut thinnest = 8;
+        for i in 0..48 {
+            let u = fixed::ratio(i, 48);
+            let Some((g, h, _)) = at(u) else { continue };
+            if h == sky.0 {
+                rim_seen += 1;
+                let cover = if g == catalog::G_SOLID { 8 } else { g - catalog::G_DITHER + 1 };
+                thinnest = thinnest.min(cover);
+            }
+        }
+        assert!(rim_seen >= 2, "only {rim_seen} cells of rim on a whole card");
+        assert!(thinnest < 8, "the rim is solid all the way to the silhouette");
+    }
+
+    /// The cab wears a lit box on a bracket, above its roof.
+    ///
+    /// Three things, and all three have to be there or it is a lump: a box
+    /// with a rim so it has thickness, something written in it, and a gap
+    /// underneath with legs in it so it is mounted on the car rather than
+    /// part of it.
+    #[test]
+    fn the_cab_has_a_roof_sign_on_a_bracket() {
+        let sky = (palette::H_BLUE, 5u8);
+        // Big enough to set the word in: see `TYPE_ROWS` and `TYPE_COLS`.
+        let (rows, cols) = (60, 240);
+        let (mut lit, mut ink, mut leg, mut air) = (0, 0, 0, 0);
+        for r in 0..rows {
+            let v = fixed::div(fixed::from_int(r) + fixed::HALF, fixed::from_int(rows));
+            if v >= SIGN_BAND {
+                break;
+            }
+            for c in 0..cols {
+                let u = fixed::div(fixed::from_int(c) + fixed::HALF, fixed::from_int(cols));
+                match paint_face(Body::Taxi, false, u, v, palette::H_YELLOW, 0, sky, 0, rows, cols) {
+                    None => air += 1,
+                    Some((_, h, l)) if h == palette::H_YELLOW && l == 7 => lit += 1,
+                    Some((_, h, _)) if h == palette::H_BLACK => ink += 1,
+                    Some((_, h, _)) if h == sky.0 => leg += 1,
+                    Some(_) => {}
+                }
+            }
+        }
+        assert!(lit > 0, "the sign is not lit");
+        assert!(ink > 0, "nothing is written on the sign");
+        assert!(leg > 0, "the sign has no bracket under it");
+        assert!(air > 0, "the sign fills the whole band; there is no sky beside it");
+
+        // And a saloon has none of it.
+        for r in 0..rows {
+            let v = fixed::div(fixed::from_int(r) + fixed::HALF, fixed::from_int(rows));
+            if v >= SIGN_BAND {
+                break;
+            }
+            let got = paint_face(Body::Saloon, false, fixed::HALF, v, palette::H_RED, 0, sky, 0, rows, cols);
+            assert!(
+                !matches!(got, Some((_, h, 7)) if h == palette::H_YELLOW),
+                "a saloon is wearing a taxi sign"
+            );
+        }
+    }
+
     /// A jeep, a saloon and a land yacht are different shapes.
     ///
     /// Not different colours - the traffic is already every colour there is
@@ -1324,7 +1922,7 @@ mod silhouette_tests {
             let mut last = 0;
             for i in 0..100 {
                 let v = fixed::ratio(i, 100);
-                if let Some((_, hue, _)) = paint_face(body, true, fixed::HALF, v, palette::H_RED, 0, sky) {
+                if let Some((_, hue, _)) = paint_face(body, true, fixed::HALF, v, palette::H_RED, 0, sky, 0, 24, 48) {
                     if hue == sky.0 {
                         last = v;
                     }

@@ -915,6 +915,9 @@ fn ceiling_of(city: &City) -> Fx {
 /// All three paths that draw the game - the interactive one, `--shot` and
 /// the recorder - call this, because a picture of the game without the thing
 /// you steer by is a picture of a different program.
+///
+/// Painted *before* the billboards.  It is a marking on the road, so
+/// everything standing on the road goes over it - the cab most of all.
 fn hud_layer(f: &mut Frame, sim: &Sim, cam: &Camera, atmos: &Atmos, p: &raycast::Proj) {
     if let Some((tx, ty)) = sim.target() {
         let want = ascitty_core::sim::atan2_approx(ty - cam.y, tx - cam.x);
@@ -987,10 +990,15 @@ fn run(mut o: Opts) -> Result<(), String> {
             }
             raycast::render_to(&city, &cam, &o.atmos, &mut f, &mut depth);
             let proj = raycast::projection(&city, &cam, &f);
-            sim.draw(&mut f, &depth, &cam, &o.atmos, &proj);
+            // The arrow first, then the traffic: it is painted *on the
+            // road*, so everything standing on the road belongs over it.
+            // Drawn last it was laid across the cab, and a black-outlined
+            // chevron slashed diagonally over the thing you are driving is
+            // the first thing anybody sees in a still.
             if view == View::Drive {
                 hud_layer(&mut f, &sim, &cam, &o.atmos, &proj);
             }
+            sim.draw(&mut f, &depth, &cam, &o.atmos, &proj);
         }
         if let Some(path) = &o.png {
             std::fs::write(path, png::encode(&f)).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -1045,10 +1053,15 @@ fn run(mut o: Opts) -> Result<(), String> {
             }
             raycast::render_to(&city, &cam, &o.atmos, &mut f, &mut depth);
             let proj = raycast::projection(&city, &cam, &f);
-            sim.draw(&mut f, &depth, &cam, &o.atmos, &proj);
+            // The arrow first, then the traffic: it is painted *on the
+            // road*, so everything standing on the road belongs over it.
+            // Drawn last it was laid across the cab, and a black-outlined
+            // chevron slashed diagonally over the thing you are driving is
+            // the first thing anybody sees in a still.
             if view == View::Drive {
                 hud_layer(&mut f, &sim, &cam, &o.atmos, &proj);
             }
+            sim.draw(&mut f, &depth, &cam, &o.atmos, &proj);
             if let Some(rec) = rec.as_mut() {
                 paint::paint(&f, o.mode, o.depth, &mut buf);
                 rec.frame(&buf).map_err(|e| e.to_string())?;
@@ -1350,11 +1363,15 @@ fn run(mut o: Opts) -> Result<(), String> {
         o.atmos.step();
         stats = raycast::render_to(&city, &cam, &o.atmos, &mut f, &mut depth);
         let proj = raycast::projection(&city, &cam, &f);
-        sim.draw(&mut f, &depth, &cam, &o.atmos, &proj);
-        // The HUD layer: over the city, over the cab, over the weather.
+        // The arrow first, then the traffic: it is painted *on the road*,
+        // so everything standing on the road belongs over it.  Drawn last it
+        // was laid across the cab, and a black-outlined chevron slashed
+        // diagonally over the thing you are driving is the first thing
+        // anybody sees.
         if view == View::Drive {
             hud_layer(&mut f, &sim, &cam, &o.atmos, &proj);
         }
+        sim.draw(&mut f, &depth, &cam, &o.atmos, &proj);
         paint::paint(&f, o.mode, o.depth, &mut buf);
         hud::append(&mut buf, &hud::Status {
             view: match (autopilot, view) {

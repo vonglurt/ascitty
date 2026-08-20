@@ -421,8 +421,8 @@ impl CarKind {
     /// metres across the back and ten metres down the side - so a single
     /// "width" cannot draw one.  See [`crate::sprite::silhouette`].
     ///
-    /// The cab is deliberately the squattest of the three, and has been cut
-    /// twice.  The chase camera sits behind it and looks over it, so its
+    /// The cab's *body* is deliberately the squattest of the three, and has
+    /// been cut twice.  The chase camera sits behind it and looks over it, so its
     /// roof is the bottom of what you can see of the road ahead: at seven
     /// fifths of a cell its roofline was two rows above the middle of a
     /// forty-row frame and the horizon was behind it.  Six fifths put the
@@ -435,7 +435,17 @@ impl CarKind {
     pub fn hull(self) -> (Fx, Fx, Fx) {
         match self {
             CarKind::Bus => (fixed::ratio(9, 4), fixed::from_int(1), fixed::ratio(27, 20)),
-            CarKind::Taxi => (fixed::from_int(2), fixed::ratio(6, 5), fixed::ratio(9, 10)),
+            // The cab's card is an eighth taller than the cab, because the
+            // cab wears a sign on its roof and the sign is drawn on the same
+            // card.  The *body* is still nine tenths of a cell: the extra
+            // eighth is exactly the band `sprite::SIGN_BAND` takes off the
+            // top, so the roofline sits where it always did and the sign
+            // stands above it.  Compressing the body into the old card
+            // instead squeezed every band on it by a fifth, and the brake
+            // lights - which are a tenth of a card wide - fell between the
+            // sampled rows and stopped existing on any cab under ten rows
+            // tall, which is most of them.
+            CarKind::Taxi => (fixed::from_int(2), fixed::ratio(6, 5), fixed::ratio(9, 8)),
             CarKind::Traffic => (fixed::ratio(8, 5), fixed::from_int(1), fixed::ratio(19, 20)),
         }
     }
