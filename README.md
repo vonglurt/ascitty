@@ -270,6 +270,25 @@ for the same reason all of this is here: from the fields the towers have to
 be visible, so the way back to the middle is something you can see rather
 than something you have to remember.
 
+### The terminal is the other bottleneck
+
+A frame at 250×98 is 114 KB of escape codes. The renderer produces it in one
+millisecond and a terminal needs twenty to draw it, so at that size the
+terminal is what you are watching — and what you are watching it do is fall
+behind, which looks like bands of the picture updating on different frames.
+Vertical bands, because a frame is written in row order and a row is one
+long run: a terminal that gives up part way through leaves the right of the
+screen showing the frame before.
+
+So the painter keeps the last frame and sends only what changed, with a
+cursor move to skip the rest and short gaps repainted rather than skipped —
+a cursor move costs about eight bytes and a character costs one. Measured on
+a turning camera at 250×98: **114 KB a frame down to 27**.
+
+It is checked by replaying what each painter emits into a model of the part
+of a terminal this program uses, and comparing the screens rather than the
+escapes. The escapes are deliberately different; the screen must not be.
+
 ### The distance dissolves
 
 A cell has one colour, so there is no alpha to blend with. The far end of
@@ -375,10 +394,14 @@ thing a day cycle can get obviously wrong.
 
 A helicopter has no throttle in the sense a car does: it goes forward by
 tipping the disc forward and putting some of its lift into thrust, so
-**pointing down is how you accelerate**. `w` noses the view over thirty
-degrees and `s` flares it back fifteen, easing in and out with the key, and
-the two are deliberately not mirror images — the nose-over is a commitment
-you hold for the length of a flight and the flare is a moment.
+**pointing down is how you accelerate**. The nose *is* the accelerator, so
+holding `w` pushes it further over and the speed keeps building; letting go
+levels off and **holds the speed**, because there is no drag and level
+flight is what maintaining a speed looks like; `s` points the nose up and
+takes the speed away at the same rate the power put it on. The nose takes a
+second and a half to reach thirty degrees down or fifteen up, and the two
+are deliberately not mirror images — the nose-over is a commitment you hold
+for the length of a flight and the flare is a moment.
 
 And the rest of it: a draw distance you set live from `0` to `9`, stars 0–8
 (they stop being drawn as the sky brightens, which is what happens), and a

@@ -52,12 +52,33 @@ pub const fn mul(a: Fx, b: Fx) -> Fx {
 /// `a / b`.  Division by zero yields `FX_MAX` rather than trapping, because
 /// the one place it can happen is a ray exactly parallel to a grid axis and
 /// the caller wants "infinitely far" there, not a panic.
+///
+/// Saturating, for the same reason and in the same way.  Dividing by zero is
+/// the *obvious* way to ask for a number this type cannot hold; dividing by
+/// something very small is the quiet one, and it is the one that happens.  A
+/// reciprocal of one raw unit - a sixty-five-thousandth - is 2^32, and
+/// truncating that to 32 bits gives **zero**: the largest answer the
+/// question has, returned as the smallest.
+///
+/// The ray walk is where it bites.  A column whose direction is a hair off a
+/// grid axis asks for exactly that reciprocal as its step size, gets zero,
+/// and then walks the grid forever without the distance ever advancing -
+/// until the step cap stops it and the column is drawn with no buildings in
+/// it at all.  It is rare per column and there are hundreds of columns a
+/// frame, so what it looks like is a city that flickers.
 #[inline(always)]
 pub const fn div(a: Fx, b: Fx) -> Fx {
     if b == 0 {
         FX_MAX
     } else {
-        (((a as i64) << FRAC) / (b as i64)) as Fx
+        let q = ((a as i64) << FRAC) / (b as i64);
+        if q > Fx::MAX as i64 {
+            Fx::MAX
+        } else if q < Fx::MIN as i64 {
+            Fx::MIN
+        } else {
+            q as Fx
+        }
     }
 }
 
@@ -135,6 +156,25 @@ mod tests {
         // number rather than to something merely large.
         assert_eq!(div(ONE, -2), Fx::MIN);
         assert_eq!(abs(div(ONE, -2)), FX_MAX);
+    }
+
+    /// A division too big to hold comes back as the biggest, not as zero.
+    ///
+    /// The quiet half of the divide-by-zero rule.  `1 / 1` in raw units is
+    /// 2^32, and truncating that to 32 bits gives zero - the largest answer
+    /// the question has, returned as the smallest - which in the ray walk is
+    /// a step size of nothing and a column that never gets anywhere.
+    #[test]
+    fn a_division_that_does_not_fit_saturates() {
+        assert_eq!(div(ONE, 1), FX_MAX);
+        assert_eq!(div(ONE, 2), FX_MAX);
+        assert_eq!(div(ONE, -1), Fx::MIN);
+        assert_eq!(div(-ONE, 1), Fx::MIN);
+        // ...and the first one that does fit is not clamped.
+        assert!(div(ONE, 3) < FX_MAX && div(ONE, 3) > FX_MAX / 2);
+        // The ordinary cases are untouched.
+        assert_eq!(div(ONE, ONE), ONE);
+        assert_eq!(div(ONE, 2 * ONE), HALF);
     }
 
     #[test]

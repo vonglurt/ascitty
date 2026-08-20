@@ -202,8 +202,23 @@ fn arrow(bearing: i32) -> char {
 }
 
 /// Append the status line to a painted frame.
-pub fn append(out: &mut String, s: &Status) {
-    out.push_str("\r\n\x1b[0m\x1b[7m ");
+pub fn append(out: &mut String, s: &Status, row: usize) {
+    // An absolute move rather than a newline off the end of the frame.
+    //
+    // A newline is only right if the cursor is where the last row of the
+    // frame left it, and since the painter started sending *only what
+    // changed* it very often is not - the last thing it wrote might be
+    // halfway up the screen.  The status line has a row of its own, so it
+    // says which.
+    out.push_str("\x1b[");
+    let mut n = String::new();
+    let mut v = row as u32 + 1;
+    while v > 0 {
+        n.insert(0, (b'0' + (v % 10) as u8) as char);
+        v /= 10;
+    }
+    out.push_str(&n);
+    out.push_str(";1H\x1b[0m\x1b[7m ");
     if let Some(sim) = s.sim {
         // Driving replaces the diagnostics with the only four numbers that
         // matter while the clock is running.

@@ -885,8 +885,8 @@ fn aim_at_city(cam: &mut Camera, city: &City, atmos: &Atmos, w: usize, h: usize)
     );
 }
 
-/// How far a helicopter noses over under power, and how far it flares to
-/// stop, in degrees.
+/// How far a helicopter noses over under full power, and how far it flares
+/// to stop, in degrees.
 ///
 /// A helicopter has no throttle in the sense a car does.  It goes forward by
 /// tipping the disc forward and putting some of its lift into thrust, so
@@ -901,11 +901,28 @@ fn aim_at_city(cam: &mut Camera, city: &City, atmos: &Atmos, w: usize, h: usize)
 const NOSE_OVER: f64 = 30.0;
 const FLARE: f64 = 15.0;
 
+/// How long the nose takes to reach full attitude while the key is held, in
+/// seconds.
+///
+/// A second and a half.  This is the part that makes it flying rather than
+/// driving: the *longer* you hold it the further over the nose goes and the
+/// harder it accelerates, which is what a pilot does and is why a helicopter
+/// arriving somewhere is nose-down the whole way and level for the last
+/// hundred yards.
+const LEAN: Fx = fixed::ratio(3, 2);
+
+/// Forward acceleration at full nose-over, in cells per second per second.
+///
+/// Ten, so full attitude takes about three seconds to reach the top speed -
+/// and, because the attitude itself takes a second and a half to arrive, the
+/// speed comes on over about four.  A helicopter is not quick off the mark.
+const FLY_ACCEL: Fx = fixed::from_int(10);
+
 /// The attitude a helicopter is flying at, in screen rows.
 ///
-/// `throttle` is the same ramped axis everything else reads, so this eases
-/// in and out with the key rather than snapping - which is the difference
-/// between an aircraft changing attitude and a camera cutting to a new one.
+/// `nose` is the disc angle, -1 fully flared to +1 fully over, and it is a
+/// *state* rather than the key: see [`LEAN`].  Level is level, which is what
+/// maintaining a speed looks like.
 ///
 /// Rows rather than degrees, because [`Camera::pitch`] is rows: a text
 /// renderer shears the horizon rather than rotating it.  The conversion is
@@ -913,11 +930,32 @@ const FLARE: f64 = 15.0;
 /// [`raycast::pitch_down`] solves in the other direction - so the angle is
 /// the angle it looks like and not a number that happens to feel right at
 /// one frame size.
-fn attitude(throttle: Fx, w: usize, fov: Fx) -> i32 {
-    let deg = if throttle >= 0 { NOSE_OVER } else { -FLARE };
+fn attitude(nose: Fx, w: usize, fov: Fx) -> i32 {
+    let deg = if nose >= 0 { NOSE_OVER } else { -FLARE };
     let t = deg.to_radians().tan();
     let rows = fixed::mul(raycast::scale(w as i32, fov), fixed::from_f64(t));
-    fixed::floor(fixed::mul(rows, fixed::abs(throttle)))
+    fixed::floor(fixed::mul(rows, fixed::abs(nose)))
+}
+
+/// One frame of helicopter flight: where the nose goes, and what that does
+/// to the speed.
+///
+/// The whole model, and it is three lines because the model is three
+/// sentences.  The nose leans towards whatever the stick is asking for, at a
+/// rate rather than instantly.  The nose *is* the acceleration.  And there
+/// is no drag, so level flight holds a speed - which is the sentence that
+/// makes it an aircraft: a car coasts to a stop and a helicopter does not.
+///
+/// Returns the new nose and the new speed.
+fn fly(nose: Fx, speed: Fx, stick: Fx, inv: Fx) -> (Fx, Fx) {
+    let rate = fixed::div(inv, LEAN);
+    let nose = nose + fixed::clamp(stick - nose, -rate, rate);
+    let speed = fixed::clamp(
+        speed + fixed::mul(fixed::mul(FLY_ACCEL, nose), inv),
+        -FLY_SPEED / 2,
+        FLY_SPEED,
+    );
+    (nose, speed)
 }
 
 /// How far down the camera may be tilted in this view.
@@ -1132,19 +1170,32 @@ fn run(mut o: Opts) -> Result<(), String> {
         let (w, h) = o.size.unwrap_or((160, 48));
         let mut f = Frame::new(w, h);
         let mut buf = String::new();
+        let (mut full_bytes, mut diff_bytes) = (0usize, 0usize);
+        let mut bench_painter = paint::Painter::default();
         let t0 = std::time::Instant::now();
         const N: u32 = 200;
         for i in 0..N {
             o.atmos.step();
-            cam.turn(200);
+            cam.turn(20);
             let st = raycast::render(&city, &cam, &o.atmos, &mut f);
             paint::paint(&f, o.mode, o.depth, &mut buf);
+            full_bytes += buf.len();
+            bench_painter.paint(&f, o.mode, o.depth, &mut buf);
+            diff_bytes += buf.len();
             if i == 0 {
-                println!("{w}x{h}  {} cells  {} steps/frame", w * h, st.steps);
+                println!(
+                    "{w}x{h}  {} cells  {} steps/frame  worst column {}  gave up {}",
+                    w * h, st.steps, st.worst, st.capped
+                );
             }
         }
         let ms = t0.elapsed().as_secs_f64() * 1000.0 / N as f64;
         println!("{ms:.2} ms/frame  =  {:.0} fps", 1000.0 / ms);
+        println!(
+            "  to the terminal: {} KB/frame whole, {} KB/frame changed-only",
+            full_bytes / N as usize / 1024,
+            diff_bytes / N as usize / 1024
+        );
         return Ok(());
     }
 
@@ -1153,10 +1204,14 @@ fn run(mut o: Opts) -> Result<(), String> {
     let (mut w, mut h) = o.size.unwrap_or_else(Term::size);
     let mut f = Frame::new(w, h.saturating_sub(1).max(1));
     let mut buf = String::new();
+    // The screen, as far as anything here knows what is on it.  See
+    // `paint::Painter`: sending the whole frame every time is what makes the
+    // terminal, rather than the renderer, the thing you are waiting for.
+    let mut painter = paint::Painter::default();
 
     let dt = std::time::Duration::from_micros(1_000_000 / o.fps.clamp(1, 240) as u64);
     let step = fixed::div(WALK_SPEED, fixed::from_int(o.fps as i32));
-    let fly = fixed::div(FLY_SPEED, fixed::from_int(o.fps as i32));
+    let strafe_pace = fixed::div(FLY_SPEED, fixed::from_int(o.fps as i32));
     let turn = TURN_SPEED / o.fps as i32;
     let mut stats = raycast::Stats::default();
     let mut fps_ms = 0.0f64;
@@ -1168,6 +1223,8 @@ fn run(mut o: Opts) -> Result<(), String> {
     // How much of the camera's pitch is the helicopter's attitude rather
     // than the pilot's head.  See `attitude`.
     let mut attitude_now: i32 = 0;
+    // The helicopter's disc angle and its forward speed.  See `fly`.
+    let (mut nose, mut fly_v): (Fx, Fx) = (0, 0);
     let mut tour = Tour::new(&city, o.seed);
     tour.cam.fov = lens;
     let mut cabbie = Cabbie::new();
@@ -1299,12 +1356,25 @@ fn run(mut o: Opts) -> Result<(), String> {
 
         // The axes, as movement.  Walking and flying steer the camera
         // directly; driving hands the same three controls to the car.
-        // Flying is not walking, and the difference is a factor rather than
-        // a mode: the same three axes, scaled by how fast the thing you are
-        // in goes.
-        let pace = if view == View::Copter { fly } else { step };
+        // Walking is a speed and flying is an acceleration, which is the
+        // whole difference between the two: a walker's legs stop when the
+        // key does and an aircraft's momentum does not.
         let throttle = hands.at(Ctl::Gas) - hands.at(Ctl::Brake);
-        let fwd = fixed::mul(throttle, pace);
+        let inv = fixed::div(ONE, fixed::from_int(o.fps.max(1) as i32));
+        if view == View::Copter && !autopilot {
+            let (n, v) = fly(nose, fly_v, throttle, inv);
+            nose = n;
+            fly_v = v;
+        } else {
+            nose = 0;
+            fly_v = 0;
+        }
+        let pace = if view == View::Copter { strafe_pace } else { step };
+        let fwd = if view == View::Copter {
+            fixed::mul(fly_v, inv)
+        } else {
+            fixed::mul(throttle, pace)
+        };
         let side = fixed::mul(hands.at(Ctl::StrafeRight) - hands.at(Ctl::StrafeLeft), pace);
         let rise = fixed::mul(hands.at(Ctl::Up) - hands.at(Ctl::Down), pace);
         if view != View::Drive && !autopilot {
@@ -1347,7 +1417,7 @@ fn run(mut o: Opts) -> Result<(), String> {
         let tilt = tilt_limit(view, &cam, &city, &o.atmos, f.w, f.h);
         cam.pitch = cam.pitch.clamp(-tilt, tilt);
         attitude_now = match view {
-            View::Copter if !autopilot => attitude(throttle, f.w, cam.fov),
+            View::Copter if !autopilot => attitude(nose, f.w, cam.fov),
             _ => 0,
         };
         cam.pitch += attitude_now;
@@ -1422,6 +1492,9 @@ fn run(mut o: Opts) -> Result<(), String> {
                 h = nh;
                 f.resize(w, h.saturating_sub(1).max(1));
                 buf.clear();
+                // The screen has been cleared and is a different shape, so
+                // nothing is known about what is on it any more.
+                painter.forget();
                 print!("\x1b[2J");
             }
         }
@@ -1439,7 +1512,7 @@ fn run(mut o: Opts) -> Result<(), String> {
             hud_layer(&mut f, &sim, &cam, &o.atmos, &proj);
         }
         sim.draw(&mut f, &depth, &cam, &o.atmos, &proj);
-        paint::paint(&f, o.mode, o.depth, &mut buf);
+        painter.paint(&f, o.mode, o.depth, &mut buf);
         hud::append(&mut buf, &hud::Status {
             view: match (autopilot, view) {
                 (true, View::Drive) => "AUTOCAB",
@@ -1455,7 +1528,7 @@ fn run(mut o: Opts) -> Result<(), String> {
             seed: o.seed,
             sim: if view == View::Drive { Some(&sim) } else { None },
             flash: flash.and_then(|(t, n)| if n > 0 { Some(t) } else { None }),
-        });
+        }, f.h);
         if let Some((_, n)) = flash.as_mut() {
             *n -= 1;
             if *n == 0 {
@@ -1798,6 +1871,71 @@ mod tests {
             "the horizon moved {} rows between flat out and hard on the brakes",
             sky - road
         );
+    }
+
+    /// Holding the stick pushes the nose further over and the speed higher;
+    /// letting go levels off and *holds* the speed.
+    ///
+    /// The three sentences of the flight model, asserted in order.  The last
+    /// one is what makes it an aircraft rather than a camera: a car coasts
+    /// to a stop and a helicopter does not.
+    #[test]
+    fn a_helicopter_leans_into_it_and_keeps_what_it_has() {
+        let hz = 30;
+        let inv = fixed::div(ONE, fixed::from_int(hz));
+        let (mut nose, mut v) = (0, 0);
+
+        // Half a second of full stick.
+        for _ in 0..hz / 2 {
+            let (n, s) = fly(nose, v, ONE, inv);
+            nose = n;
+            v = s;
+        }
+        let (half_nose, half_v) = (nose, v);
+        assert!(half_nose > 0, "the nose did not go down");
+        assert!(half_v > 0, "it did not accelerate");
+
+        // Another half second of the same stick: further over, and faster
+        // than the first half second was.
+        for _ in 0..hz / 2 {
+            let (n, s) = fly(nose, v, ONE, inv);
+            nose = n;
+            v = s;
+        }
+        assert!(nose > half_nose, "holding it did not push the nose further over");
+        assert!(
+            v - half_v > half_v,
+            "the second half second bought less than the first: {} then {}",
+            fixed::to_f32(half_v),
+            fixed::to_f32(v - half_v)
+        );
+
+        // Let go: the nose comes back to level and the speed stays.
+        let cruise = v;
+        for _ in 0..hz * 3 {
+            let (n, s) = fly(nose, v, 0, inv);
+            nose = n;
+            v = s;
+        }
+        assert!(fixed::abs(nose) < ONE / 20, "it did not level off: {}", fixed::to_f32(nose));
+        assert!(
+            v > fixed::mul(cruise, fixed::ratio(9, 10)),
+            "level flight lost the speed: {} of {}",
+            fixed::to_f32(v),
+            fixed::to_f32(cruise)
+        );
+
+        // And the brake points the nose up and takes it away.  Two seconds,
+        // because the nose takes a second and a half to reach full flare and
+        // the deceleration is what the nose says it is - the brake works at
+        // the same rate as the power, it just does not *look* as dramatic.
+        for _ in 0..hz * 2 {
+            let (n, s) = fly(nose, v, -ONE, inv);
+            nose = n;
+            v = s;
+        }
+        assert!(nose < 0, "braking did not raise the nose");
+        assert!(v < cruise / 2, "braking did not slow it: {}", fixed::to_f32(v));
     }
 
     /// A helicopter noses over to go and flares to stop.

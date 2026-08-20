@@ -133,6 +133,11 @@ pub struct Stats {
     pub closed: u32,
     /// The nearest thing in front of the camera, in world units.
     pub nearest: f32,
+    /// The most cells any one column stepped through, and how many columns
+    /// hit the cap.
+    pub worst: u32,
+    /// How many columns gave up at the cap.
+    pub capped: u32,
 }
 
 /// Render a frame, then rain on it.
@@ -226,6 +231,8 @@ pub fn render_to(
         let s = column(city, cam, atmos, f, x, rdx, rdy, horizon, proj, far, &light);
         st.steps += s.0;
         st.closed += s.1;
+        st.worst = st.worst.max(s.0);
+        if s.3 { st.capped += 1; }
         depth[x as usize] = if s.2 == f32::MAX { Fx::MAX } else { fixed::from_f64(s.2 as f64) };
         if x == w / 2 {
             st.nearest = s.2;
@@ -323,7 +330,7 @@ fn column(
     proj: Fx,
     far: Fx,
     light: &Light,
-) -> (u32, u32, f32) {
+) -> (u32, u32, f32, bool) {
     let h = f.h as i32;
     // What the far end of the world is made of.  One lookup a column rather
     // than one a cell: the phase does not change inside a frame.
@@ -384,7 +391,7 @@ fn column(
         };
         steps += 1;
         if dist >= far || steps > cap {
-            return (steps, 0, nearest);
+            return (steps, 0, nearest, steps > cap);
         }
 
         let bh = city.height(map_x, map_y);
@@ -482,10 +489,10 @@ fn column(
             ceiling = top.max(0);
         }
         if ceiling <= 0 {
-            return (steps, 1, nearest);
+            return (steps, 1, nearest, false);
         }
     }
-    (steps, 1, nearest)
+    (steps, 1, nearest, false)
 }
 
 /// What the ground looks like at a world point.
