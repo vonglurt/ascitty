@@ -973,11 +973,50 @@ make the last of those possible. All of it is in
 
 ## Credit
 
-The idea comes from a prototype by someone who built a living ASCII city as a
-single HTML file with a custom JavaScript engine — a grid-based 3D world, a
-per-column raycaster, and letters and symbols instead of pixels. This is that
-idea taken somewhere specific: fixed point, a generated font, and a machine
-from 1984.
+The idea is not mine. In August 2026 **Grow Now Games** — one person — showed a
+cyberpunk city rendered entirely out of typeable characters: a grid world, a
+per-column raycaster, letters and symbols standing where the pixels would be,
+and traffic and neon moving through it. It is a lovely thing and you should go
+and look at it.
+
+- PC Gamer — [Lone game dev builds an explorable cyberpunk city almost entirely out of ASCII characters](https://www.pcgamer.com/hardware/lone-game-dev-builds-an-explorable-cyberpunk-city-almost-entirely-out-of-ascii-characters/)
+- The video — [Grow Now Games on YouTube](https://www.youtube.com/watch?v=3YtygAx_C6A)
+
+Those two links are also the whole of my contact with that project. I have
+never played it. I have never had its source, or a binary, or a build, or a
+frame of it that wasn't in that article or that video. Nothing here is derived
+from it, ported from it, or lifted out of it: there is no code, no data and no
+asset of theirs in this repository. What I took is the premise — *a city out of
+characters, cast in real time* — which is the part you carry away in your head
+from a headline, and which is exactly the sort of thing that is meant to be
+taken and answered.
+
+The answer is the fun part. Everything past that premise is a different set of
+choices, made on purpose to find out what would happen:
+
+- **fixed point, no floats** — the renderer runs in integers, so it can run on
+  a machine with no FPU
+- **a sine table instead of trigonometry** — one table, generated, and every
+  ray in the city turns on it
+- **a font from functions, not data** — all 128 shapes are computed rather than
+  stored; there is no artwork in this repository and there is not meant to be
+- **a city from a seed** — streets, lots, archetypes, fire escapes, awnings,
+  all of it out of one number
+- **a Commodore Plus/4** — cross-compiled, baked to a disk image and booted in
+  an emulator by `make`, because a 1984 target is the most honest performance
+  budget there is
+- **and then, immediately, the toys** — helicopter mode and taxi mode, first
+  thing after the streets and the buildings stood up, because that is what a
+  personal world is *for*
+
+It is a small private Minecraft: a generated place at a scale one person can
+hold in their head, with the two vehicles I most wanted to fly and drive around
+in it. Half the pleasure is the build itself — generated headers, the
+cross-compilation, the disk image, the emulator, the 310 tests, the whole
+thing running from one `make`.
+
+MIT, forkable, and offered in the spirit the idea reached me in: here is a
+thing; go and make yours.
 
 ## Licence
 
