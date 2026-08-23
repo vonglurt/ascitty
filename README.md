@@ -986,12 +986,7 @@ moving through it. It is a lovely thing and you should go and look at it.
 
 Those links are here at their request: they asked that anything referencing
 this work point back to their project, which is a fair ask, gladly done, and
-the least this repository owes them. It is also simply how this ought to
-work — people building strange things alone in public are all better off for
-pointing at each other. So go and look at theirs. And if you fork this, or if
-something in here hands you an idea, say where it came from and link the person
-who sparked it. Game development is a craft, and the way you support a craft is
-out loud.
+the least this repository owes them. This guy has a cool thing too. 
 
 That article and that video are also the whole of my contact with that
 project. I have never played it. I have never had its source, or a binary, or
