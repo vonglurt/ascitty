@@ -982,9 +982,18 @@ and look at it.
 - PC Gamer — [Lone game dev builds an explorable cyberpunk city almost entirely out of ASCII characters](https://www.pcgamer.com/hardware/lone-game-dev-builds-an-explorable-cyberpunk-city-almost-entirely-out-of-ascii-characters/)
 - The video — [Grow Now Games on YouTube](https://www.youtube.com/watch?v=3YtygAx_C6A)
 
-Those two links are also the whole of my contact with that project. I have
-never played it. I have never had its source, or a binary, or a build, or a
-frame of it that wasn't in that article or that video. Nothing here is derived
+Those links are here at their request: they asked that anything referencing
+this work point back to their project, which is a fair ask, gladly done, and
+the least this repository owes them. It is also simply how this ought to
+work — people building strange things alone in public are all better off for
+pointing at each other. So go and look at theirs. And if you fork this, or if
+something in here hands you an idea, say where it came from and link the person
+who sparked it. Game development is a craft, and the way you support a craft is
+out loud.
+
+That article and that video are also the whole of my contact with that
+project. I have never played it. I have never had its source, or a binary, or
+a build, or a frame of it that wasn't in one of those two places. Nothing here is derived
 from it, ported from it, or lifted out of it: there is no code, no data and no
 asset of theirs in this repository. What I took is the premise — *a city out of
 characters, cast in real time* — which is the part you carry away in your head
