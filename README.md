@@ -984,9 +984,7 @@ moving through it. It is a lovely thing and you should go and look at it.
 - PC Gamer — [Lone game dev builds an explorable cyberpunk city almost entirely out of ASCII characters](https://www.pcgamer.com/hardware/lone-game-dev-builds-an-explorable-cyberpunk-city-almost-entirely-out-of-ascii-characters/)
 - The video — [Grow Now Games on YouTube](https://www.youtube.com/watch?v=3YtygAx_C6A)
 
-Those links are here at their request: they asked that anything referencing
-this work point back to their project, which is a fair ask, gladly done, and
-the least this repository owes them. This guy has a cool thing too. 
+Those links are here at their request. Take a look at them to see another way this idea can come alive. 
 
 That article and that video are also the whole of my contact with that
 project. I have never played it. I have never had its source, or a binary, or
