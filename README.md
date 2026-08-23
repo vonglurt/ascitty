@@ -993,9 +993,8 @@ project. I have never played it. I have never had its source, or a binary, or
 a build, or a frame of it that wasn't in one of those two places. Nothing here is derived
 from it, ported from it, or lifted out of it: there is no code, no data and no
 asset of theirs in this repository. What I took is the premise — *a city out of
-characters, cast in real time* — which is the part you carry away in your head
-from a headline, and which is exactly the sort of thing that is meant to be
-taken and answered.
+characters, cast in real time* . The part you carry away in your head
+from a headline.
 
 The answer is the fun part. Everything past that premise is a different set of
 choices, made on purpose to find out what would happen:
