@@ -973,11 +973,13 @@ make the last of those possible. All of it is in
 
 ## Credit
 
-The idea is not mine. In August 2026 **Grow Now Games** — one person — showed a
-cyberpunk city rendered entirely out of typeable characters: a grid world, a
-per-column raycaster, letters and symbols standing where the pixels would be,
-and traffic and neon moving through it. It is a lovely thing and you should go
-and look at it.
+The idea is not mine. A raytraced ASCII world starts on almost every computer
+science game developer's wishlist, right after converting 'Never Gonna Give You
+Up' into ASCII video. The more recent inspiration was a news article. In August
+2026 **Grow Now Games** — one person — showed a cyberpunk city rendered
+entirely out of typeable characters: a grid world, a per-column raycaster,
+letters and symbols standing where the pixels would be, and traffic and neon
+moving through it. It is a lovely thing and you should go and look at it.
 
 - PC Gamer — [Lone game dev builds an explorable cyberpunk city almost entirely out of ASCII characters](https://www.pcgamer.com/hardware/lone-game-dev-builds-an-explorable-cyberpunk-city-almost-entirely-out-of-ascii-characters/)
 - The video — [Grow Now Games on YouTube](https://www.youtube.com/watch?v=3YtygAx_C6A)
