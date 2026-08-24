@@ -1012,7 +1012,7 @@ choices, made on purpose to find out what would happen:
   thing after the streets and the buildings stood up, because that is what a
   personal world is *for*
 
-It is a small private Minecraft: a generated place at a scale one person can
+It is a small private simulated world in action: a generated place at a scale one person can
 hold in their head, with the two vehicles I most wanted to fly and drive around
 in it. Half the pleasure is the build itself — generated headers, the
 cross-compilation, the disk image, the emulator, the 310 tests, the whole
