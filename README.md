@@ -148,22 +148,6 @@ alternative, which is what it used to do, was to freeze the simulation on
 the tick the clock ran out, with the cab stopped mid-corner and the traffic
 stopped around it and nothing left to do but quit.
 
-### What it says out loud
-
-The status line shouts, in the arcade way. Each of these is an event the
-simulation *returns* rather than a string it prints, so the front end
-decides whether to shout and the core does not know there is a screen.
-
-| | |
-|---|---|
-| `GO GO GO` | the passenger got in |
-| `FARE PAID` | and got out again, somewhere else |
-| `+2s` | a coin off the trail |
-| `CRUNCH` | a lamp post, a hydrant, a parking meter — over it goes |
-| `SMASH` | another car, hit hard enough to send it spinning |
-| `OW` | a building, which does not move |
-| `TIME UP` | the clock has run out; you are into overtime, not out of the game |
-
 ### The machines
 
 | | Length | Mass | Drawn as |
